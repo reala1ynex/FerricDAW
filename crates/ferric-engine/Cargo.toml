@@ -3,7 +3,7 @@ name = "ferric-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Lock-free real-time audio/MIDI engine, retroactive capture buffer, take recording, and offline stem/master bounce."
+description = "Lock-free real-time audio/MIDI engine, CLAP plugin host, PDC latency compensation, track freeze, multi-codec decoder, and offline stem/master bounce."
 
 [dependencies]
 ferric-model = { path = "../ferric-model" }
@@ -12,6 +12,8 @@ rtrb.workspace = true
 cpal.workspace = true
 midir.workspace = true
 hound.workspace = true
+symphonia.workspace = true
+libloading.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
 log.workspace = true

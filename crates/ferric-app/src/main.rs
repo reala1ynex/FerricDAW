@@ -1,21 +1,25 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod arrangement;
+mod browser;
 mod mixer;
 mod palette;
 mod piano_roll;
 mod theme;
 
 use arrangement::{ArrangementAction, ArrangementState};
+use browser::{BrowserAction, KaossPadState, StudioBrowserState, TapTempoTracker};
 use eframe::egui;
 use egui::{Color32, Context, Key, Stroke};
 use ferric_engine::{
-    audio_buffer_from_capture, import_wav_file, render_all_stems_offline, render_master_offline,
-    BitDepth, BounceReport, CapturedTakeEvent, EngineCommand, EngineHandle,
+    audio_buffer_from_capture, import_audio_file, render_all_stems_offline, render_master_offline,
+    render_track_freeze_buffer, BitDepth, BounceReport, CapturedTakeEvent, EngineCommand,
+    EngineHandle,
 };
 use ferric_model::{
-    build_demo_project, ClipId, FxKind, FxSlot, HistoryManager, InputSource, ModulatorSlot,
-    Project, Take, TimelineClip, Track, TrackId,
+    build_demo_project, import_smf_file, AutomationTarget, ClipId, FxKind, FxSlot, HistoryManager,
+    InputSource, MidiLearnMapping, ModulatorSlot, Project, Take, TakeContent, TimelineClip, Track,
+    TrackId,
 };
 use mixer::{render_mixer_console, render_routing_matrix};
 use palette::{CommandPalette, PaletteCommand};
@@ -31,6 +35,7 @@ use theme::{
 enum BottomTab {
     EditorAndComp,
     FxAndModulators,
+    KaossPad,
     MixingConsole,
     RoutingMatrix,
 }
@@ -45,11 +50,20 @@ struct BounceModalState {
     last_report: Option<Result<BounceReport, String>>,
 }
 
+struct PendingMidiLearn {
+    track_id: TrackId,
+    target: AutomationTarget,
+    label: String,
+}
+
 struct FerricDawApp {
     project: Project,
     project_path: Option<PathBuf>,
     history: HistoryManager,
     engine: EngineHandle,
+    browser: StudioBrowserState,
+    kaoss_pad: KaossPadState,
+    tap_tempo: TapTempoTracker,
     arrangement: ArrangementState,
     piano_roll: PianoRollState,
     palette: CommandPalette,
@@ -58,6 +72,7 @@ struct FerricDawApp {
     inspect_master_fx: bool,
     selected_track: Option<TrackId>,
     selected_clip: Option<(TrackId, ClipId)>,
+    pending_midi_learn: Option<PendingMidiLearn>,
     musical_typing_enabled: bool,
     musical_typing_octave: i8,
     held_typing_keys: HashSet<Key>,
@@ -72,15 +87,22 @@ impl FerricDawApp {
 
         let initial_project = build_demo_project(48_000);
         let engine = EngineHandle::start(&initial_project);
-        // Rebuild demo audio buffers at exact hardware sample rate if different from 48kHz
         let project = if engine.sample_rate != 48_000 {
             build_demo_project(engine.sample_rate)
         } else {
             initial_project
         };
 
+        let lpk_badge = if engine.has_akai_lpk25() {
+            " • Akai LPK25 Connected!"
+        } else if !engine.midi_port_names.is_empty() {
+            " • USB MIDI Connected!"
+        } else {
+            ""
+        };
+
         let mut app = Self {
-            selected_track: project.tracks.get(3).or(project.tracks.first()).map(|t| t.id),
+            selected_track: project.tracks.get(4).or(project.tracks.first()).map(|t| t.id),
             selected_clip: project
                 .tracks
                 .get(3)
@@ -95,19 +117,23 @@ impl FerricDawApp {
                 last_report: None,
             },
             status_banner: format!(
-                "Ready • Audio: {} ({} Hz) • Space to Play • Ctrl+K Command Palette • Musical Typing Active",
-                engine.audio_device_name, engine.sample_rate
+                "v0.2 Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
+                engine.audio_device_name, engine.sample_rate, engine.audio_input_name, lpk_badge
             ),
             project,
             project_path: None,
             history: HistoryManager::new(64),
             engine,
+            browser: StudioBrowserState::default(),
+            kaoss_pad: KaossPadState::default(),
+            tap_tempo: TapTempoTracker::default(),
             arrangement: ArrangementState::default(),
             piano_roll: PianoRollState::default(),
             palette: CommandPalette::default(),
             bottom_tab: BottomTab::FxAndModulators,
             show_bottom_dock: true,
             inspect_master_fx: false,
+            pending_midi_learn: None,
             musical_typing_enabled: true,
             musical_typing_octave: 4,
             held_typing_keys: HashSet::new(),
@@ -151,7 +177,6 @@ impl FerricDawApp {
 
     fn toggle_record(&mut self) {
         let next = !self.engine.latest_telemetry.is_recording;
-        // Ensure at least selected track is armed when hitting Record!
         if next && !self.project.tracks.iter().any(|t| t.record_arm) {
             if let Some(tid) = self.selected_track {
                 if let Some(t) = self.project.find_track_mut(tid) {
@@ -163,6 +188,130 @@ impl FerricDawApp {
         self.engine.send(EngineCommand::SetRecord(next));
         if next && !self.engine.latest_telemetry.is_playing {
             self.engine.send(EngineCommand::Play);
+        }
+    }
+
+    fn toggle_freeze_track(&mut self, track_id: TrackId) {
+        let currently_frozen = self
+            .project
+            .find_track(track_id)
+            .map(|t| t.frozen)
+            .unwrap_or(false);
+        self.snapshot_before("Toggle Track Freeze");
+
+        if currently_frozen {
+            if let Some(t) = self.project.find_track_mut(track_id) {
+                t.frozen = false;
+                t.frozen_buffer = None;
+                self.status_banner = format!("Unfroze '{}' — live Instrument & FX restored.", t.name);
+            }
+            self.sync_engine();
+        } else if let Some(buf) =
+            render_track_freeze_buffer(&self.project, track_id, self.engine.sample_rate)
+        {
+            if let Some(t) = self.project.find_track_mut(track_id) {
+                t.frozen = true;
+                t.frozen_buffer = Some(buf);
+                self.status_banner = format!(
+                    "❄ Froze '{}' to 32-bit stem — live DSP CPU reduced to 0.0%!",
+                    t.name
+                );
+            }
+            self.sync_engine();
+        }
+    }
+
+    /// 1-Click Hardware Studio Rig tailored specifically for Akai LPK25 + Nintendo DS KORG DS-10!
+    fn spawn_akai_and_ds10_rig(&mut self) {
+        self.snapshot_before("Spawn Akai LPK25 + KORG DS-10 Rig");
+        self.engine.rescan_midi_devices();
+
+        // 1. Akai LPK25 USB MIDI Lead/Arp Synth Track (Armed for MIDI!)
+        let lpk_id = self.project.add_track("LPK25 Analog Synth");
+        if let Some(t) = self.project.find_track_mut(lpk_id) {
+            t.color = [232, 114, 62];
+            t.input_source = InputSource::MidiAll;
+            t.record_arm = true;
+            let mut poly = FxSlot::new(FxKind::PolySynth);
+            poly.set_param(0, 0.0); // Fat Saw
+            poly.set_param(1, 42.0); // Unison Sub/Detune
+            poly.set_param(2, 2400.0);
+            poly.set_param(3, 0.38);
+            t.fx_chain.push(poly);
+            t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+        }
+
+        // 2. Nintendo DS (KORG DS-10) Stereo 3.5mm Line-In Console Channel!
+        let ds_id = self.project.add_track("Nintendo DS — KORG DS-10 Line-In");
+        if let Some(t) = self.project.find_track_mut(ds_id) {
+            t.color = [66, 179, 165];
+            t.input_source = InputSource::AudioAndMidi { stereo_pair: 0 };
+            t.record_arm = true;
+            t.input_monitoring = true;
+
+            // Clean up portable headphone-out hiss with gentle Gate, sculpt MS-10 punch with EQ, add Oxide Tape & Space!
+            let mut gate = FxSlot::new(FxKind::NoiseGate);
+            gate.set_param(0, -54.0);
+            gate.set_param(5, -78.0);
+            let mut eq = FxSlot::new(FxKind::ParametricEq);
+            eq.set_param(0, 32.0); // Keep deep MS-10 bass!
+            eq.set_param(2, 2.0);  // +2 dB low punch
+            eq.set_param(10, 2.5); // +2.5 dB top air for DS DAC roll-off
+            let mut tape = FxSlot::new(FxKind::TapeSaturator);
+            tape.set_param(0, 4.0);
+            tape.set_param(1, 48.0);
+
+            t.fx_chain.push(gate);
+            t.fx_chain.push(eq);
+            t.fx_chain.push(tape);
+        }
+
+        self.selected_track = Some(lpk_id);
+        self.bottom_tab = BottomTab::KaossPad;
+        self.show_bottom_dock = true;
+        self.sync_engine();
+        self.status_banner =
+            "⚡ Spawned 'LPK25 Analog Synth' + 'Nintendo DS — KORG DS-10 Line-In' & opened KAOSS X-Y Pad!"
+                .into();
+    }
+
+    fn handle_midi_learn_poll(&mut self) {
+        let Some((ch, cc, val)) = self.engine.latest_telemetry.last_midi_cc else {
+            return;
+        };
+        if let Some(pending) = self.pending_midi_learn.take() {
+            self.project
+                .midi_learn_mappings
+                .retain(|m| !(m.track_id == pending.track_id && m.target == pending.target));
+            self.project.midi_learn_mappings.push(MidiLearnMapping {
+                id: uuid::Uuid::new_v4(),
+                cc,
+                channel: Some(ch),
+                track_id: pending.track_id,
+                target: pending.target.clone(),
+            });
+            self.project.set_target_normalized(
+                pending.track_id,
+                &pending.target,
+                val as f32 / 127.0,
+                self.engine.latest_telemetry.playhead_beat,
+                self.engine.latest_telemetry.is_playing,
+            );
+            self.sync_engine();
+            self.status_banner = format!(
+                "✓ Bound MIDI Ch {} CC#{} → {}",
+                ch + 1,
+                cc,
+                pending.label
+            );
+        } else if self.project.apply_midi_cc(
+            ch,
+            cc,
+            val,
+            self.engine.latest_telemetry.playhead_beat,
+            self.engine.latest_telemetry.is_playing,
+        ) {
+            self.sync_engine();
         }
     }
 
@@ -190,10 +339,11 @@ impl FerricDawApp {
                     is_retroactive,
                 } => {
                     if let Some(trk) = self.project.find_track_mut(target_tid) {
-                        // Append as a new REAPER Take Lane if an overlapping MIDI clip exists!
-                        if let Some(existing) = trk.clips.iter_mut().find(|c| {
-                            c.is_midi() && (c.start_beat - start_beat).abs() < 0.5
-                        }) {
+                        if let Some(existing) = trk
+                            .clips
+                            .iter_mut()
+                            .find(|c| c.is_midi() && (c.start_beat - start_beat).abs() < 0.5)
+                        {
                             let num = existing.takes.len() + 1;
                             existing
                                 .takes
@@ -206,7 +356,8 @@ impl FerricDawApp {
                             } else {
                                 "Recorded MIDI Take"
                             };
-                            let clip = TimelineClip::new_midi(title, start_beat, length_beats, notes);
+                            let clip =
+                                TimelineClip::new_midi(title, start_beat, length_beats, notes);
                             self.selected_clip = Some((target_tid, clip.id));
                             trk.clips.push(clip);
                         }
@@ -227,9 +378,11 @@ impl FerricDawApp {
                 } => {
                     let buf = audio_buffer_from_capture(sample_rate, left, right);
                     if let Some(trk) = self.project.find_track_mut(target_tid) {
-                        if let Some(existing) = trk.clips.iter_mut().find(|c| {
-                            !c.is_midi() && (c.start_beat - start_beat).abs() < 0.5
-                        }) {
+                        if let Some(existing) = trk
+                            .clips
+                            .iter_mut()
+                            .find(|c| !c.is_midi() && (c.start_beat - start_beat).abs() < 0.5)
+                        {
                             let num = existing.takes.len() + 1;
                             existing
                                 .takes
@@ -238,7 +391,7 @@ impl FerricDawApp {
                             existing.show_take_lanes = true;
                         } else {
                             let title = if is_retroactive {
-                                "Retroactive Audio Riff"
+                                "Retroactive DS-10 / Audio Riff"
                             } else {
                                 "Recorded Audio Take"
                             };
@@ -262,11 +415,17 @@ impl FerricDawApp {
         match cmd {
             PaletteCommand::TogglePlay => self.toggle_play(),
             PaletteCommand::ToggleRecord => self.toggle_record(),
+            PaletteCommand::SetupAkaiDs10Rig => self.spawn_akai_and_ds10_rig(),
+            PaletteCommand::ToggleFreezeSelectedTrack => {
+                if let Some(tid) = self.selected_track {
+                    self.toggle_freeze_track(tid);
+                }
+            }
             PaletteCommand::CaptureRetroactive => {
                 self.engine
                     .send(EngineCommand::CaptureRetroactive { seconds_back: 15.0 });
                 self.status_banner =
-                    "Requested 15s Retroactive Capture (Play Musical Typing A..K or MIDI first!)"
+                    "Requested 15s Retroactive Capture (LPK25 MIDI, Musical Typing, or DS-10 Line-In!)"
                         .into();
             }
             PaletteCommand::AddUniversalTrack => {
@@ -285,6 +444,34 @@ impl FerricDawApp {
                 if let Some(t) = self.project.find_track_mut(id) {
                     t.fx_chain.push(FxSlot::new(FxKind::PolySynth));
                     t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddSamplerTrack => {
+                self.snapshot_before("Add Sampler Track");
+                let id = self
+                    .project
+                    .add_track(format!("{:02} Slice Sampler", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.fx_chain.push(FxSlot::new(FxKind::SamplePlayer));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddVocalPitchTrack => {
+                self.snapshot_before("Add Vocal Auto-Pitch Track");
+                let id = self
+                    .project
+                    .add_track(format!("{:02} Vocal Auto-Pitch", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::AudioMono { channel: 0 };
+                    t.fx_chain.push(FxSlot::new(FxKind::NoiseGate));
+                    t.fx_chain.push(FxSlot::new(FxKind::VocalPitch));
+                    t.fx_chain.push(FxSlot::new(FxKind::Compressor));
+                    t.fx_chain.push(FxSlot::new(FxKind::PlateHallReverb));
                 }
                 self.selected_track = Some(id);
                 self.bottom_tab = BottomTab::FxAndModulators;
@@ -379,6 +566,60 @@ impl FerricDawApp {
         }
     }
 
+    fn import_smf_midi_dialog(&mut self, path_opt: Option<PathBuf>) {
+        let path = path_opt.or_else(|| {
+            rfd::FileDialog::new()
+                .set_title("Import Standard MIDI File (.mid)")
+                .add_filter("MIDI Files", &["mid", "midi"])
+                .pick_file()
+        });
+        let Some(p) = path else {
+            return;
+        };
+        match import_smf_file(&p) {
+            Ok(imported_tracks) => {
+                self.snapshot_before("Import Standard MIDI File");
+                for mtrk in &imported_tracks {
+                    if let Some(bpm) = mtrk.detected_bpm {
+                        self.project.bpm = bpm;
+                    }
+                    let tid = self.project.add_track(mtrk.name.clone());
+                    let max_end = mtrk
+                        .notes
+                        .iter()
+                        .map(|n| n.end_beat())
+                        .fold(4.0_f64, f64::max)
+                        .ceil();
+                    if let Some(t) = self.project.find_track_mut(tid) {
+                        t.fx_chain.push(FxSlot::new(FxKind::PolySynth));
+                        let mut clip =
+                            TimelineClip::new_midi(mtrk.name.clone(), 0.0, max_end, mtrk.notes.clone());
+                        clip.loop_enabled = false;
+                        if let Some(Take {
+                            content: TakeContent::Midi { cc_points, .. },
+                            ..
+                        }) = clip.takes.first_mut()
+                        {
+                            *cc_points = mtrk.cc_points.clone();
+                        }
+                        self.selected_clip = Some((tid, clip.id));
+                        t.clips.push(clip);
+                    }
+                    self.selected_track = Some(tid);
+                }
+                self.sync_engine();
+                self.status_banner = format!(
+                    "Imported {} MIDI track(s) from {}",
+                    imported_tracks.len(),
+                    p.display()
+                );
+            }
+            Err(e) => {
+                self.status_banner = format!("MIDI import error: {}", e);
+            }
+        }
+    }
+
     fn save_project_dialog(&mut self) {
         let path = self.project_path.clone().or_else(|| {
             rfd::FileDialog::new()
@@ -424,20 +665,20 @@ impl FerricDawApp {
         }
     }
 
-    fn import_wav_to_track(&mut self, track_id: TrackId) {
+    fn import_audio_to_track(&mut self, track_id: TrackId) {
         if let Some(path) = rfd::FileDialog::new()
-            .set_title("Import WAV Audio File")
-            .add_filter("WAV Audio", &["wav"])
+            .set_title("Import Audio File (WAV, FLAC, MP3, OGG, AIFF)")
+            .add_filter("Audio Files", &["wav", "flac", "mp3", "ogg", "aiff"])
             .pick_file()
         {
-            match import_wav_file(&path, self.engine.sample_rate) {
+            match import_audio_file(&path, self.engine.sample_rate) {
                 Ok(buf) => {
-                    self.snapshot_before("Import WAV Clip");
+                    self.snapshot_before("Import Audio Clip");
                     let beats = self.project.seconds_to_beats(buf.duration_secs()).max(1.0);
-                    let at = self
-                        .project
-                        .snap_grid
-                        .snap(self.engine.latest_telemetry.playhead_beat, self.project.time_signature);
+                    let at = self.project.snap_grid.snap(
+                        self.engine.latest_telemetry.playhead_beat,
+                        self.project.time_signature,
+                    );
                     let name = path
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -452,7 +693,7 @@ impl FerricDawApp {
                     self.status_banner = format!("Imported '{}'", name);
                 }
                 Err(e) => {
-                    self.status_banner = format!("WAV import failed: {}", e);
+                    self.status_banner = format!("Audio import failed: {}", e);
                 }
             }
         }
@@ -463,7 +704,8 @@ impl FerricDawApp {
             return;
         }
 
-        let (ctrl, shift) = ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
+        let (ctrl, shift) =
+            ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
 
         if ctrl && ctx.input(|i| i.key_pressed(Key::K)) {
             self.palette.toggle();
@@ -501,6 +743,10 @@ impl FerricDawApp {
             self.execute_palette_command(PaletteCommand::AddUniversalTrack);
             return;
         }
+        if ctrl && ctx.input(|i| i.key_pressed(Key::F)) {
+            self.execute_palette_command(PaletteCommand::ToggleFreezeSelectedTrack);
+            return;
+        }
         if ctrl && ctx.input(|i| i.key_pressed(Key::D)) {
             if let Some((tid, cid)) = self.selected_clip {
                 self.snapshot_before("Duplicate Clip");
@@ -529,7 +775,6 @@ impl FerricDawApp {
             }
         }
 
-        // Computer Keyboard Musical Typing (ASDFGHJK = White Keys C..C, WETYU = Black Keys, Z/X = Octave!)
         if self.musical_typing_enabled && !ctrl {
             if ctx.input(|i| i.key_pressed(Key::Z)) {
                 self.musical_typing_octave = (self.musical_typing_octave - 1).max(1);
@@ -585,12 +830,18 @@ impl FerricDawApp {
         let telem = self.engine.latest_telemetry;
 
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 7.0;
+            ui.spacing_mut().item_spacing.x = 6.0;
 
-            // Brand + File Menu
+            if pill_toggle(ui, "☰ Browser", self.browser.visible, ACCENT_TEAL)
+                .on_hover_text("Show/Hide Left Studio Browser (Akai LPK25 + DS-10 Rig, Samples, Presets & CLAP Plugins)")
+                .clicked()
+            {
+                self.browser.visible = !self.browser.visible;
+            }
+
             ui.menu_button(
                 egui::RichText::new("🧲 FERRIC DAW")
-                    .size(13.5)
+                    .size(13.0)
                     .strong()
                     .color(ACCENT_FERRIC),
                 |ui| {
@@ -601,6 +852,13 @@ impl FerricDawApp {
                         self.selected_track = Some(tid);
                         self.selected_clip = None;
                         self.sync_engine();
+                        ui.close_menu();
+                    }
+                    if ui
+                        .button("🎹 Spawn Akai LPK25 + KORG DS-10 Hybrid Rig")
+                        .clicked()
+                    {
+                        self.spawn_akai_and_ds10_rig();
                         ui.close_menu();
                     }
                     if ui.button("🎵 Reload 'Neon Oxide' Demo Session").clicked() {
@@ -614,6 +872,10 @@ impl FerricDawApp {
                     }
                     if ui.button("💾 Save Session (.ferric)...  Ctrl+S").clicked() {
                         self.save_project_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button("🎹 Import Standard MIDI File (.mid)...").clicked() {
+                        self.import_smf_midi_dialog(None);
                         ui.close_menu();
                     }
                     ui.separator();
@@ -635,25 +897,14 @@ impl FerricDawApp {
 
             ui.separator();
 
-            // Transport Controls
-            if ui
-                .button("⏮")
-                .on_hover_text("Return to Start (001.1.000)")
-                .clicked()
-            {
+            if ui.button("⏮").on_hover_text("Return to Start").clicked() {
                 self.engine.send(EngineCommand::SeekBeat(0.0));
             }
             let play_lbl = if telem.is_playing { "⏸ PAUSE" } else { "▶ PLAY" };
-            if pill_toggle(ui, play_lbl, telem.is_playing, ACCENT_TEAL)
-                .on_hover_text("Play / Stop (Space)")
-                .clicked()
-            {
+            if pill_toggle(ui, play_lbl, telem.is_playing, ACCENT_TEAL).clicked() {
                 self.toggle_play();
             }
-            if pill_toggle(ui, "● REC", telem.is_recording, ACCENT_RED)
-                .on_hover_text("Record into Armed / Selected Track")
-                .clicked()
-            {
+            if pill_toggle(ui, "● REC", telem.is_recording, ACCENT_RED).clicked() {
                 self.toggle_record();
             }
             if pill_toggle(ui, "⟳ LOOP", self.project.loop_enabled, ACCENT_FERRIC).clicked() {
@@ -665,20 +916,17 @@ impl FerricDawApp {
                 self.sync_engine();
             }
 
-            // Always-Listening Retroactive Capture Button!
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("⚡ Capture Idea")
+                        egui::RichText::new("⚡ Capture")
                             .size(11.0)
                             .strong()
                             .color(ACCENT_AMBER),
                     )
                     .fill(Color32::from_rgb(44, 36, 22)),
                 )
-                .on_hover_text(
-                    "Retroactive Capture (Shift+R): Drops the last 15s of played MIDI or Audio onto the timeline even when NOT recording!",
-                )
+                .on_hover_text("Retroactive Capture (Shift+R): Drops last 15s of LPK25 MIDI or DS-10 Audio!")
                 .clicked()
             {
                 self.execute_palette_command(PaletteCommand::CaptureRetroactive);
@@ -686,56 +934,70 @@ impl FerricDawApp {
 
             ui.separator();
 
-            // High-Contrast Studio LCD Position & Tempo Readout
+            // LCD Position + BPM + TAP TEMPO (for syncing KORG DS-10!)
             egui::Frame::new()
                 .fill(BG_DEEP)
                 .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
                 .corner_radius(4)
-                .inner_margin(egui::Margin::symmetric(8, 3))
+                .inner_margin(egui::Margin::symmetric(7, 3))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let bbt = self.project.format_bar_beat_tick(telem.playhead_beat);
                         let secs = self.project.beats_to_seconds(telem.playhead_beat);
                         ui.label(
                             egui::RichText::new(bbt)
-                                .size(14.5)
+                                .size(14.0)
                                 .monospace()
                                 .strong()
                                 .color(ACCENT_TEAL),
                         );
                         ui.label(
                             egui::RichText::new(format!("{:05.2}s", secs))
-                                .size(11.5)
+                                .size(11.0)
                                 .monospace()
                                 .color(TEXT_DIM),
                         );
                     });
                 });
 
-            let r_bpm = ui.add(
-                egui::DragValue::new(&mut self.project.bpm)
-                    .range(30.0..=300.0)
-                    .speed(0.25)
-                    .suffix(" BPM"),
-            );
-            if r_bpm.changed() {
+            if ui
+                .add(
+                    egui::DragValue::new(&mut self.project.bpm)
+                        .range(30.0..=300.0)
+                        .speed(0.25)
+                        .suffix(" BPM"),
+                )
+                .changed()
+            {
                 self.sync_engine();
             }
-
-            // Musical Typing Toggle
-            let mt_lbl = format!("🎹 Keys C{}", self.musical_typing_octave);
-            if pill_toggle(ui, &mt_lbl, self.musical_typing_enabled, Color32::from_rgb(186, 108, 226))
-                .on_hover_text("Computer Keyboard Musical Typing (A..K = Notes, Z/X = Octave)")
+            if ui
+                .small_button("TAP")
+                .on_hover_text("Tap 4x along to your Nintendo DS KORG DS-10 to lock exact BPM!")
                 .clicked()
+            {
+                if let Some(new_bpm) = self.tap_tempo.register_tap() {
+                    self.project.bpm = (new_bpm * 2.0).round() * 0.5;
+                    self.sync_engine();
+                    self.status_banner = format!("Tap Tempo locked: {:.1} BPM", self.project.bpm);
+                }
+            }
+
+            let mt_lbl = format!("🎹 Keys C{}", self.musical_typing_octave);
+            if pill_toggle(
+                ui,
+                &mt_lbl,
+                self.musical_typing_enabled,
+                Color32::from_rgb(186, 108, 226),
+            )
+            .clicked()
             {
                 self.musical_typing_enabled = !self.musical_typing_enabled;
             }
 
-            // Right-Aligned Command Palette + Chromatic Tuner Pill + LUFS + CPU Load
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(egui::RichText::new("⌘ Ctrl+K").size(11.0).color(ACCENT_FERRIC))
-                    .on_hover_text("Open Instant Command & FX Palette")
                     .clicked()
                 {
                     self.palette.toggle();
@@ -746,21 +1008,17 @@ impl FerricDawApp {
                         "DSP {:.1}% | {:.1} LUFS",
                         telem.cpu_load_percent, telem.master.momentary_lufs
                     ))
-                    .size(11.0)
+                    .size(10.5)
                     .monospace()
                     .color(TEXT_DIM),
                 );
 
-                if telem.tuner.active {
+                if self.engine.has_akai_lpk25() {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "🎯 {} {:+.0}ct",
-                            telem.tuner.note_label(),
-                            telem.tuner.cents
-                        ))
-                        .size(11.5)
-                        .monospace()
-                        .color(ACCENT_TEAL),
+                        egui::RichText::new("LPK25 ●")
+                            .size(10.5)
+                            .strong()
+                            .color(ACCENT_TEAL),
                     );
                 }
             });
@@ -781,7 +1039,7 @@ impl FerricDawApp {
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Faster-than-realtime deterministic render with full FX, Modulators & Swipe-Comp crossfades.",
+                        "Faster-than-realtime deterministic render with WSOLA Warp, Bezier Automation, Sidechains, PDC & Swipe-Comp crossfades.",
                     )
                     .size(11.0)
                     .color(TEXT_DIM),
@@ -913,21 +1171,182 @@ impl FerricDawApp {
             });
         self.bounce_modal.open = keep_open;
     }
+
+    fn process_browser_actions(&mut self, browser_actions: Vec<BrowserAction>) {
+        let mut need_sync = false;
+        for act in browser_actions {
+            match act {
+                BrowserAction::PreviewSample(buf) => {
+                    self.engine.send(EngineCommand::PreviewBuffer(buf));
+                }
+                BrowserAction::DropSampleOnTrack { name, buffer } => {
+                    self.snapshot_before("Drop Browser Sample");
+                    let tid = self
+                        .selected_track
+                        .unwrap_or_else(|| self.project.add_track("Sample Track"));
+                    let at = self.project.snap_grid.snap(
+                        self.engine.latest_telemetry.playhead_beat,
+                        self.project.time_signature,
+                    );
+                    let beats = self.project.seconds_to_beats(buffer.duration_secs()).max(1.0);
+                    if let Some(trk) = self.project.find_track_mut(tid) {
+                        let clip = TimelineClip::new_audio(name, at, beats, buffer);
+                        self.selected_clip = Some((tid, clip.id));
+                        trk.clips.push(clip);
+                    }
+                    need_sync = true;
+                }
+                BrowserAction::LoadIntoSampler { name, buffer } => {
+                    self.snapshot_before("Load Sample into Sampler");
+                    let tid = self
+                        .selected_track
+                        .unwrap_or_else(|| self.project.add_track("Sampler Track"));
+                    let slot = FxSlot::new_sampler_with_buffer(name.clone(), buffer);
+                    self.engine.force_reload_sampler(&slot);
+                    if let Some(trk) = self.project.find_track_mut(tid) {
+                        trk.fx_chain.retain(|f| f.kind != FxKind::SamplePlayer);
+                        trk.fx_chain.insert(0, slot);
+                    }
+                    self.selected_track = Some(tid);
+                    self.bottom_tab = BottomTab::FxAndModulators;
+                    self.status_banner =
+                        format!("Loaded '{}' into 16-Voice Chromatic/Slice Sampler!", name);
+                    need_sync = true;
+                }
+                BrowserAction::ApplyPreset(preset) => {
+                    if let Some(tid) = self.selected_track {
+                        self.snapshot_before("Load Factory Preset");
+                        if let Some(trk) = self.project.find_track_mut(tid) {
+                            let mut slot = FxSlot::new(preset.kind);
+                            slot.preset_name = preset.name.to_string();
+                            slot.wet_mix = preset.wet_mix;
+                            slot.params = preset.params.to_vec();
+                            trk.fx_chain.push(slot);
+                        }
+                        self.bottom_tab = BottomTab::FxAndModulators;
+                        need_sync = true;
+                    }
+                }
+                BrowserAction::LoadClapPlugin(plug) => {
+                    if let Some(tid) = self.selected_track {
+                        self.snapshot_before("Insert CLAP Plugin");
+                        if let Some(trk) = self.project.find_track_mut(tid) {
+                            trk.fx_chain.push(FxSlot::new_clap(
+                                plug.bundle_path,
+                                plug.id,
+                                plug.name.clone(),
+                            ));
+                        }
+                        self.status_banner = format!("Inserted CLAP plugin '{}'", plug.name);
+                        self.bottom_tab = BottomTab::FxAndModulators;
+                        need_sync = true;
+                    }
+                }
+                BrowserAction::ImportMidiFile(p) => {
+                    self.import_smf_midi_dialog(Some(p));
+                }
+                BrowserAction::SetupAkaiAndDs10Rig => {
+                    self.spawn_akai_and_ds10_rig();
+                }
+                BrowserAction::RescanMidi => {
+                    self.engine.rescan_midi_devices();
+                    self.status_banner = if self.engine.midi_port_names.is_empty() {
+                        "Rescanned USB MIDI: no controller detected yet.".into()
+                    } else {
+                        format!(
+                            "✓ Connected USB MIDI: {}",
+                            self.engine.midi_port_names.join(", ")
+                        )
+                    };
+                }
+                BrowserAction::SwitchAudioDevices { output, input } => {
+                    self.engine = EngineHandle::start_with_devices(
+                        &self.project,
+                        output.as_deref(),
+                        input.as_deref(),
+                    );
+                    self.status_banner = format!(
+                        "Switched Audio • Out: {} • In: {}",
+                        self.engine.audio_device_name, self.engine.audio_input_name
+                    );
+                }
+                BrowserAction::SetInputGainDb(db) => {
+                    self.engine.set_input_gain_db(db);
+                }
+                BrowserAction::KaossNote { note, is_note_on } => {
+                    self.engine.send(EngineCommand::LiveMidi {
+                        target_track: self.selected_track,
+                        note,
+                        velocity: if is_note_on { 110 } else { 0 },
+                        is_note_on,
+                    });
+                }
+                BrowserAction::ProjectMutated => {
+                    need_sync = true;
+                }
+            }
+        }
+        if need_sync {
+            self.sync_engine();
+        }
+    }
 }
 
 impl eframe::App for FerricDawApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.engine.poll_ui(&mut self.capture_inbox);
         self.handle_captured_takes();
+        self.handle_midi_learn_poll();
         self.handle_shortcuts_and_musical_typing(ctx);
 
-        // Request smooth 60 FPS repaint during active playback or live metering
+        // Handle Drag-and-Drop of external WAV/FLAC/MP3/OGG/MID files directly from Windows Explorer!
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        for path in dropped {
+            let is_mid = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| matches!(e.to_ascii_lowercase().as_str(), "mid" | "midi"))
+                .unwrap_or(false);
+            if is_mid {
+                self.import_smf_midi_dialog(Some(path));
+            } else if let Ok(buf) = import_audio_file(&path, self.engine.sample_rate) {
+                self.snapshot_before("Drop External Audio File");
+                let tid = self
+                    .selected_track
+                    .unwrap_or_else(|| self.project.add_track("Dropped Audio"));
+                let beats = self.project.seconds_to_beats(buf.duration_secs()).max(1.0);
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Dropped Audio")
+                    .to_string();
+                if let Some(trk) = self.project.find_track_mut(tid) {
+                    let clip = TimelineClip::new_audio(
+                        name,
+                        self.engine.latest_telemetry.playhead_beat,
+                        beats,
+                        buf,
+                    );
+                    self.selected_clip = Some((tid, clip.id));
+                    trk.clips.push(clip);
+                }
+                self.sync_engine();
+            }
+        }
+
         if self.engine.latest_telemetry.is_playing
             || self.engine.latest_telemetry.master.peak_l_db > -65.0
+            || self.engine.latest_telemetry.input_peak_db > -65.0
         {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            ctx.request_repaint_after(std::time::Duration::from_millis(45));
         }
 
         if let Some(cmd) = self.palette.show(ctx) {
@@ -948,7 +1367,7 @@ impl eframe::App for FerricDawApp {
                 self.render_top_transport_bar(ui);
             });
 
-        // 2. Thin Status Bar at very bottom
+        // 2. Status Bar
         egui::TopBottomPanel::bottom("ferric_status_footer")
             .exact_height(24.0)
             .frame(
@@ -961,30 +1380,76 @@ impl eframe::App for FerricDawApp {
                 ui.horizontal(|ui| {
                     if ui
                         .small_button(if self.show_bottom_dock {
-                            "▼ Hide Lower Studio Dock"
+                            "▼ Hide Lower Dock"
                         } else {
-                            "▲ Show Lower Studio Dock"
+                            "▲ Show Lower Dock"
                         })
                         .clicked()
                     {
                         self.show_bottom_dock = !self.show_bottom_dock;
                     }
                     ui.separator();
-                    ui.label(
-                        egui::RichText::new(&self.status_banner)
+                    if let Some(ref learn) = self.pending_midi_learn {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "🎯 MIDI LEARN ARMED for '{}' — twist any hardware CC knob (Esc to cancel)",
+                                learn.label
+                            ))
                             .size(11.0)
-                            .color(TEXT_DIM),
-                    );
+                            .strong()
+                            .color(ACCENT_AMBER),
+                        );
+                        if ui.small_button("Cancel").clicked() {
+                            self.pending_midi_learn = None;
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new(&self.status_banner)
+                                .size(11.0)
+                                .color(TEXT_DIM),
+                        );
+                    }
                 });
             });
 
-        // 3. Resizable Lower Studio Dock (Piano Roll / Audio Comp, FX + Modulators, Mixer, Routing Matrix)
+        // 3. Dockable Left Studio Browser (Hardware Rig / DS-10 / LPK25, Samples, Presets & CLAP)
+        if self.browser.visible {
+            egui::SidePanel::left("ferric_left_browser")
+                .resizable(true)
+                .default_width(248.0)
+                .width_range(215.0..=360.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(BG_PANEL)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .inner_margin(7.0),
+                )
+                .show(ctx, |ui| {
+                    let mut b_actions = Vec::new();
+                    let telem = self.engine.latest_telemetry;
+                    let has_lpk = self.engine.has_akai_lpk25();
+                    self.browser.ui(
+                        ui,
+                        self.engine.sample_rate,
+                        self.project.bpm,
+                        &self.engine.midi_port_names,
+                        has_lpk,
+                        &self.engine.audio_device_name,
+                        &self.engine.audio_input_name,
+                        &telem,
+                        &mut b_actions,
+                    );
+                    self.process_browser_actions(b_actions);
+                });
+        }
+
+        // 4. Lower Studio Dock (Piano Roll + Warp, FX + Sidechain + Learn, DS-10 KAOSS Pad, Mixer, Routing)
         if self.show_bottom_dock {
             egui::TopBottomPanel::bottom("ferric_lower_dock")
                 .resizable(true)
-                .default_height(265.0)
-                .min_height(175.0)
-                .max_height(480.0)
+                .default_height(275.0)
+                .min_height(180.0)
+                .max_height(490.0)
                 .frame(
                     egui::Frame::new()
                         .fill(BG_PANEL)
@@ -994,8 +1459,9 @@ impl eframe::App for FerricDawApp {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         for (tab, label) in [
-                            (BottomTab::EditorAndComp, "🎹 Clip Editor / Swipe Comp"),
-                            (BottomTab::FxAndModulators, "🎛 FX Chain & Modulators"),
+                            (BottomTab::EditorAndComp, "🎹 MIDI / Warp / Comp"),
+                            (BottomTab::FxAndModulators, "🎛 FX, Sidechain & Mods"),
+                            (BottomTab::KaossPad, "🎮 DS-10 KAOSS X-Y Pad"),
                             (BottomTab::MixingConsole, "🎚 Mixing Console"),
                             (BottomTab::RoutingMatrix, "🔀 Routing Matrix"),
                         ] {
@@ -1009,9 +1475,13 @@ impl eframe::App for FerricDawApp {
                             if let Some(trk) = self.project.find_track(tid) {
                                 ui.separator();
                                 ui.label(
-                                    egui::RichText::new(format!("Selected: {}", trk.name))
-                                        .size(11.5)
-                                        .color(TEXT_MAIN),
+                                    egui::RichText::new(format!(
+                                        "Track: {}{}",
+                                        trk.name,
+                                        if trk.frozen { " [❄ FROZEN]" } else { "" }
+                                    ))
+                                    .size(11.5)
+                                    .color(TEXT_MAIN),
                                 );
                             }
                         }
@@ -1019,6 +1489,7 @@ impl eframe::App for FerricDawApp {
                     ui.separator();
 
                     let mut dock_actions = Vec::new();
+                    let mut kaoss_actions = Vec::new();
                     let telem = self.engine.latest_telemetry;
                     match self.bottom_tab {
                         BottomTab::EditorAndComp => {
@@ -1040,6 +1511,14 @@ impl eframe::App for FerricDawApp {
                                 &mut dock_actions,
                             );
                         }
+                        BottomTab::KaossPad => {
+                            self.kaoss_pad.ui(
+                                ui,
+                                &mut self.project,
+                                self.selected_track,
+                                &mut kaoss_actions,
+                            );
+                        }
                         BottomTab::MixingConsole => {
                             render_mixer_console(
                                 ui,
@@ -1053,6 +1532,10 @@ impl eframe::App for FerricDawApp {
                         BottomTab::RoutingMatrix => {
                             render_routing_matrix(ui, &mut self.project, &mut dock_actions);
                         }
+                    }
+
+                    if !kaoss_actions.is_empty() {
+                        self.process_browser_actions(kaoss_actions);
                     }
 
                     let mut need_sync = false;
@@ -1073,6 +1556,25 @@ impl eframe::App for FerricDawApp {
                                     is_note_on,
                                 });
                             }
+                            DockAction::ArmMidiLearn {
+                                track_id,
+                                target,
+                                label,
+                            } => {
+                                if let Some(trk) = self.project.find_track_mut(track_id) {
+                                    trk.ensure_automation_lane(target.clone());
+                                }
+                                self.pending_midi_learn = Some(PendingMidiLearn {
+                                    track_id,
+                                    target,
+                                    label,
+                                });
+                                need_sync = true;
+                            }
+                            DockAction::ReloadSamplerFx(fx_slot) => {
+                                self.engine.force_reload_sampler(&fx_slot);
+                                need_sync = true;
+                            }
                         }
                     }
                     if need_sync {
@@ -1081,7 +1583,7 @@ impl eframe::App for FerricDawApp {
                 });
         }
 
-        // 4. Central Hybrid Session Clip Launcher + Linear Multitrack Arrangement
+        // 5. Central Hybrid Session Clip Launcher + Linear Multitrack Arrangement + Bezier Automation
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BG_PANEL).inner_margin(6.0))
             .show(ctx, |ui| {
@@ -1148,7 +1650,10 @@ impl eframe::App for FerricDawApp {
                             }
                         }
                         ArrangementAction::ImportAudioToTrack(tid) => {
-                            self.import_wav_to_track(tid);
+                            self.import_audio_to_track(tid);
+                        }
+                        ArrangementAction::ToggleFreezeTrack(tid) => {
+                            self.toggle_freeze_track(tid);
                         }
                         ArrangementAction::AddTrack => {
                             self.snapshot_before("Add Track");
@@ -1176,9 +1681,10 @@ fn main() -> eframe::Result<()> {
     env_logger::init();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FerricDAW — Open-Source Rust Hybrid Digital Audio Workstation")
-            .with_inner_size([1440.0, 860.0])
-            .with_min_inner_size([980.0, 620.0]),
+            .with_title("FerricDAW v0.2 — Full-Fledged Open-Source Rust Hybrid DAW")
+            .with_inner_size([1520.0, 900.0])
+            .with_min_inner_size([1024.0, 640.0])
+            .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(

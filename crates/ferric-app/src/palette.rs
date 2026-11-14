@@ -7,8 +7,12 @@ pub enum PaletteCommand {
     TogglePlay,
     ToggleRecord,
     CaptureRetroactive,
+    SetupAkaiDs10Rig,
+    ToggleFreezeSelectedTrack,
     AddUniversalTrack,
     AddSynthTrack,
+    AddSamplerTrack,
+    AddVocalPitchTrack,
     AddDrumTrack,
     AddGuitarAmpTrack,
     InsertFxOnSelected(FxKind),
@@ -180,10 +184,34 @@ impl CommandPalette {
     fn build_catalog() -> Vec<ActionItem> {
         let mut items = vec![
             ActionItem {
+                title: "Spawn Akai LPK25 + Nintendo DS KORG DS-10 Hybrid Rig",
+                shortcut: "",
+                category: "HARDWARE",
+                cmd: PaletteCommand::SetupAkaiDs10Rig,
+            },
+            ActionItem {
+                title: "Freeze / Unfreeze Selected Track (Zero-CPU 32-bit Stem)",
+                shortcut: "Ctrl+F",
+                category: "CPU",
+                cmd: PaletteCommand::ToggleFreezeSelectedTrack,
+            },
+            ActionItem {
                 title: "Capture Retroactive Audio/MIDI Buffer (Last 15s)",
                 shortcut: "Shift+R",
                 category: "CAPTURE",
                 cmd: PaletteCommand::CaptureRetroactive,
+            },
+            ActionItem {
+                title: "Add Vocal Auto-Pitch & Scale Studio Track",
+                shortcut: "",
+                category: "TRACK",
+                cmd: PaletteCommand::AddVocalPitchTrack,
+            },
+            ActionItem {
+                title: "Add Chromatic & Transient-Slice Sampler Track",
+                shortcut: "",
+                category: "TRACK",
+                cmd: PaletteCommand::AddSamplerTrack,
             },
             ActionItem {
                 title: "Add Guitar Recording Track (Tuner + Tube Amp & 2x12 Cab)",
@@ -284,12 +312,14 @@ impl CommandPalette {
         ];
 
         for &kind in FxKind::ALL {
-            items.push(ActionItem {
-                title: kind.display_name(),
-                shortcut: "",
-                category: "INSERT FX",
-                cmd: PaletteCommand::InsertFxOnSelected(kind),
-            });
+            if kind != FxKind::ExternalClap {
+                items.push(ActionItem {
+                    title: kind.display_name(),
+                    shortcut: "",
+                    category: "INSERT FX",
+                    cmd: PaletteCommand::InsertFxOnSelected(kind),
+                });
+            }
         }
         items
     }

@@ -34,6 +34,43 @@ impl MidiNote {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MidiCcTarget {
+    PitchBend,
+    ModWheel,
+    Expression,
+    FilterBrightness,
+    SustainPedal,
+}
+
+impl MidiCcTarget {
+    pub const ALL: &'static [MidiCcTarget] = &[
+        MidiCcTarget::PitchBend,
+        MidiCcTarget::ModWheel,
+        MidiCcTarget::Expression,
+        MidiCcTarget::FilterBrightness,
+        MidiCcTarget::SustainPedal,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MidiCcTarget::PitchBend => "Pitch Bend",
+            MidiCcTarget::ModWheel => "CC1 Mod Wheel",
+            MidiCcTarget::Expression => "CC11 Expression",
+            MidiCcTarget::FilterBrightness => "CC74 Brightness",
+            MidiCcTarget::SustainPedal => "CC64 Sustain",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MidiCcPoint {
+    pub beat: f64,
+    pub target: MidiCcTarget,
+    /// Normalized `0.0 ..= 1.0` (`0.5` = center for PitchBend).
+    pub value: f32,
+}
+
 /// Shared, cheaply-cloneable planar stereo audio buffer so Undo/Redo snapshots
 /// and Real-Time audio engine clones never copy megabytes of PCM data!
 #[derive(Debug, Clone)]
@@ -41,7 +78,6 @@ pub struct AudioBuffer {
     pub sample_rate: u32,
     pub left: Arc<Vec<f32>>,
     pub right: Arc<Vec<f32>>,
-    /// Precomputed min/max overview peaks (256 frames/bucket) for instant 120 FPS waveform drawing.
     pub peaks: Arc<Vec<(f32, f32)>>,
     pub source_path: Option<PathBuf>,
 }
@@ -50,14 +86,13 @@ pub struct AudioBuffer {
 struct SerializedAudioMeta {
     sample_rate: u32,
     source_path: Option<PathBuf>,
-    /// Inline compact PCM only when there is no external file or for short generated clips (< 6s).
     inline_left: Option<Vec<f32>>,
     inline_right: Option<Vec<f32>>,
 }
 
 impl Serialize for AudioBuffer {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let keep_inline = self.source_path.is_none() && self.left.len() <= 48_000 * 8;
+        let keep_inline = self.source_path.is_none() && self.left.len() <= 48_000 * 10;
         let meta = SerializedAudioMeta {
             sample_rate: self.sample_rate,
             source_path: self.source_path.clone(),
@@ -150,7 +185,6 @@ impl AudioBuffer {
         }
     }
 
-    /// Linear-interpolated stereo sample fetch for pitch-shifted / varispeed clip playback.
     #[inline]
     pub fn sample_interpolated(&self, pos_frames: f64) -> (f32, f32) {
         let len = self.len_frames();
@@ -166,6 +200,40 @@ impl AudioBuffer {
         let l = self.left[idx0] + (self.left[idx1] - self.left[idx0]) * frac;
         let r = self.right[idx0] + (self.right[idx1] - self.right[idx0]) * frac;
         (l, r)
+    }
+
+    /// Energy-flux onset / transient detector for 1-click Drum Slicing & Warp Marker creation!
+    pub fn detect_transients(&self, max_slices: usize) -> Vec<usize> {
+        let len = self.len_frames();
+        if len == 0 || max_slices == 0 {
+            return Vec::new();
+        }
+        let hop = (self.sample_rate as usize / 100).max(128); // ~10ms hop
+        let min_gap = (self.sample_rate as usize / 8).max(hop * 4); // >= 125ms between slices
+
+        let mut slices = vec![0usize];
+        let mut slow_env = 0.001_f32;
+        let mut last_onset = 0usize;
+
+        let mut pos = hop;
+        while pos + hop < len && slices.len() < max_slices {
+            let mut rms = 0.0_f32;
+            for i in pos..(pos + hop) {
+                let m = 0.5 * (self.left[i] + self.right[i]);
+                rms += m * m;
+            }
+            rms = (rms / hop as f32).sqrt();
+            let ratio = rms / slow_env.max(0.003);
+            if rms > 0.025 && ratio > 2.35 && pos.saturating_sub(last_onset) >= min_gap {
+                slices.push(pos);
+                last_onset = pos;
+                slow_env = rms;
+            } else {
+                slow_env = slow_env * 0.88 + rms * 0.12;
+            }
+            pos += hop;
+        }
+        slices
     }
 
     pub fn normalized(&self, target_peak_db: f32) -> Self {
@@ -196,15 +264,21 @@ impl AudioBuffer {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TakeContent {
-    Midi { notes: Vec<MidiNote> },
-    Audio { buffer: AudioBuffer },
+    Midi {
+        notes: Vec<MidiNote>,
+        #[serde(default)]
+        cc_points: Vec<MidiCcPoint>,
+    },
+    Audio {
+        buffer: AudioBuffer,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Take {
     pub id: TakeId,
     pub name: String,
-    pub rating: u8, // 0..=5 stars for quick vocal/guitar session grading
+    pub rating: u8,
     pub content: TakeContent,
 }
 
@@ -214,7 +288,10 @@ impl Take {
             id: Uuid::new_v4(),
             name: name.into(),
             rating: 0,
-            content: TakeContent::Midi { notes },
+            content: TakeContent::Midi {
+                notes,
+                cc_points: Vec::new(),
+            },
         }
     }
 
@@ -228,8 +305,6 @@ impl Take {
     }
 }
 
-/// REAPER-style Swipe-Comping segment: maps a clip-local beat interval `[start_beat, end_beat)`
-/// to a specific `take_index`, automatically crossfaded at boundaries by the audio engine!
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CompSegment {
     pub start_beat: f64,
@@ -258,7 +333,33 @@ impl FadeShape {
     }
 }
 
-/// A universal non-destructive timeline item ("Media Item" in REAPER).
+/// Audio time-stretching & pitch-warping algorithm per clip!
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TimeStretchMode {
+    /// Independent Tempo & Pitch via Dual-Window WSOLA (no chipmunk effect!).
+    #[default]
+    ElastiqueWsola,
+    /// Analog Tape Varispeed (pitch and playback speed coupled).
+    TapeVarispeed,
+}
+
+impl TimeStretchMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            TimeStretchMode::ElastiqueWsola => "WSOLA Warp (Keep Pitch)",
+            TimeStretchMode::TapeVarispeed => "Tape Varispeed",
+        }
+    }
+}
+
+/// Non-destructive REAPER/Ableton Stretch/Warp Marker anchoring a clip-local beat to a source audio second!
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StretchMarker {
+    pub id: Uuid,
+    pub clip_beat: f64,
+    pub source_sec: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineClip {
     pub id: ClipId,
@@ -266,24 +367,31 @@ pub struct TimelineClip {
     pub color_override: Option<[u8; 3]>,
     pub start_beat: f64,
     pub length_beats: f64,
-    /// Slip-edit offset into the underlying take content (in beats).
     pub slip_offset_beats: f64,
     pub loop_enabled: bool,
     pub loop_length_beats: f64,
     pub muted: bool,
     pub gain_db: f32,
     pub pitch_semitones: f32,
+    /// Playback speed / stretch ratio (`1.0` = original, `0.5` = half-time, `2.0` = double-time).
+    #[serde(default = "default_one_f32")]
+    pub stretch_rate: f32,
+    #[serde(default)]
+    pub stretch_mode: TimeStretchMode,
+    #[serde(default)]
+    pub warp_markers: Vec<StretchMarker>,
     pub fade_in_beats: f64,
     pub fade_out_beats: f64,
     pub fade_shape: FadeShape,
-    /// Multi-take container (Take 1, Take 2, Take 3...).
     pub takes: Vec<Take>,
     pub active_take: usize,
-    /// Optional swipe-comping map; when non-empty, overrides `active_take` per beat region!
     pub comp_segments: Vec<CompSegment>,
     pub show_take_lanes: bool,
-    /// REAPER signature feature: Per-Clip FX chain!
     pub clip_fx: Vec<FxSlot>,
+}
+
+fn default_one_f32() -> f32 {
+    1.0
 }
 
 impl TimelineClip {
@@ -296,7 +404,7 @@ impl TimelineClip {
         let name = name.into();
         Self {
             id: Uuid::new_v4(),
-            name: name.clone(),
+            name,
             color_override: None,
             start_beat,
             length_beats: length_beats.max(0.25),
@@ -306,6 +414,9 @@ impl TimelineClip {
             muted: false,
             gain_db: 0.0,
             pitch_semitones: 0.0,
+            stretch_rate: 1.0,
+            stretch_mode: TimeStretchMode::ElastiqueWsola,
+            warp_markers: Vec::new(),
             fade_in_beats: 0.0,
             fade_out_beats: 0.0,
             fade_shape: FadeShape::EqualPower,
@@ -336,6 +447,9 @@ impl TimelineClip {
             muted: false,
             gain_db: 0.0,
             pitch_semitones: 0.0,
+            stretch_rate: 1.0,
+            stretch_mode: TimeStretchMode::ElastiqueWsola,
+            warp_markers: Vec::new(),
             fade_in_beats: 0.04,
             fade_out_beats: 0.04,
             fade_shape: FadeShape::EqualPower,
@@ -358,7 +472,6 @@ impl TimelineClip {
             .unwrap_or(false)
     }
 
-    /// Resolves which `take_index` is active at `local_beat` inside the clip.
     #[inline]
     pub fn take_at_local_beat(&self, local_beat: f64) -> usize {
         if !self.comp_segments.is_empty() {
@@ -371,7 +484,6 @@ impl TimelineClip {
         self.active_take.min(self.takes.len().saturating_sub(1))
     }
 
-    /// Evaluates clip gain * fade-in * fade-out envelope at `local_beat` (`0..length_beats`).
     #[inline]
     pub fn gain_envelope_at(&self, local_beat: f64) -> f32 {
         if local_beat < 0.0 || local_beat > self.length_beats {
@@ -388,14 +500,13 @@ impl TimelineClip {
         env
     }
 
-    /// Maps a timeline beat inside this clip to the wrapped internal source beat.
     #[inline]
     pub fn content_beat(&self, timeline_beat: f64) -> Option<(f64, f64)> {
         let local = timeline_beat - self.start_beat;
         if local < 0.0 || local >= self.length_beats {
             return None;
         }
-        let raw = local + self.slip_offset_beats;
+        let raw = local * (self.stretch_rate.clamp(0.125, 8.0) as f64) + self.slip_offset_beats;
         let inner = if self.loop_enabled && self.loop_length_beats > 0.03125 {
             raw.rem_euclid(self.loop_length_beats)
         } else {
@@ -404,8 +515,59 @@ impl TimelineClip {
         Some((local, inner))
     }
 
-    /// REAPER-style Swipe Comping: assigns `[start_local, end_local]` to `take_index`,
-    /// cleanly splitting/merging existing comp segments.
+    /// Maps a clip's `inner_beat` to exact `source_seconds` throughpiecewise-linear `warp_markers`!
+    #[inline]
+    pub fn map_beat_to_source_seconds(&self, inner_beat: f64, spb: f64) -> f64 {
+        if self.warp_markers.len() < 2 {
+            return inner_beat * spb;
+        }
+        if inner_beat <= self.warp_markers[0].clip_beat {
+            let delta_b = inner_beat - self.warp_markers[0].clip_beat;
+            return (self.warp_markers[0].source_sec + delta_b * spb).max(0.0);
+        }
+        for pair in self.warp_markers.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            if inner_beat >= a.clip_beat && inner_beat <= b.clip_beat {
+                let db = (b.clip_beat - a.clip_beat).max(1e-6);
+                let t = (inner_beat - a.clip_beat) / db;
+                return a.source_sec + t * (b.source_sec - a.source_sec);
+            }
+        }
+        let last = self.warp_markers.last().unwrap();
+        last.source_sec + (inner_beat - last.clip_beat) * spb
+    }
+
+    /// Auto-populates Warp/Stretch Markers from transient detections on the active audio take!
+    pub fn generate_transient_warp_markers(&mut self, bpm: f64) {
+        let spb = 60.0 / bpm.max(20.0);
+        let idx = self.active_take.min(self.takes.len().saturating_sub(1));
+        let Some(TakeContent::Audio { buffer }) = self.takes.get(idx).map(|t| &t.content) else {
+            return;
+        };
+        let slices = buffer.detect_transients(16);
+        let mut markers = Vec::with_capacity(slices.len() + 1);
+        for frame in slices {
+            let sec = frame as f64 / buffer.sample_rate.max(1) as f64;
+            let beat = sec / spb;
+            if beat <= self.length_beats {
+                markers.push(StretchMarker {
+                    id: Uuid::new_v4(),
+                    clip_beat: beat,
+                    source_sec: sec,
+                });
+            }
+        }
+        let end_sec = buffer.duration_secs();
+        markers.push(StretchMarker {
+            id: Uuid::new_v4(),
+            clip_beat: self.length_beats,
+            source_sec: end_sec,
+        });
+        markers.sort_by(|a, b| a.clip_beat.partial_cmp(&b.clip_beat).unwrap());
+        self.warp_markers = markers;
+    }
+
     pub fn set_comp_region(&mut self, start_local: f64, end_local: f64, take_index: usize) {
         if self.takes.is_empty() || end_local <= start_local {
             return;
@@ -453,7 +615,6 @@ impl TimelineClip {
         });
         next.sort_by(|a, b| a.start_beat.partial_cmp(&b.start_beat).unwrap());
 
-        // Coalesce adjacent segments with identical take_index
         let mut merged: Vec<CompSegment> = Vec::with_capacity(next.len());
         for seg in next {
             if let Some(last) = merged.last_mut() {
@@ -469,7 +630,6 @@ impl TimelineClip {
     }
 }
 
-/// Ableton / Bitwig Hybrid Session Clip Launcher cell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSlot {
     pub id: Uuid,
@@ -486,7 +646,10 @@ impl SessionSlot {
             name: name.into(),
             length_beats: length_beats.max(0.25),
             gain_db: 0.0,
-            content: TakeContent::Midi { notes },
+            content: TakeContent::Midi {
+                notes,
+                cc_points: Vec::new(),
+            },
         }
     }
 
@@ -502,13 +665,20 @@ impl SessionSlot {
 
     pub fn to_timeline_clip(&self, start_beat: f64, duration_beats: f64) -> TimelineClip {
         match &self.content {
-            TakeContent::Midi { notes } => {
+            TakeContent::Midi { notes, cc_points } => {
                 let mut c = TimelineClip::new_midi(
                     self.name.clone(),
                     start_beat,
                     duration_beats,
                     notes.clone(),
                 );
+                if let Some(Take {
+                    content: TakeContent::Midi { cc_points: dst, .. },
+                    ..
+                }) = c.takes.first_mut()
+                {
+                    *dst = cc_points.clone();
+                }
                 c.loop_enabled = true;
                 c.loop_length_beats = self.length_beats;
                 c.gain_db = self.gain_db;

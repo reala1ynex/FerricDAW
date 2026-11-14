@@ -1,4 +1,4 @@
-use crate::clip::{ClipId, SessionSlot, TimelineClip};
+use crate::clip::{AudioBuffer, ClipId, SessionSlot, TimelineClip};
 use crate::fx::{FxId, FxSlot, ModulatorSlot};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -7,11 +7,9 @@ pub type TrackId = Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputSource {
-    /// Hardware stereo or mono audio input + all MIDI inputs (REAPER effortless default).
     AudioAndMidi { stereo_pair: u8 },
     AudioMono { channel: u8 },
     MidiAll,
-    /// Record the post-FX stereo output of this track / submix directly!
     ResampleTrackOutput,
 }
 
@@ -44,7 +42,6 @@ impl SendTap {
     }
 }
 
-/// Arbitrary track-to-track routing (aux sends, sidechains, parallel compression buses).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackSend {
     pub id: Uuid,
@@ -68,17 +65,64 @@ impl TrackSend {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AutomationMode {
+    Off,
+    #[default]
+    Read,
+    Touch,
+    Latch,
+    Write,
+}
+
+impl AutomationMode {
+    pub const ALL: &'static [AutomationMode] = &[
+        AutomationMode::Off,
+        AutomationMode::Read,
+        AutomationMode::Touch,
+        AutomationMode::Latch,
+        AutomationMode::Write,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AutomationMode::Off => "Trim/Off",
+            AutomationMode::Read => "Read",
+            AutomationMode::Touch => "Touch",
+            AutomationMode::Latch => "Latch",
+            AutomationMode::Write => "Write",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AutomationPoint {
+    pub id: Uuid,
     pub beat: f64,
     pub normalized_value: f32, // 0.0 ..= 1.0
+    /// Bezier curve tension (`-1.0` = fast/log, `0.0` = linear, `+1.0` = slow/exp).
+    #[serde(default)]
+    pub tension: f32,
+}
+
+impl AutomationPoint {
+    pub fn new(beat: f64, normalized_value: f32, tension: f32) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            beat: beat.max(0.0),
+            normalized_value: normalized_value.clamp(0.0, 1.0),
+            tension: tension.clamp(-0.95, 0.95),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AutomationTarget {
     Volume,
     Pan,
+    StereoWidth,
     FxParam { fx_id: FxId, param_index: usize },
+    FxWet { fx_id: FxId },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +135,18 @@ pub struct AutomationLane {
 }
 
 impl AutomationLane {
+    pub fn new(target: AutomationTarget) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            target,
+            visible: true,
+            enabled: true,
+            points: Vec::new(),
+        }
+    }
+
+    /// Evaluates curved Bezier/power-law automation envelope at `beat`.
+    #[inline]
     pub fn eval_at(&self, beat: f64) -> Option<f32> {
         if !self.enabled || self.points.is_empty() {
             return None;
@@ -107,12 +163,50 @@ impl AutomationLane {
             let b = &pair[1];
             if beat >= a.beat && beat <= b.beat {
                 let span = (b.beat - a.beat).max(1e-6);
-                let t = ((beat - a.beat) / span) as f32;
-                return Some(a.normalized_value + (b.normalized_value - a.normalized_value) * t);
+                let lin_t = ((beat - a.beat) / span).clamp(0.0, 1.0) as f32;
+                let shaped_t = apply_curve_tension(lin_t, a.tension);
+                return Some(
+                    a.normalized_value + (b.normalized_value - a.normalized_value) * shaped_t,
+                );
             }
         }
         None
     }
+
+    pub fn upsert_point(&mut self, beat: f64, norm_val: f32) -> Uuid {
+        let norm_val = norm_val.clamp(0.0, 1.0);
+        if let Some(existing) = self
+            .points
+            .iter_mut()
+            .find(|p| (p.beat - beat).abs() < 0.08)
+        {
+            existing.normalized_value = norm_val;
+            existing.beat = beat.max(0.0);
+            let id = existing.id;
+            self.sort_points();
+            return id;
+        }
+        let pt = AutomationPoint::new(beat, norm_val, 0.0);
+        let id = pt.id;
+        self.points.push(pt);
+        self.sort_points();
+        id
+    }
+
+    pub fn sort_points(&mut self) {
+        self.points
+            .sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
+
+#[inline]
+pub fn apply_curve_tension(t: f32, tension: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if tension.abs() < 0.01 {
+        return t;
+    }
+    let exp = 2.0_f32.powf(tension * 2.4);
+    t.powf(exp)
 }
 
 pub const STUDIO_TRACK_COLORS: &[[u8; 3]] = &[
@@ -126,20 +220,17 @@ pub const STUDIO_TRACK_COLORS: &[[u8; 3]] = &[
     [92, 176, 232],  // Sky Bus
 ];
 
-/// REAPER's signature Universal Track: holds Audio clips, MIDI clips, Folder submix children,
-/// Instrument & Audio FX inserts, Modulators, Session Clip slots, and arbitrary Sends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
     pub name: String,
     pub color: [u8; 3],
-    /// When `Some(folder_id)`, this track's master output feeds its parent folder track!
     pub parent_folder_id: Option<TrackId>,
     pub folder_collapsed: bool,
     pub send_to_master: bool,
     pub gain_db: f32,
-    pub pan: f32, // -1.0 (L) ..= +1.0 (R)
-    pub stereo_width: f32, // 0.0 (Mono) ..= 2.0 (Wide)
+    pub pan: f32,
+    pub stereo_width: f32,
     pub mute: bool,
     pub solo: bool,
     pub record_arm: bool,
@@ -152,7 +243,16 @@ pub struct Track {
     pub clips: Vec<TimelineClip>,
     pub session_slots: Vec<Option<SessionSlot>>,
     pub active_session_slot: Option<usize>,
+    #[serde(default)]
+    pub automation_mode: AutomationMode,
     pub automation_lanes: Vec<AutomationLane>,
+    #[serde(default)]
+    pub show_automation: bool,
+    /// 1-Click Track Freeze: streams pre-rendered 32-bit stem and bypasses heavy DSP!
+    #[serde(default)]
+    pub frozen: bool,
+    #[serde(skip)]
+    pub frozen_buffer: Option<AudioBuffer>,
     pub height_px: f32,
 }
 
@@ -181,7 +281,11 @@ impl Track {
             clips: Vec::new(),
             session_slots: vec![None; num_scenes.max(4)],
             active_session_slot: None,
+            automation_mode: AutomationMode::Read,
             automation_lanes: Vec::new(),
+            show_automation: false,
+            frozen: false,
+            frozen_buffer: None,
             height_px: 84.0,
         }
     }
@@ -198,5 +302,45 @@ impl Track {
         if self.session_slots.len() < scenes {
             self.session_slots.resize_with(scenes, || None);
         }
+    }
+
+    pub fn ensure_automation_lane(&mut self, target: AutomationTarget) -> usize {
+        if let Some(idx) = self
+            .automation_lanes
+            .iter()
+            .position(|l| l.target == target)
+        {
+            self.automation_lanes[idx].visible = true;
+            self.show_automation = true;
+            return idx;
+        }
+        let mut lane = AutomationLane::new(target.clone());
+        let init_norm = match target {
+            AutomationTarget::Volume => ((self.gain_db + 60.0) / 72.0).clamp(0.0, 1.0),
+            AutomationTarget::Pan => ((self.pan + 1.0) * 0.5).clamp(0.0, 1.0),
+            AutomationTarget::StereoWidth => (self.stereo_width * 0.5).clamp(0.0, 1.0),
+            AutomationTarget::FxWet { fx_id } => self
+                .fx_chain
+                .iter()
+                .find(|f| f.id == fx_id)
+                .map(|f| f.wet_mix)
+                .unwrap_or(1.0),
+            AutomationTarget::FxParam { fx_id, param_index } => self
+                .fx_chain
+                .iter()
+                .find(|f| f.id == fx_id)
+                .and_then(|f| {
+                    f.kind
+                        .param_specs()
+                        .get(param_index)
+                        .map(|sp| sp.normalize(f.param(param_index)))
+                })
+                .unwrap_or(0.5),
+        };
+        lane.points
+            .push(crate::track::AutomationPoint::new(0.0, init_norm, 0.0));
+        self.automation_lanes.push(lane);
+        self.show_automation = true;
+        self.automation_lanes.len() - 1
     }
 }

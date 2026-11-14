@@ -26,6 +26,16 @@ impl NoiseGateProcessor {
     }
 
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], params: &[f32]) {
+        self.process_with_sidechain(left, right, params, None);
+    }
+
+    pub fn process_with_sidechain(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        sidechain_key: Option<(&[f32], &[f32])>,
+    ) {
         let open_db = params.first().copied().unwrap_or(-42.0);
         let hyst_db = params.get(1).copied().unwrap_or(6.0);
         let attack_ms = params.get(2).copied().unwrap_or(1.5);
@@ -47,7 +57,15 @@ impl NoiseGateProcessor {
 
         let frames = left.len().min(right.len());
         for i in 0..frames {
-            let peak = left[i].abs().max(right[i].abs());
+            let peak = if let Some((sc_l, sc_r)) = sidechain_key {
+                sc_l.get(i)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .abs()
+                    .max(sc_r.get(i).copied().unwrap_or(0.0).abs())
+            } else {
+                left[i].abs().max(right[i].abs())
+            };
             self.env = if peak > self.env {
                 peak
             } else {
@@ -180,6 +198,16 @@ impl CompressorProcessor {
     }
 
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], params: &[f32]) {
+        self.process_with_sidechain(left, right, params, None);
+    }
+
+    pub fn process_with_sidechain(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        sidechain_key: Option<(&[f32], &[f32])>,
+    ) {
         let thresh_db = params.first().copied().unwrap_or(-18.0);
         let ratio = params.get(1).copied().unwrap_or(4.0).max(1.0);
         let attack_ms = params.get(2).copied().unwrap_or(8.0);
@@ -194,7 +222,16 @@ impl CompressorProcessor {
 
         let frames = left.len().min(right.len());
         for i in 0..frames {
-            let det = left[i].abs().max(right[i].abs()).max(1e-6);
+            let det = if let Some((sc_l, sc_r)) = sidechain_key {
+                sc_l.get(i)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .abs()
+                    .max(sc_r.get(i).copied().unwrap_or(0.0).abs())
+                    .max(1e-6)
+            } else {
+                left[i].abs().max(right[i].abs()).max(1e-6)
+            };
             let in_db = 20.0 * det.log10();
             let over = in_db - thresh_db;
 

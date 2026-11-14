@@ -4,10 +4,11 @@ use crate::theme::{
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_dsp::{ParametricEqProcessor, SPECTRUM_BANDS};
-use ferric_engine::EngineTelemetry;
+use ferric_engine::{import_audio_file, EngineTelemetry};
 use ferric_model::{
-    ClipId, FadeShape, FxKind, FxSlot, LfoShape, MidiNote, ModRouting, ModTarget, ModulatorKind,
-    ModulatorSlot, Project, TakeContent, TrackId,
+    export_smf_clip, AutomationTarget, ChordStamp, ClipId, FxKind, FxSlot, LfoShape, MidiCcPoint,
+    MidiCcTarget, MidiNote, ModRouting, ModTarget, ModulatorKind, ModulatorSlot, MusicalScale,
+    Project, TakeContent, TimeStretchMode, TrackId, NOTE_PITCH_CLASSES,
 };
 use uuid::Uuid;
 
@@ -18,6 +19,12 @@ pub enum DockAction {
         note: u8,
         is_note_on: bool,
     },
+    ArmMidiLearn {
+        track_id: TrackId,
+        target: AutomationTarget,
+        label: String,
+    },
+    ReloadSamplerFx(FxSlot),
 }
 
 pub struct PianoRollState {
@@ -25,7 +32,11 @@ pub struct PianoRollState {
     pub lowest_pitch: u8,
     pub visible_semitones: u8,
     pub default_note_len: f64,
-    drag_note: Option<(Uuid, bool)>, // (note_id, resize_right)
+    pub scale_lock: bool,
+    pub chord_stamp: ChordStamp,
+    pub active_cc_lane: Option<MidiCcTarget>,
+    drag_note: Option<(Uuid, bool)>,
+    drag_warp: Option<Uuid>,
     auditioning_pitch: Option<u8>,
 }
 
@@ -33,10 +44,14 @@ impl Default for PianoRollState {
     fn default() -> Self {
         Self {
             zoom_x: 56.0,
-            lowest_pitch: 36, // C2
+            lowest_pitch: 36,
             visible_semitones: 36,
             default_note_len: 0.5,
+            scale_lock: true,
+            chord_stamp: ChordStamp::SingleNote,
+            active_cc_lane: None,
             drag_note: None,
+            drag_warp: None,
             auditioning_pitch: None,
         }
     }
@@ -55,7 +70,7 @@ impl PianoRollState {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Select or double-click any Clip on the timeline to edit MIDI Notes, Audio Waveforms, Fades & Per-Clip FX.",
+                        "Select or double-click any Clip on the timeline to edit MIDI Notes, Scales/Chords, CC Lanes, WSOLA Warp Markers & Per-Clip FX.",
                     )
                     .color(TEXT_DIM),
                 );
@@ -72,7 +87,7 @@ impl PianoRollState {
         if is_midi {
             self.render_midi_editor(ui, project, track_id, clip_id, telem, actions);
         } else {
-            Self::render_audio_clip_inspector(ui, project, track_id, clip_id, actions);
+            self.render_audio_clip_inspector(ui, project, track_id, clip_id, actions);
         }
     }
 
@@ -90,50 +105,108 @@ impl PianoRollState {
             .map(|t| track_color32(t.color))
             .unwrap_or(ACCENT_FERRIC);
 
-        // Top toolbar: Clip Name, Quantize, Octave Scroll, Note Length, Per-Clip Gain/Transpose
+        let root_pc = project.root_pitch_class;
+        let scale = project.musical_scale;
+
+        // Top Pro MIDI Toolbar: Scale Lock, Chord Stamp, Quantize, Humanize, CC Lane, SMF Export!
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
             if let Some(clip) = project
                 .find_track_mut(track_id)
                 .and_then(|t| t.find_clip_mut(clip_id))
             {
-                ui.label(egui::RichText::new("🎹").size(14.0));
-                ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(140.0));
-                ui.separator();
-                let r_pitch = ui.add(
-                    egui::DragValue::new(&mut clip.pitch_semitones)
-                        .range(-24.0..=24.0)
-                        .speed(0.2)
-                        .prefix("Transpose ")
-                        .suffix(" st"),
-                );
-                if r_pitch.changed() {
-                    actions.push(DockAction::ProjectMutated("Transpose Clip"));
-                }
+                ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(115.0));
             }
 
-            if ui.button("Quantize 1/16").clicked() {
+            if pill_toggle(ui, "Scale Lock", self.scale_lock, ACCENT_TEAL)
+                .on_hover_text("Highlight & snap drawn notes to Session Key & Scale")
+                .clicked()
+            {
+                self.scale_lock = !self.scale_lock;
+            }
+            egui::ComboBox::from_id_salt("pr_root")
+                .selected_text(NOTE_PITCH_CLASSES[(project.root_pitch_class as usize) % 12])
+                .width(48.0)
+                .show_ui(ui, |ui| {
+                    for (i, &nm) in NOTE_PITCH_CLASSES.iter().enumerate() {
+                        ui.selectable_value(&mut project.root_pitch_class, i as u8, nm);
+                    }
+                });
+            egui::ComboBox::from_id_salt("pr_scale")
+                .selected_text(project.musical_scale.label())
+                .width(128.0)
+                .show_ui(ui, |ui| {
+                    for &sc in MusicalScale::ALL {
+                        ui.selectable_value(&mut project.musical_scale, sc, sc.label());
+                    }
+                });
+
+            egui::ComboBox::from_id_salt("pr_chord_stamp")
+                .selected_text(self.chord_stamp.label())
+                .width(115.0)
+                .show_ui(ui, |ui| {
+                    for &cs in ChordStamp::ALL {
+                        ui.selectable_value(&mut self.chord_stamp, cs, cs.label());
+                    }
+                });
+
+            if ui.small_button("Q 1/16").clicked() {
                 project.quantize_midi_clip(track_id, clip_id, 0.25);
                 actions.push(DockAction::ProjectMutated("Quantize 1/16"));
             }
-            if ui.button("Quantize 1/8").clicked() {
-                project.quantize_midi_clip(track_id, clip_id, 0.5);
-                actions.push(DockAction::ProjectMutated("Quantize 1/8"));
+            if ui
+                .small_button("Humanize")
+                .on_hover_text("Add subtle organic studio timing & velocity groove")
+                .clicked()
+            {
+                project.humanize_midi_clip(track_id, clip_id);
+                actions.push(DockAction::ProjectMutated("Humanize MIDI"));
             }
-            ui.separator();
-            ui.label(egui::RichText::new("Octave:").size(11.0).color(TEXT_DIM));
-            if ui.small_button("▼").clicked() {
+
+            // Velocity / CC Lane Selector
+            let lane_lbl = self
+                .active_cc_lane
+                .map(|c| c.label())
+                .unwrap_or("Velocity Stalks");
+            egui::ComboBox::from_id_salt("pr_cc_lane_sel")
+                .selected_text(lane_lbl)
+                .width(115.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.active_cc_lane, None, "Velocity Stalks");
+                    for &tgt in MidiCcTarget::ALL {
+                        ui.selectable_value(&mut self.active_cc_lane, Some(tgt), tgt.label());
+                    }
+                });
+
+            if ui
+                .small_button("💾 .MID")
+                .on_hover_text("Export Clip as Standard MIDI File (.mid)")
+                .clicked()
+            {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Standard MIDI", &["mid"])
+                    .set_file_name("clip.mid")
+                    .save_file()
+                {
+                    if let Some(clip) = project
+                        .find_track(track_id)
+                        .and_then(|t| t.find_clip(clip_id))
+                    {
+                        if let Some(TakeContent::Midi { notes, cc_points }) =
+                            clip.takes.get(clip.active_take).map(|t| &t.content)
+                        {
+                            let _ = export_smf_clip(&path, project.bpm, notes, cc_points);
+                        }
+                    }
+                }
+            }
+
+            if ui.small_button("▼Oct").clicked() {
                 self.lowest_pitch = self.lowest_pitch.saturating_sub(12).max(12);
             }
-            if ui.small_button("▲").clicked() {
+            if ui.small_button("▲Oct").clicked() {
                 self.lowest_pitch = (self.lowest_pitch + 12).min(84);
             }
-            ui.label(egui::RichText::new("Grid Zoom:").size(11.0).color(TEXT_DIM));
-            ui.add(egui::Slider::new(&mut self.zoom_x, 24.0..=140.0).show_value(false));
-            ui.label(
-                egui::RichText::new("Left-click: Add/Move Note • Right-click: Delete Note")
-                    .size(10.5)
-                    .color(TEXT_DIM),
-            );
         });
 
         let Some(clip_start) = project
@@ -155,8 +228,8 @@ impl PianoRollState {
                 let keys_w = 48.0_f32;
                 let total_w = keys_w + (clip_len as f32 * self.zoom_x).max(ui.available_width());
                 let avail_h = ui.available_height().max(150.0);
-                let vel_h = 34.0_f32;
-                let grid_h = (avail_h - vel_h - 4.0).max(108.0);
+                let vel_h = 40.0_f32;
+                let grid_h = (avail_h - vel_h - 4.0).max(105.0);
                 let rows = self.visible_semitones.max(12) as usize;
                 let row_h = grid_h / rows as f32;
 
@@ -172,7 +245,7 @@ impl PianoRollState {
                     Vec2::new(total_w - keys_w, vel_h - 2.0),
                 );
 
-                // Piano Keyboard Audition Strip
+                // Piano Keyboard Audition Strip + Scale Highlighting!
                 let keys_resp = ui.interact(
                     keys_rect,
                     ui.id().with("piano_keys_strip"),
@@ -181,8 +254,12 @@ impl PianoRollState {
                 for r in 0..rows {
                     let pitch = self.lowest_pitch + (rows - 1 - r) as u8;
                     let y0 = keys_rect.top() + r as f32 * row_h;
-                    let kr = Rect::from_min_size(Pos2::new(keys_rect.left(), y0), Vec2::new(keys_w, row_h));
+                    let kr =
+                        Rect::from_min_size(Pos2::new(keys_rect.left(), y0), Vec2::new(keys_w, row_h));
                     let is_black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
+                    let in_scale = scale.contains_pitch(root_pc, pitch);
+                    let is_root = pitch % 12 == root_pc % 12;
+
                     let key_col = if self.auditioning_pitch == Some(pitch) {
                         t_col
                     } else if is_black {
@@ -191,31 +268,32 @@ impl PianoRollState {
                         Color32::from_rgb(205, 210, 220)
                     };
                     ui.painter().rect_filled(kr.shrink(0.4), 1, key_col);
-                    if pitch % 12 == 0 {
+                    if pitch % 12 == 0 || is_root {
                         let oct = (pitch as i32 / 12) - 1;
+                        let nm = NOTE_PITCH_CLASSES[(pitch as usize) % 12];
                         ui.painter().text(
-                            Pos2::new(kr.right() - 4.0, kr.center().y),
+                            Pos2::new(kr.right() - 3.0, kr.center().y),
                             Align2::RIGHT_CENTER,
-                            format!("C{}", oct),
-                            FontId::monospace(9.0),
-                            Color32::from_rgb(30, 32, 40),
+                            format!("{}{}", nm, oct),
+                            FontId::monospace(8.5),
+                            if is_root { ACCENT_FERRIC } else { Color32::from_rgb(30, 32, 40) },
                         );
                     }
 
-                    // Row background on MIDI grid
                     let gr = Rect::from_min_size(
                         Pos2::new(grid_rect.left(), y0),
                         Vec2::new(grid_rect.width(), row_h),
                     );
-                    ui.painter().rect_filled(
-                        gr,
-                        0,
-                        if is_black {
-                            Color32::from_rgb(17, 19, 25)
-                        } else {
-                            Color32::from_rgb(22, 25, 32)
-                        },
-                    );
+                    let row_bg = if self.scale_lock && is_root {
+                        Color32::from_rgb(32, 28, 38)
+                    } else if self.scale_lock && in_scale {
+                        Color32::from_rgb(23, 27, 36)
+                    } else if is_black {
+                        Color32::from_rgb(15, 16, 21)
+                    } else {
+                        Color32::from_rgb(19, 21, 27)
+                    };
+                    ui.painter().rect_filled(gr, 0, row_bg);
                     ui.painter().line_segment(
                         [gr.left_bottom(), gr.right_bottom()],
                         Stroke::new(0.6_f32, Color32::from_rgb(30, 33, 42)),
@@ -250,7 +328,6 @@ impl PianoRollState {
                     });
                 }
 
-                // Vertical 1/16 & Beat Grid lines
                 let total_sixteenths = (clip_len * 4.0).ceil() as usize;
                 for s in 0..=total_sixteenths {
                     let b = s as f64 * 0.25;
@@ -273,7 +350,6 @@ impl PianoRollState {
 
                 ui.painter().rect_filled(vel_rect, 2, BG_DEEP);
 
-                // Access notes of active take
                 let Some(clip_mut) = project
                     .find_track_mut(track_id)
                     .and_then(|t| t.find_clip_mut(clip_id))
@@ -281,7 +357,7 @@ impl PianoRollState {
                     return;
                 };
                 let active_take = clip_mut.active_take.min(clip_mut.takes.len().saturating_sub(1));
-                let Some(TakeContent::Midi { notes }) =
+                let Some(TakeContent::Midi { notes, cc_points }) =
                     clip_mut.takes.get_mut(active_take).map(|t| &mut t.content)
                 else {
                     return;
@@ -321,15 +397,16 @@ impl PianoRollState {
                         StrokeKind::Inside,
                     );
 
-                    // Velocity stalk at bottom
-                    let vh = (note.velocity as f32 / 127.0) * (vel_rect.height() - 4.0);
-                    ui.painter().line_segment(
-                        [
-                            Pos2::new(nx0 + 2.0, vel_rect.bottom()),
-                            Pos2::new(nx0 + 2.0, vel_rect.bottom() - vh),
-                        ],
-                        Stroke::new(3.0_f32, t_col),
-                    );
+                    if self.active_cc_lane.is_none() {
+                        let vh = (note.velocity as f32 / 127.0) * (vel_rect.height() - 4.0);
+                        ui.painter().line_segment(
+                            [
+                                Pos2::new(nx0 + 2.0, vel_rect.bottom()),
+                                Pos2::new(nx0 + 2.0, vel_rect.bottom() - vh),
+                            ],
+                            Stroke::new(3.0_f32, t_col),
+                        );
+                    }
 
                     if n_resp.secondary_clicked() {
                         delete_note_id = Some(note.id);
@@ -358,12 +435,65 @@ impl PianoRollState {
                                     (notes[n_idx].start_beat + (d.x / self.zoom_x) as f64).max(0.0);
                                 if d.y.abs() >= row_h * 0.85 {
                                     let dp = (-d.y / row_h).round() as i32;
-                                    notes[n_idx].pitch =
+                                    let cand =
                                         (notes[n_idx].pitch as i32 + dp).clamp(0, 127) as u8;
+                                    notes[n_idx].pitch = if self.scale_lock {
+                                        scale.snap_pitch(root_pc, cand)
+                                    } else {
+                                        cand
+                                    };
                                 }
                             }
                             actions.push(DockAction::ProjectMutated("Edit MIDI Note"));
                         }
+                    }
+                }
+
+                // Draw & Edit MIDI CC / Pitch-Bend Automation Lane if selected!
+                if let Some(cc_tgt) = self.active_cc_lane {
+                    let vel_resp = ui.interact(
+                        vel_rect,
+                        ui.id().with("midi_cc_lane_draw"),
+                        Sense::click_and_drag(),
+                    );
+                    if vel_resp.clicked() || vel_resp.dragged() {
+                        if let Some(pos) = vel_resp.interact_pointer_pos() {
+                            let beat = ((pos.x - vel_rect.left()) / self.zoom_x).max(0.0) as f64;
+                            let val =
+                                ((vel_rect.bottom() - pos.y) / vel_rect.height()).clamp(0.0, 1.0);
+                            if let Some(existing) = cc_points
+                                .iter_mut()
+                                .find(|p| p.target == cc_tgt && (p.beat - beat).abs() < 0.12)
+                            {
+                                existing.value = val;
+                            } else {
+                                cc_points.push(MidiCcPoint {
+                                    beat,
+                                    target: cc_tgt,
+                                    value: val,
+                                });
+                                cc_points.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+                            }
+                            actions.push(DockAction::ProjectMutated("Draw MIDI CC"));
+                        }
+                    }
+
+                    let lane_pts: Vec<Pos2> = cc_points
+                        .iter()
+                        .filter(|p| p.target == cc_tgt)
+                        .map(|p| {
+                            Pos2::new(
+                                vel_rect.left() + p.beat as f32 * self.zoom_x,
+                                vel_rect.bottom() - p.value * (vel_rect.height() - 4.0) - 2.0,
+                            )
+                        })
+                        .collect();
+                    for &pt in &lane_pts {
+                        ui.painter().circle_filled(pt, 3.2, ACCENT_TEAL);
+                    }
+                    if lane_pts.len() >= 2 {
+                        ui.painter()
+                            .add(egui::Shape::line(lane_pts, Stroke::new(1.5_f32, ACCENT_TEAL)));
                     }
                 }
 
@@ -376,7 +506,7 @@ impl PianoRollState {
                     self.drag_note = None;
                 }
 
-                // Click empty grid cell -> insert new quantized MIDI note!
+                // Click empty grid cell -> Insert Single Note OR Full Chord Stamp (Scale-Aware)!
                 let grid_bg_resp =
                     ui.interact(grid_rect, ui.id().with("midi_grid_bg"), Sense::click());
                 if grid_bg_resp.clicked() && !clicked_existing {
@@ -384,13 +514,21 @@ impl PianoRollState {
                         let raw_b = ((pos.x - grid_rect.left()) / self.zoom_x) as f64;
                         let start_b = (raw_b * 4.0).floor() / 4.0;
                         let r = (((pos.y - grid_rect.top()) / row_h).floor() as usize).min(rows - 1);
-                        let pitch = self.lowest_pitch + (rows - 1 - r) as u8;
-                        notes.push(MidiNote::new(pitch, 104, start_b, self.default_note_len));
-                        actions.push(DockAction::ProjectMutated("Insert MIDI Note"));
+                        let raw_pitch = self.lowest_pitch + (rows - 1 - r) as u8;
+                        let base_pitch = if self.scale_lock {
+                            scale.snap_pitch(root_pc, raw_pitch)
+                        } else {
+                            raw_pitch
+                        };
+
+                        for &semi_offset in self.chord_stamp.intervals() {
+                            let p = (base_pitch.saturating_add(semi_offset)).min(127);
+                            notes.push(MidiNote::new(p, 102, start_b, self.default_note_len));
+                        }
+                        actions.push(DockAction::ProjectMutated("Insert MIDI Note/Chord"));
                     }
                 }
 
-                // Playhead indicator inside Piano Roll
                 let local_ph = telem.playhead_beat - clip_start;
                 if local_ph >= 0.0 && local_ph <= clip_len {
                     let px = grid_rect.left() + (local_ph.rem_euclid(clip_len)) as f32 * self.zoom_x;
@@ -403,6 +541,7 @@ impl PianoRollState {
     }
 
     fn render_audio_clip_inspector(
+        &mut self,
         ui: &mut Ui,
         project: &mut Project,
         track_id: TrackId,
@@ -413,6 +552,7 @@ impl PianoRollState {
             .find_track(track_id)
             .map(|t| track_color32(t.color))
             .unwrap_or(ACCENT_TEAL);
+        let bpm = project.bpm;
 
         let Some(clip) = project
             .find_track_mut(track_id)
@@ -422,17 +562,31 @@ impl PianoRollState {
         };
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("〰 Audio Clip & Take Comping:").strong());
-            ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(160.0));
-            ui.separator();
+            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(130.0));
             let mut ch = false;
+
+            egui::ComboBox::from_id_salt("stretch_algo_combo")
+                .selected_text(clip.stretch_mode.label())
+                .width(138.0)
+                .show_ui(ui, |ui| {
+                    for m in [
+                        TimeStretchMode::ElastiqueWsola,
+                        TimeStretchMode::TapeVarispeed,
+                    ] {
+                        ch |= ui
+                            .selectable_value(&mut clip.stretch_mode, m, m.label())
+                            .changed();
+                    }
+                });
+
             ch |= ui
                 .add(
-                    egui::DragValue::new(&mut clip.gain_db)
-                        .range(-36.0..=18.0)
-                        .speed(0.15)
-                        .prefix("Clip Gain ")
-                        .suffix(" dB"),
+                    egui::DragValue::new(&mut clip.stretch_rate)
+                        .range(0.25..=4.0)
+                        .speed(0.02)
+                        .prefix("Rate ")
+                        .suffix("x"),
                 )
                 .changed();
             ch |= ui
@@ -440,46 +594,33 @@ impl PianoRollState {
                     egui::DragValue::new(&mut clip.pitch_semitones)
                         .range(-24.0..=24.0)
                         .speed(0.1)
-                        .prefix("Varispeed ")
+                        .prefix("Pitch ")
                         .suffix(" st"),
                 )
                 .changed();
             ch |= ui
                 .add(
-                    egui::DragValue::new(&mut clip.fade_in_beats)
-                        .range(0.0..=8.0)
-                        .speed(0.05)
-                        .prefix("Fade In ")
-                        .suffix(" b"),
-                )
-                .changed();
-            ch |= ui
-                .add(
-                    egui::DragValue::new(&mut clip.fade_out_beats)
-                        .range(0.0..=8.0)
-                        .speed(0.05)
-                        .prefix("Fade Out ")
-                        .suffix(" b"),
+                    egui::DragValue::new(&mut clip.gain_db)
+                        .range(-36.0..=18.0)
+                        .speed(0.15)
+                        .prefix("Gain ")
+                        .suffix(" dB"),
                 )
                 .changed();
 
-            egui::ComboBox::from_id_salt("fade_shape_combo")
-                .selected_text(format!("{:?}", clip.fade_shape))
-                .width(96.0)
-                .show_ui(ui, |ui| {
-                    for s in [
-                        FadeShape::EqualPower,
-                        FadeShape::Linear,
-                        FadeShape::FastStart,
-                        FadeShape::SlowStart,
-                    ] {
-                        ch |= ui
-                            .selectable_value(&mut clip.fade_shape, s, format!("{:?}", s))
-                            .changed();
-                    }
-                });
+            if ui
+                .small_button("⚡ Auto-Warp Transients")
+                .on_hover_text("Detect drum/guitar transients & place draggable WSOLA Stretch Markers!")
+                .clicked()
+            {
+                clip.generate_transient_warp_markers(bpm);
+                ch = true;
+            }
+            if !clip.warp_markers.is_empty() && ui.small_button("Clear Warps").clicked() {
+                clip.warp_markers.clear();
+                ch = true;
+            }
 
-            // REAPER Per-Clip FX Quick Add!
             ui.menu_button("+ Clip FX", |ui| {
                 for &kind in FxKind::ALL {
                     if !kind.is_instrument() && ui.button(kind.display_name()).clicked() {
@@ -491,16 +632,20 @@ impl PianoRollState {
             });
 
             if ch {
-                actions.push(DockAction::ProjectMutated("Adjust Audio Clip Envelope"));
+                actions.push(DockAction::ProjectMutated("Adjust Audio Warp/Clip"));
             }
         });
 
-        // High-res Waveform Preview + Active Comping Overlay
-        let wave_h = (ui.available_height() - 42.0).max(90.0);
-        let (wrect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), wave_h), Sense::hover());
+        let wave_h = (ui.available_height() - 38.0).max(88.0);
+        let (wrect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), wave_h), Sense::hover());
         ui.painter().rect_filled(wrect, 4, BG_DEEP);
-        ui.painter()
-            .rect_stroke(wrect, 4, Stroke::new(1.0_f32, BORDER_SUBTLE), StrokeKind::Inside);
+        ui.painter().rect_stroke(
+            wrect,
+            4,
+            Stroke::new(1.0_f32, BORDER_SUBTLE),
+            StrokeKind::Inside,
+        );
 
         let cols = (wrect.width() as usize).clamp(32, 1200);
         let mid_y = wrect.center().y;
@@ -532,13 +677,48 @@ impl PianoRollState {
             }
         }
 
-        // Take switcher & Per-Clip FX Strip
+        // Interactive Draggable WSOLA Stretch/Warp Markers right on the waveform!
+        for m_idx in 0..clip.warp_markers.len() {
+            let wm = clip.warp_markers[m_idx];
+            let wx = wrect.left() + (wm.clip_beat / clip.length_beats.max(0.25)) as f32 * wrect.width();
+            if wx >= wrect.left() && wx <= wrect.right() {
+                ui.painter().line_segment(
+                    [Pos2::new(wx, wrect.top()), Pos2::new(wx, wrect.bottom())],
+                    Stroke::new(1.4_f32, ACCENT_AMBER),
+                );
+                let handle = Rect::from_center_size(Pos2::new(wx, wrect.top() + 8.0), Vec2::new(12.0, 14.0));
+                ui.painter().rect_filled(handle, 2, ACCENT_AMBER);
+                let h_resp = ui.interact(
+                    handle,
+                    ui.id().with(("warp_mk", wm.id)),
+                    Sense::click_and_drag(),
+                );
+                if h_resp.drag_started() {
+                    self.drag_warp = Some(wm.id);
+                }
+                if self.drag_warp == Some(wm.id) && h_resp.dragged() {
+                    let db = (h_resp.drag_delta().x / wrect.width()) as f64 * clip.length_beats;
+                    clip.warp_markers[m_idx].clip_beat =
+                        (clip.warp_markers[m_idx].clip_beat + db).clamp(0.0, clip.length_beats);
+                    actions.push(DockAction::ProjectMutated("Drag Warp Marker"));
+                }
+            }
+        }
+        if self.drag_warp.is_some() && !ui.input(|i| i.pointer.any_down()) {
+            self.drag_warp = None;
+        }
+
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Active Take:").size(11.0).color(TEXT_DIM));
             for i in 0..clip.takes.len() {
                 let lbl = format!("{}: {}", i + 1, clip.takes[i].name);
-                if pill_toggle(ui, &lbl, clip.active_take == i && clip.comp_segments.is_empty(), t_col)
-                    .clicked()
+                if pill_toggle(
+                    ui,
+                    &lbl,
+                    clip.active_take == i && clip.comp_segments.is_empty(),
+                    t_col,
+                )
+                .clicked()
                 {
                     clip.active_take = i;
                     clip.comp_segments.clear();
@@ -549,29 +729,10 @@ impl PianoRollState {
                 clip.comp_segments.clear();
                 actions.push(DockAction::ProjectMutated("Reset Swipe Comp"));
             }
-            if !clip.clip_fx.is_empty() {
-                ui.separator();
-                ui.label(egui::RichText::new("Per-Clip FX:").size(11.0).color(ACCENT_FERRIC));
-                let mut remove_idx = None;
-                for (fi, fx) in clip.clip_fx.iter_mut().enumerate() {
-                    if pill_toggle(ui, fx.kind.short_badge(), fx.enabled, ACCENT_FERRIC).clicked() {
-                        fx.enabled = !fx.enabled;
-                        actions.push(DockAction::ProjectMutated("Toggle Clip FX"));
-                    }
-                    if ui.small_button("×").clicked() {
-                        remove_idx = Some(fi);
-                    }
-                }
-                if let Some(ri) = remove_idx {
-                    clip.clip_fx.remove(ri);
-                    actions.push(DockAction::ProjectMutated("Remove Clip FX"));
-                }
-            }
         });
     }
 }
 
-/// Renders Track (or Master) FX Rack + Interactive EQ/Spectrum Graph + Bitwig Modulator Matrix!
 pub fn render_fx_and_modulators_panel(
     ui: &mut Ui,
     project: &mut Project,
@@ -580,6 +741,12 @@ pub fn render_fx_and_modulators_panel(
     telem: &EngineTelemetry,
     actions: &mut Vec<DockAction>,
 ) {
+    let all_tracks: Vec<(TrackId, String)> = project
+        .tracks
+        .iter()
+        .map(|t| (t.id, t.name.clone()))
+        .collect();
+
     ui.horizontal(|ui| {
         if pill_toggle(ui, "Track FX & Modulators", !*inspect_master, ACCENT_FERRIC).clicked() {
             *inspect_master = false;
@@ -592,7 +759,10 @@ pub fn render_fx_and_modulators_panel(
         if *inspect_master {
             ui.menu_button("+ Add Master FX", |ui| {
                 for &kind in FxKind::ALL {
-                    if !kind.is_instrument() && ui.button(kind.display_name()).clicked() {
+                    if !kind.is_instrument()
+                        && kind != FxKind::ExternalClap
+                        && ui.button(kind.display_name()).clicked()
+                    {
                         project.master.fx_chain.push(FxSlot::new(kind));
                         actions.push(DockAction::ProjectMutated("Add Master FX"));
                         ui.close_menu();
@@ -602,7 +772,7 @@ pub fn render_fx_and_modulators_panel(
         } else if let Some(tid) = selected_track {
             ui.menu_button("+ Add Instrument / FX", |ui| {
                 for &kind in FxKind::ALL {
-                    if ui.button(kind.display_name()).clicked() {
+                    if kind != FxKind::ExternalClap && ui.button(kind.display_name()).clicked() {
                         if let Some(trk) = project.find_track_mut(tid) {
                             trk.fx_chain.push(FxSlot::new(kind));
                             actions.push(DockAction::ProjectMutated("Add Track FX"));
@@ -611,7 +781,7 @@ pub fn render_fx_and_modulators_panel(
                     }
                 }
             });
-            ui.menu_button("+ Add Modulator (LFO / Env / Macro)", |ui| {
+            ui.menu_button("+ Add Modulator", |ui| {
                 if ui.button("🌊 Tempo-Synced LFO").clicked() {
                     if let Some(trk) = project.find_track_mut(tid) {
                         trk.modulators.push(ModulatorSlot::new_lfo("LFO"));
@@ -629,12 +799,24 @@ pub fn render_fx_and_modulators_panel(
                 }
                 if ui.button("🎛 Macro Knob").clicked() {
                     if let Some(trk) = project.find_track_mut(tid) {
-                        trk.modulators.push(ModulatorSlot::new_macro("Macro 1", 0.5));
+                        trk.modulators
+                            .push(ModulatorSlot::new_macro("Macro 1", 0.5));
                         actions.push(DockAction::ProjectMutated("Add Macro Modulator"));
                     }
                     ui.close_menu();
                 }
             });
+
+            if let Some(trk) = project.find_track_mut(tid) {
+                egui::ComboBox::from_id_salt("trk_auto_mode")
+                    .selected_text(format!("Auto: {}", trk.automation_mode.label()))
+                    .width(108.0)
+                    .show_ui(ui, |ui| {
+                        for &am in ferric_model::AutomationMode::ALL {
+                            ui.selectable_value(&mut trk.automation_mode, am, am.label());
+                        }
+                    });
+            }
         }
     });
 
@@ -649,6 +831,8 @@ pub fn render_fx_and_modulators_panel(
                     draw_live_spectrum_card(ui, telem);
                     render_fx_slot_cards(
                         ui,
+                        None,
+                        &all_tracks,
                         &mut project.master.fx_chain,
                         ACCENT_TEAL,
                         telem,
@@ -660,7 +844,6 @@ pub fn render_fx_and_modulators_panel(
                     };
                     let t_col = track_color32(trk.color);
 
-                    // Bitwig-style Modulators Rack Cards first!
                     let fx_snapshot: Vec<(Uuid, FxKind)> =
                         trk.fx_chain.iter().map(|f| (f.id, f.kind)).collect();
                     let mut remove_mod = None;
@@ -674,19 +857,15 @@ pub fn render_fx_and_modulators_panel(
                         actions.push(DockAction::ProjectMutated("Remove Modulator"));
                     }
 
-                    // Track FX Device Cards
-                    render_fx_slot_cards(ui, &mut trk.fx_chain, t_col, telem, actions);
-
-                    if trk.fx_chain.is_empty() && trk.modulators.is_empty() {
-                        ui.label(
-                            egui::RichText::new(
-                                "Empty Universal Chain — click '+ Add Instrument / FX' above to add PolySynth, DrumKit, Tuner, AmpSim, EQ, Comp, Delay, or Reverb!",
-                            )
-                            .color(TEXT_DIM),
-                        );
-                    }
-                } else {
-                    ui.label(egui::RichText::new("Select a Track to view its FX & Modulators.").color(TEXT_DIM));
+                    render_fx_slot_cards(
+                        ui,
+                        Some(tid),
+                        &all_tracks,
+                        &mut trk.fx_chain,
+                        t_col,
+                        telem,
+                        actions,
+                    );
                 }
             });
         });
@@ -694,6 +873,8 @@ pub fn render_fx_and_modulators_panel(
 
 fn render_fx_slot_cards(
     ui: &mut Ui,
+    owner_track: Option<TrackId>,
+    all_tracks: &[(TrackId, String)],
     chain: &mut Vec<FxSlot>,
     accent: Color32,
     telem: &EngineTelemetry,
@@ -706,56 +887,142 @@ fn render_fx_slot_cards(
     for (idx, fx) in chain.iter_mut().enumerate() {
         egui::Frame::new()
             .fill(BG_ELEVATED)
-            .stroke(Stroke::new(1.0_f32, if fx.enabled { accent.gamma_multiply(0.65) } else { BORDER_SUBTLE }))
+            .stroke(Stroke::new(
+                1.0_f32,
+                if fx.enabled {
+                    accent.gamma_multiply(0.65)
+                } else {
+                    BORDER_SUBTLE
+                },
+            ))
             .corner_radius(6)
             .inner_margin(8.0)
             .show(ui, |ui| {
-                ui.set_min_height(155.0);
+                ui.set_min_height(160.0);
                 ui.vertical(|ui| {
-                    // Header: Enable, Title, Wet/Dry Mix, Reorder, Remove
                     ui.horizontal(|ui| {
                         if pill_toggle(ui, "ON", fx.enabled, accent).clicked() {
                             fx.enabled = !fx.enabled;
                             actions.push(DockAction::ProjectMutated("Bypass FX"));
                         }
+                        let title = fx
+                            .clap_plugin_name
+                            .as_deref()
+                            .unwrap_or_else(|| fx.kind.display_name());
                         ui.label(
-                            egui::RichText::new(fx.kind.display_name())
+                            egui::RichText::new(title)
                                 .size(11.5)
                                 .strong()
                                 .color(TEXT_MAIN),
                         );
                         if !fx.kind.is_instrument() {
-                            let r_wet = ui.add(
-                                egui::DragValue::new(&mut fx.wet_mix)
-                                    .range(0.0..=1.0)
-                                    .speed(0.01)
-                                    .prefix("Wet "),
-                            );
-                            if r_wet.changed() {
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut fx.wet_mix)
+                                        .range(0.0..=1.0)
+                                        .speed(0.01)
+                                        .prefix("Wet "),
+                                )
+                                .changed()
+                            {
                                 actions.push(DockAction::ProjectMutated("Adjust FX Wet/Dry"));
                             }
                         }
-                        if idx > 0 && ui.small_button("◀").on_hover_text("Move FX Earlier").clicked() {
+
+                        // External Sidechain Source Selector for Compressor & Gate!
+                        if fx.kind.supports_sidechain() {
+                            let sc_lbl = fx
+                                .sidechain_source
+                                .and_then(|id| all_tracks.iter().find(|(tid, _)| *tid == id))
+                                .map(|(_, n)| format!("SC: {}", n))
+                                .unwrap_or_else(|| "SC: Internal".into());
+                            egui::ComboBox::from_id_salt(("fx_sc_src", fx.id))
+                                .selected_text(sc_lbl)
+                                .width(105.0)
+                                .show_ui(ui, |ui| {
+                                    if ui
+                                        .selectable_label(fx.sidechain_source.is_none(), "Internal")
+                                        .clicked()
+                                    {
+                                        fx.sidechain_source = None;
+                                        actions.push(DockAction::ProjectMutated("Set Sidechain"));
+                                    }
+                                    for (tid, tname) in all_tracks {
+                                        if Some(*tid) != owner_track
+                                            && ui
+                                                .selectable_label(
+                                                    fx.sidechain_source == Some(*tid),
+                                                    tname,
+                                                )
+                                                .clicked()
+                                        {
+                                            fx.sidechain_source = Some(*tid);
+                                            actions.push(DockAction::ProjectMutated(
+                                                "Set Sidechain",
+                                            ));
+                                        }
+                                    }
+                                });
+                        }
+
+                        if idx > 0 && ui.small_button("◀").clicked() {
                             move_swap = Some((idx, idx - 1));
                         }
-                        if idx + 1 < len && ui.small_button("▶").on_hover_text("Move FX Later").clicked() {
+                        if idx + 1 < len && ui.small_button("▶").clicked() {
                             move_swap = Some((idx, idx + 1));
                         }
-                        if ui.small_button("×").on_hover_text("Remove FX").clicked() {
+                        if ui.small_button("×").clicked() {
                             remove_idx = Some(idx);
                         }
                     });
 
                     ui.separator();
 
-                    // Special visual displays for EQ Curve + Spectrum or Chromatic Strobe Tuner!
-                    if fx.kind == FxKind::ParametricEq {
-                        draw_eq_curve_mini(ui, &fx.params, telem);
-                    } else if fx.kind == FxKind::ChromaticTuner {
-                        draw_strobe_tuner_display(ui, &telem.tuner);
+                    // Special visualizers per FX type
+                    match fx.kind {
+                        FxKind::ParametricEq => draw_eq_curve_mini(ui, &fx.params, telem),
+                        FxKind::ChromaticTuner => draw_strobe_tuner_display(ui, &telem.tuner),
+                        FxKind::VocalPitch => draw_vocal_pitch_display(ui, &fx.params, &telem.vocal_pitch),
+                        FxKind::SamplePlayer => {
+                            ui.horizontal(|ui| {
+                                let sample_lbl = format!(
+                                    "Sample: {} ({} slices)",
+                                    fx.preset_name,
+                                    fx.sampler_slices.len()
+                                );
+                                ui.label(
+                                    egui::RichText::new(sample_lbl)
+                                        .size(10.5)
+                                        .color(ACCENT_TEAL),
+                                );
+                                if ui.small_button("📂 Load Audio...").clicked() {
+                                    if let Some(p) = rfd::FileDialog::new()
+                                        .add_filter(
+                                            "Audio",
+                                            &["wav", "flac", "mp3", "ogg", "aiff"],
+                                        )
+                                        .pick_file()
+                                    {
+                                        if let Ok(buf) = import_audio_file(&p, telem.sample_rate) {
+                                            fx.preset_name = p
+                                                .file_stem()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("Sample")
+                                                .to_string();
+                                            fx.sampler_slices = buf.detect_transients(16);
+                                            fx.sampler_buffer = Some(buf);
+                                            actions.push(DockAction::ReloadSamplerFx(fx.clone()));
+                                            actions.push(DockAction::ProjectMutated(
+                                                "Load Sampler File",
+                                            ));
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        _ => {}
                     }
 
-                    // Parameter Rotary Knobs (up to 6 per row)
                     let specs = fx.kind.param_specs();
                     if fx.params.len() < specs.len() {
                         fx.params.resize_with(specs.len(), || 0.0);
@@ -765,19 +1032,48 @@ fn render_fx_slot_cards(
                             let end = (chunk_start + 6).min(specs.len());
                             for p_i in chunk_start..end {
                                 let sp = specs[p_i];
-                                if studio_knob(
-                                    ui,
-                                    sp.name,
-                                    &mut fx.params[p_i],
-                                    sp.min,
-                                    sp.max,
-                                    sp.default,
-                                    sp.unit,
-                                    32.0,
-                                    accent,
-                                ) {
-                                    actions.push(DockAction::ProjectMutated("Tweak FX Param"));
-                                }
+                                ui.vertical(|ui| {
+                                    if studio_knob(
+                                        ui,
+                                        sp.name,
+                                        &mut fx.params[p_i],
+                                        sp.min,
+                                        sp.max,
+                                        sp.default,
+                                        sp.unit,
+                                        30.0,
+                                        accent,
+                                    ) {
+                                        actions.push(DockAction::ProjectMutated("Tweak FX Param"));
+                                    }
+                                    if let Some(tid) = owner_track {
+                                        if ui
+                                            .add(
+                                                egui::Button::new(
+                                                    egui::RichText::new("Learn").size(8.5),
+                                                )
+                                                .min_size(Vec2::new(34.0, 13.0)),
+                                            )
+                                            .on_hover_text(
+                                                "1-Click MIDI CC Learn (or Show Automation Lane)",
+                                            )
+                                            .clicked()
+                                        {
+                                            actions.push(DockAction::ArmMidiLearn {
+                                                track_id: tid,
+                                                target: AutomationTarget::FxParam {
+                                                    fx_id: fx.id,
+                                                    param_index: p_i,
+                                                },
+                                                label: format!(
+                                                    "{} → {}",
+                                                    fx.kind.short_badge(),
+                                                    sp.name
+                                                ),
+                                            });
+                                        }
+                                    }
+                                });
                             }
                         });
                     }
@@ -875,9 +1171,7 @@ fn render_modulator_card(
                             .changed();
                     }
                     ModulatorKind::StepSequencer {
-                        steps,
-                        step_beats,
-                        ..
+                        steps, step_beats, ..
                     } => {
                         ch |= ui
                             .add(egui::Slider::new(step_beats, 0.125..=2.0).text("Step b"))
@@ -892,7 +1186,6 @@ fn render_modulator_card(
                     }
                 }
 
-                // Target Assignments
                 ui.menu_button("+ Assign Target Parameter", |ui| {
                     if ui.button("Track Volume").clicked() {
                         m.routings.push(ModRouting {
@@ -914,7 +1207,9 @@ fn render_modulator_card(
                         ui.separator();
                         ui.label(egui::RichText::new(kind.short_badge()).strong());
                         for (pi, sp) in kind.param_specs().iter().enumerate() {
-                            if ui.button(format!("{} → {}", kind.short_badge(), sp.name)).clicked()
+                            if ui
+                                .button(format!("{} → {}", kind.short_badge(), sp.name))
+                                .clicked()
                             {
                                 m.routings.push(ModRouting {
                                     target: ModTarget::FxParam {
@@ -937,10 +1232,7 @@ fn render_modulator_card(
                             ModTarget::TrackGain => "Vol".to_string(),
                             ModTarget::TrackPan => "Pan".to_string(),
                             ModTarget::FxWet { .. } => "FX Wet".to_string(),
-                            ModTarget::FxParam {
-                                fx_id,
-                                param_index,
-                            } => fx_list
+                            ModTarget::FxParam { fx_id, param_index } => fx_list
                                 .iter()
                                 .find(|(id, _)| *id == fx_id)
                                 .and_then(|(_, k)| {
@@ -976,12 +1268,62 @@ fn render_modulator_card(
     remove
 }
 
+fn draw_vocal_pitch_display(
+    ui: &mut Ui,
+    params: &[f32],
+    vp: &ferric_dsp::VocalPitchTelemetry,
+) {
+    let root = params.first().copied().unwrap_or(9.0).round().clamp(0.0, 11.0) as usize;
+    let sc_idx = params.get(1).copied().unwrap_or(2.0).round().clamp(0.0, 7.0) as usize;
+    let sc = MusicalScale::ALL
+        .get(sc_idx)
+        .copied()
+        .unwrap_or(MusicalScale::NaturalMinor);
+
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(230.0, 48.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 4, BG_DEEP);
+    p.rect_stroke(
+        rect,
+        4,
+        Stroke::new(1.0_f32, BORDER_SUBTLE),
+        StrokeKind::Inside,
+    );
+
+    let key_str = format!("Key: {} {}", NOTE_PITCH_CLASSES[root], sc.label());
+    p.text(
+        Pos2::new(rect.left() + 8.0, rect.top() + 12.0),
+        Align2::LEFT_CENTER,
+        key_str,
+        FontId::proportional(10.0),
+        ACCENT_TEAL,
+    );
+
+    let status = if vp.active {
+        let tgt = vp.target_midi.round().clamp(0.0, 127.0) as usize;
+        format!(
+            "Target: {}{}  ({:+.0} ct shift)",
+            NOTE_PITCH_CLASSES[tgt % 12],
+            (tgt as i32 / 12) - 1,
+            vp.correction_cents
+        )
+    } else {
+        "Sing or play audio clip...".into()
+    };
+    p.text(
+        Pos2::new(rect.left() + 8.0, rect.bottom() - 12.0),
+        Align2::LEFT_CENTER,
+        status,
+        FontId::monospace(10.5),
+        TEXT_MAIN,
+    );
+}
+
 fn draw_eq_curve_mini(ui: &mut Ui, params: &[f32], telem: &EngineTelemetry) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(280.0, 56.0), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 4, BG_DEEP);
 
-    // Subtle real-time FFT spectrum backdrop
     let bw = rect.width() / SPECTRUM_BANDS as f32;
     for b in 0..SPECTRUM_BANDS {
         let db = telem.master.spectrum_db[b];
@@ -994,13 +1336,14 @@ fn draw_eq_curve_mini(ui: &mut Ui, params: &[f32], telem: &EngineTelemetry) {
         p.rect_filled(br, 0, Color32::from_rgba_unmultiplied(66, 196, 176, 38));
     }
 
-    // 0 dB center line
     p.line_segment(
-        [Pos2::new(rect.left(), rect.center().y), Pos2::new(rect.right(), rect.center().y)],
+        [
+            Pos2::new(rect.left(), rect.center().y),
+            Pos2::new(rect.right(), rect.center().y),
+        ],
         Stroke::new(0.8_f32, BORDER_SUBTLE),
     );
 
-    // Analytic Biquad Composite Response Curve (20 Hz .. 20 kHz)
     let sr = telem.sample_rate.max(44_100) as f32;
     let pts: Vec<Pos2> = (0..=80)
         .map(|i| {
@@ -1018,11 +1361,19 @@ fn draw_strobe_tuner_display(ui: &mut Ui, reading: &ferric_dsp::TunerReading) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(185.0, 52.0), Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 4, BG_DEEP);
-    p.rect_stroke(rect, 4, Stroke::new(1.0_f32, BORDER_SUBTLE), StrokeKind::Inside);
+    p.rect_stroke(
+        rect,
+        4,
+        Stroke::new(1.0_f32, BORDER_SUBTLE),
+        StrokeKind::Inside,
+    );
 
     let center_x = rect.center().x;
     p.line_segment(
-        [Pos2::new(center_x, rect.top() + 4.0), Pos2::new(center_x, rect.bottom() - 4.0)],
+        [
+            Pos2::new(center_x, rect.top() + 4.0),
+            Pos2::new(center_x, rect.bottom() - 4.0),
+        ],
         Stroke::new(1.0_f32, Color32::from_rgb(70, 76, 90)),
     );
 
@@ -1076,18 +1427,18 @@ fn draw_live_spectrum_card(ui: &mut Ui, telem: &EngineTelemetry) {
                     );
                     ui.label(
                         egui::RichText::new(format!(
-                            "M: {:.1} LUFS  |  S: {:.1} LUFS  |  Corr: {:+.2}",
+                            "M: {:.1} LUFS  |  S: {:.1} LUFS  |  Corr: {:+.2}  |  PDC: {} smp",
                             telem.master.momentary_lufs,
                             telem.master.short_term_lufs,
-                            telem.master.phase_correlation
+                            telem.master.phase_correlation,
+                            telem.total_pdc_samples
                         ))
                         .size(10.5)
                         .monospace()
                         .color(ACCENT_TEAL),
                     );
                 });
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(310.0, 125.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(310.0, 125.0), Sense::hover());
                 let p = ui.painter();
                 p.rect_filled(rect, 4, BG_DEEP);
                 let bw = rect.width() / SPECTRUM_BANDS as f32;

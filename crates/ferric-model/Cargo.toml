@@ -3,7 +3,7 @@ name = "ferric-model"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core domain model, universal track graph, take comping, modulators, undo history, and RON/JSON persistence for FerricDAW."
+description = "Core domain model, universal track graph, warp markers, Bezier automation, SMF MIDI, MIDI Learn, and RON/JSON persistence for FerricDAW."
 
 [dependencies]
 serde.workspace = true
@@ -11,3 +11,4 @@ serde_json.workspace = true
 ron.workspace = true
 uuid.workspace = true
 thiserror.workspace = true
+midly.workspace = true

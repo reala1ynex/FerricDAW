@@ -1,4 +1,6 @@
+use crate::clip::AudioBuffer;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use uuid::Uuid;
 
 pub type FxId = Uuid;
@@ -6,11 +8,13 @@ pub type ModulatorId = Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FxKind {
-    // Instruments (MIDI -> Audio, can live anywhere on a universal track!)
+    // Instruments (MIDI -> Audio)
     PolySynth,
     DrumKit,
-    // Studio Utility & Dynamics
+    SamplePlayer,
+    // Studio Utility, Pitch & Dynamics
     ChromaticTuner,
+    VocalPitch,
     NoiseGate,
     ParametricEq,
     Compressor,
@@ -20,13 +24,17 @@ pub enum FxKind {
     // Time & Space
     StereoDelay,
     PlateHallReverb,
+    // Open-Standard External Plugin Hosting (.clap)
+    ExternalClap,
 }
 
 impl FxKind {
     pub const ALL: &'static [FxKind] = &[
         FxKind::PolySynth,
         FxKind::DrumKit,
+        FxKind::SamplePlayer,
         FxKind::ChromaticTuner,
+        FxKind::VocalPitch,
         FxKind::NoiseGate,
         FxKind::ParametricEq,
         FxKind::Compressor,
@@ -34,20 +42,24 @@ impl FxKind {
         FxKind::TapeSaturator,
         FxKind::StereoDelay,
         FxKind::PlateHallReverb,
+        FxKind::ExternalClap,
     ];
 
     pub fn display_name(self) -> &'static str {
         match self {
             FxKind::PolySynth => "Ferric PolySynth (16-Voice VA/FM)",
             FxKind::DrumKit => "Ferric 8-Pad Studio Drum Kit",
+            FxKind::SamplePlayer => "Ferric Chromatic & Slice Sampler",
             FxKind::ChromaticTuner => "Chromatic Strobe Tuner",
-            FxKind::NoiseGate => "Hysteresis Studio Gate",
+            FxKind::VocalPitch => "Vocal Auto-Pitch & Scale Shifter",
+            FxKind::NoiseGate => "Hysteresis Studio Gate (+Sidechain)",
             FxKind::ParametricEq => "4-Band Parametric EQ + Analyzer",
-            FxKind::Compressor => "Opto/VCA Studio Compressor",
+            FxKind::Compressor => "Opto/VCA Studio Compressor (+Sidechain)",
             FxKind::AmpCabSim => "Ferric Tube Amp & Cab Modeler",
             FxKind::TapeSaturator => "Oxide Tape Saturator & Limiter",
             FxKind::StereoDelay => "Tempo Ping-Pong Tape Delay",
             FxKind::PlateHallReverb => "Lush Plate / Hall Reverb",
+            FxKind::ExternalClap => "External CLAP Audio/Instrument Plugin",
         }
     }
 
@@ -55,7 +67,9 @@ impl FxKind {
         match self {
             FxKind::PolySynth => "SYNTH",
             FxKind::DrumKit => "DRUMS",
+            FxKind::SamplePlayer => "SAMPLER",
             FxKind::ChromaticTuner => "TUNER",
+            FxKind::VocalPitch => "PITCH",
             FxKind::NoiseGate => "GATE",
             FxKind::ParametricEq => "EQ-4",
             FxKind::Compressor => "COMP",
@@ -63,16 +77,24 @@ impl FxKind {
             FxKind::TapeSaturator => "TAPE",
             FxKind::StereoDelay => "DELAY",
             FxKind::PlateHallReverb => "REVERB",
+            FxKind::ExternalClap => "CLAP",
         }
     }
 
     pub fn is_instrument(self) -> bool {
-        matches!(self, FxKind::PolySynth | FxKind::DrumKit)
+        matches!(
+            self,
+            FxKind::PolySynth | FxKind::DrumKit | FxKind::SamplePlayer
+        )
+    }
+
+    pub fn supports_sidechain(self) -> bool {
+        matches!(self, FxKind::Compressor | FxKind::NoiseGate)
     }
 
     pub fn param_specs(self) -> &'static [ParamSpec] {
         const POLYSYNTH_SPECS: &[ParamSpec] = &[
-            ParamSpec::new("Waveform", "", 0.0, 3.0, 0.0), // 0=Saw, 1=Pulse, 2=Tri, 3=FM
+            ParamSpec::new("Waveform", "", 0.0, 3.0, 0.0),
             ParamSpec::new("Sub / Detune", "%", 0.0, 100.0, 28.0),
             ParamSpec::new("Cutoff", "Hz", 60.0, 16000.0, 2600.0),
             ParamSpec::new("Resonance", "", 0.05, 0.92, 0.28),
@@ -91,9 +113,27 @@ impl FxKind {
             ParamSpec::new("Room Glue", "%", 0.0, 100.0, 22.0),
             ParamSpec::new("Kit Level", "dB", -24.0, 12.0, 0.0),
         ];
+        const SAMPLER_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Root Key", "", 24.0, 96.0, 60.0),   // C4 = 60
+            ParamSpec::new("Mode", "", 0.0, 1.0, 0.0),          // 0 = Chromatic, 1 = Transient Slice Pads (C2..D#3)
+            ParamSpec::new("Start Trim", "%", 0.0, 90.0, 0.0),
+            ParamSpec::new("Cutoff", "Hz", 80.0, 18000.0, 14000.0),
+            ParamSpec::new("Resonance", "", 0.05, 0.90, 0.18),
+            ParamSpec::new("Attack", "ms", 0.5, 1000.0, 2.0),
+            ParamSpec::new("Release", "ms", 10.0, 3500.0, 240.0),
+            ParamSpec::new("Output", "dB", -24.0, 12.0, 0.0),
+        ];
         const TUNER_SPECS: &[ParamSpec] = &[
             ParamSpec::new("Ref A4", "Hz", 432.0, 446.0, 440.0),
             ParamSpec::new("Mute Thru", "", 0.0, 1.0, 0.0),
+        ];
+        const VOCAL_PITCH_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Root Note", "", 0.0, 11.0, 9.0),     // 0=C .. 9=A
+            ParamSpec::new("Scale Mode", "", 0.0, 7.0, 2.0),     // Maps to MusicalScale::ALL
+            ParamSpec::new("Retune Spd", "ms", 0.0, 160.0, 22.0), // 0ms = Hard T-Pain, 25ms = Modern Pop, 90ms = Natural
+            ParamSpec::new("Transpose", "st", -12.0, 12.0, 0.0),
+            ParamSpec::new("Humanize", "%", 0.0, 100.0, 25.0),
+            ParamSpec::new("Warmth", "%", 0.0, 100.0, 30.0),
         ];
         const GATE_SPECS: &[ParamSpec] = &[
             ParamSpec::new("Open Thresh", "dB", -80.0, -6.0, -42.0),
@@ -154,11 +194,20 @@ impl FxKind {
             ParamSpec::new("Low Cut", "Hz", 20.0, 600.0, 120.0),
             ParamSpec::new("Width", "%", 0.0, 100.0, 100.0),
         ];
+        const CLAP_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Macro P1", "%", 0.0, 100.0, 50.0),
+            ParamSpec::new("Macro P2", "%", 0.0, 100.0, 50.0),
+            ParamSpec::new("Macro P3", "%", 0.0, 100.0, 50.0),
+            ParamSpec::new("Macro P4", "%", 0.0, 100.0, 50.0),
+            ParamSpec::new("Output Trim", "dB", -24.0, 12.0, 0.0),
+        ];
 
         match self {
             FxKind::PolySynth => POLYSYNTH_SPECS,
             FxKind::DrumKit => DRUMKIT_SPECS,
+            FxKind::SamplePlayer => SAMPLER_SPECS,
             FxKind::ChromaticTuner => TUNER_SPECS,
+            FxKind::VocalPitch => VOCAL_PITCH_SPECS,
             FxKind::NoiseGate => GATE_SPECS,
             FxKind::ParametricEq => EQ_SPECS,
             FxKind::Compressor => COMP_SPECS,
@@ -166,6 +215,7 @@ impl FxKind {
             FxKind::TapeSaturator => TAPE_SPECS,
             FxKind::StereoDelay => DELAY_SPECS,
             FxKind::PlateHallReverb => REVERB_SPECS,
+            FxKind::ExternalClap => CLAP_SPECS,
         }
     }
 }
@@ -209,16 +259,31 @@ impl ParamSpec {
     }
 }
 
-/// Every FX slot has REAPER's signature universal Wet/Dry blend knob + bypass.
+/// Every FX slot has REAPER's signature universal Wet/Dry blend knob + Bypass,
+/// plus External Sidechain Input, Sampler Buffer, and CLAP External Plugin metadata!
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FxSlot {
     pub id: FxId,
     pub kind: FxKind,
     pub enabled: bool,
-    /// REAPER-style universal wet/dry knob on every insert (0.0 ..= 1.0).
     pub wet_mix: f32,
     pub params: Vec<f32>,
     pub preset_name: String,
+    /// Optional external sidechain key track (e.g., Kick track ducking Bass Compressor!).
+    #[serde(default)]
+    pub sidechain_source: Option<Uuid>,
+    /// Loaded sample buffer + transient slice offsets when `kind == FxKind::SamplePlayer`.
+    #[serde(default)]
+    pub sampler_buffer: Option<AudioBuffer>,
+    #[serde(default)]
+    pub sampler_slices: Vec<usize>,
+    /// Hosted `.clap` binary path & plugin descriptor ID when `kind == FxKind::ExternalClap`.
+    #[serde(default)]
+    pub clap_plugin_path: Option<PathBuf>,
+    #[serde(default)]
+    pub clap_plugin_id: Option<String>,
+    #[serde(default)]
+    pub clap_plugin_name: Option<String>,
 }
 
 impl FxSlot {
@@ -237,14 +302,40 @@ impl FxSlot {
             wet_mix,
             params,
             preset_name: "Init".to_string(),
+            sidechain_source: None,
+            sampler_buffer: None,
+            sampler_slices: Vec::new(),
+            clap_plugin_path: None,
+            clap_plugin_id: None,
+            clap_plugin_name: None,
         }
     }
 
+    pub fn new_clap(path: PathBuf, plugin_id: String, name: String) -> Self {
+        let mut slot = Self::new(FxKind::ExternalClap);
+        slot.preset_name = name.clone();
+        slot.clap_plugin_path = Some(path);
+        slot.clap_plugin_id = Some(plugin_id);
+        slot.clap_plugin_name = Some(name);
+        slot
+    }
+
+    pub fn new_sampler_with_buffer(name: impl Into<String>, buffer: AudioBuffer) -> Self {
+        let mut slot = Self::new(FxKind::SamplePlayer);
+        slot.preset_name = name.into();
+        slot.sampler_slices = buffer.detect_transients(16);
+        slot.sampler_buffer = Some(buffer);
+        slot
+    }
+
     pub fn param(&self, idx: usize) -> f32 {
-        self.params
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| self.kind.param_specs().get(idx).map(|s| s.default).unwrap_or(0.0))
+        self.params.get(idx).copied().unwrap_or_else(|| {
+            self.kind
+                .param_specs()
+                .get(idx)
+                .map(|s| s.default)
+                .unwrap_or(0.0)
+        })
     }
 
     pub fn set_param(&mut self, idx: usize, val: f32) {
@@ -257,6 +348,89 @@ impl FxSlot {
         }
     }
 }
+
+/// Curated Factory Presets for the Dockable Studio Browser!
+#[derive(Debug, Clone)]
+pub struct FactoryPreset {
+    pub category: &'static str,
+    pub name: &'static str,
+    pub kind: FxKind,
+    pub params: &'static [f32],
+    pub wet_mix: f32,
+}
+
+pub const FACTORY_PRESETS: &[FactoryPreset] = &[
+    FactoryPreset {
+        category: "Synth",
+        name: "Warm Juno Brass Pad",
+        kind: FxKind::PolySynth,
+        params: &[0.0, 46.0, 2100.0, 0.25, 38.0, 48.0, 480.0, 72.0, 560.0, -3.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Synth",
+        name: "Acid 303 Squelch Bass",
+        kind: FxKind::PolySynth,
+        params: &[0.0, 12.0, 480.0, 0.78, 82.0, 2.0, 190.0, 15.0, 90.0, -1.5],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Synth",
+        name: "Crystal Rhodes 2-Op FM",
+        kind: FxKind::PolySynth,
+        params: &[3.0, 18.0, 5400.0, 0.14, 24.0, 3.0, 620.0, 38.0, 440.0, -2.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Guitar & Bass",
+        name: "1959 Tweed Clean Sparkle",
+        kind: FxKind::AmpCabSim,
+        params: &[6.5, 0.0, 1.0, -1.0, 3.5, 55.0, -2.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Guitar & Bass",
+        name: "British Plexi Crunch 2x12",
+        kind: FxKind::AmpCabSim,
+        params: &[18.0, 1.0, 1.5, 2.5, 2.0, 60.0, -4.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Guitar & Bass",
+        name: "Modern High-Gain 4x12 Lead",
+        kind: FxKind::AmpCabSim,
+        params: &[29.0, 2.0, 2.5, -1.5, 3.0, 72.0, -6.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Vocals",
+        name: "Natural Studio Vocal Polish (A Minor)",
+        kind: FxKind::VocalPitch,
+        params: &[9.0, 2.0, 38.0, 0.0, 35.0, 35.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Vocals",
+        name: "Hard Zero-Latency Auto-Pitch (C Major)",
+        kind: FxKind::VocalPitch,
+        params: &[0.0, 1.0, 0.0, 0.0, 0.0, 45.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Mixing",
+        name: "Punchy Sidechain EDM/Pop Ducking",
+        kind: FxKind::Compressor,
+        params: &[-24.0, 8.0, 1.5, 130.0, 3.0, 0.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Space",
+        name: "Infinite Shimmer Cathedral",
+        kind: FxKind::PlateHallReverb,
+        params: &[36.0, 93.0, 22.0, 160.0, 100.0],
+        wet_mix: 0.38,
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LfoShape {
@@ -287,7 +461,6 @@ impl LfoShape {
     }
 }
 
-/// Bitwig-style track-level modulator sources.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModulatorKind {
     Lfo {
@@ -323,7 +496,6 @@ pub enum ModTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModRouting {
     pub target: ModTarget,
-    /// Bipolar normalized modulation amount (-1.0 ..= 1.0).
     pub depth: f32,
 }
 

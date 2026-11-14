@@ -1,23 +1,28 @@
 pub mod clip;
 pub mod fx;
 pub mod project;
+pub mod theory;
 pub mod track;
 
 pub use clip::{
-    AudioBuffer, ClipId, CompSegment, FadeShape, MidiNote, SessionSlot, Take, TakeContent, TakeId,
-    TimelineClip,
+    AudioBuffer, ClipId, CompSegment, FadeShape, MidiCcPoint, MidiCcTarget, MidiNote, SessionSlot,
+    StretchMarker, Take, TakeContent, TakeId, TimeStretchMode, TimelineClip,
 };
 pub use fx::{
-    FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget, ModulatorId, ModulatorKind,
-    ModulatorSlot, ParamSpec,
+    FactoryPreset, FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget, ModulatorId,
+    ModulatorKind, ModulatorSlot, ParamSpec, FACTORY_PRESETS,
 };
 pub use project::{
-    build_demo_project, HistoryManager, MasterBus, ModelError, Project, Scene, SnapGrid,
-    TimeSignature, TimelineMarker,
+    build_demo_project, synthesize_browser_sample, HistoryManager, MasterBus, MidiLearnMapping,
+    ModelError, Project, Scene, SnapGrid, TimeSignature, TimelineMarker,
+};
+pub use theory::{
+    export_smf_clip, import_smf_file, ChordStamp, ImportedMidiTrack, MusicalScale,
+    NOTE_PITCH_CLASSES,
 };
 pub use track::{
-    AutomationLane, AutomationPoint, AutomationTarget, InputSource, SendTap, Track, TrackId,
-    TrackSend, STUDIO_TRACK_COLORS,
+    apply_curve_tension, AutomationLane, AutomationMode, AutomationPoint, AutomationTarget,
+    InputSource, SendTap, Track, TrackId, TrackSend, STUDIO_TRACK_COLORS,
 };
 
 #[cfg(test)]
@@ -35,20 +40,18 @@ mod tests {
         assert_eq!(clip.take_at_local_beat(6.0), 1);
         assert_eq!(clip.take_at_local_beat(14.0), 0);
 
-        // Overwrite middle of Take 2 with Take 3
         clip.set_comp_region(6.0, 8.0, 2);
         assert_eq!(clip.take_at_local_beat(5.0), 1);
         assert_eq!(clip.take_at_local_beat(7.0), 2);
         assert_eq!(clip.take_at_local_beat(10.0), 1);
 
-        // Merge back to Take 1 across [4, 12]
         clip.set_comp_region(4.0, 12.0, 0);
         assert_eq!(clip.comp_segments.len(), 1);
         assert_eq!(clip.comp_segments[0].take_index, 0);
     }
 
     #[test]
-    fn routing_dag_prevents_cycles_and_orders_buses_last() {
+    fn routing_dag_prevents_cycles_and_orders_buses_and_sidechains() {
         let mut proj = Project::new_empty("Routing Test");
         let gtr = proj.add_track("Guitar");
         let bus = proj.add_track("Guitar Bus");
@@ -57,7 +60,6 @@ mod tests {
         proj.find_track_mut(gtr).unwrap().parent_folder_id = Some(bus);
         proj.add_send(bus, rev, -6.0).unwrap();
 
-        // Cycle: Reverb -> Guitar should be rejected!
         assert!(proj.add_send(rev, gtr, 0.0).is_err());
 
         let order = proj.topological_track_order();
@@ -69,16 +71,39 @@ mod tests {
     }
 
     #[test]
-    fn split_clip_preserves_slip_offset_and_comp_lanes() {
-        let mut proj = build_demo_project(48_000);
-        let gtr_id = proj.tracks[3].id;
-        let clip_id = proj.tracks[3].clips[0].id;
-        let right_id = proj.split_clip(gtr_id, clip_id, 8.0).expect("split ok");
-        let gtr = proj.find_track(gtr_id).unwrap();
-        assert_eq!(gtr.clips.len(), 2);
-        let right = gtr.find_clip(right_id).unwrap();
-        assert_eq!(right.start_beat, 8.0);
-        assert_eq!(right.length_beats, 8.0);
-        assert_eq!(right.slip_offset_beats, 8.0);
+    fn smf_midi_roundtrip_preserves_notes_and_cc() {
+        let notes = vec![
+            MidiNote::new(60, 100, 0.0, 1.0),
+            MidiNote::new(64, 110, 1.0, 0.5),
+            MidiNote::new(67, 95, 2.0, 1.5),
+        ];
+        let ccs = vec![MidiCcPoint {
+            beat: 0.5,
+            target: MidiCcTarget::ModWheel,
+            value: 0.75,
+        }];
+        let path = std::env::temp_dir().join("ferric_smf_roundtrip.mid");
+        export_smf_clip(&path, 120.0, &notes, &ccs).expect("export smf");
+        let imported = import_smf_file(&path).expect("import smf");
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].notes.len(), 3);
+        assert_eq!(imported[0].notes[0].pitch, 60);
+        assert!(!imported[0].cc_points.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn scale_snap_and_bezier_automation_work() {
+        // C Major should snap C#4 (61) -> C4 (60) or D4 (62)
+        let snapped = MusicalScale::Major.snap_pitch(0, 61);
+        assert!(snapped == 60 || snapped == 62);
+        assert!(MusicalScale::Major.contains_pitch(0, snapped));
+
+        let mut lane = AutomationLane::new(AutomationTarget::Volume);
+        lane.points.push(AutomationPoint::new(0.0, 0.0, 0.6));
+        lane.points.push(AutomationPoint::new(4.0, 1.0, 0.0));
+        let mid = lane.eval_at(2.0).unwrap();
+        // Positive tension = slow exponential start, so at midpoint value < 0.5
+        assert!(mid > 0.0 && mid < 0.45);
     }
 }

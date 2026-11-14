@@ -37,6 +37,7 @@ pub enum ArrangementAction {
     DeleteClip { track_id: TrackId, clip_id: ClipId },
     OpenPianoRoll { track_id: TrackId, clip_id: ClipId },
     ImportAudioToTrack(TrackId),
+    ToggleFreezeTrack(TrackId),
     AddTrack,
 }
 
@@ -366,7 +367,18 @@ impl ArrangementState {
                 .max()
                 .unwrap_or(0);
             let take_lane_h = 24.0_f32;
-            let row_h = base_h + (max_extra_lanes as f32) * take_lane_h;
+            let comp_h = (max_extra_lanes as f32) * take_lane_h;
+            let auto_lanes_count = if project.tracks[t_idx].show_automation {
+                project.tracks[t_idx]
+                    .automation_lanes
+                    .iter()
+                    .filter(|l| l.visible)
+                    .count()
+            } else {
+                0
+            };
+            let auto_lane_h = 52.0_f32;
+            let row_h = base_h + comp_h + (auto_lanes_count as f32) * auto_lane_h;
 
             let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, row_h), Sense::hover());
             playhead_bot = playhead_bot.max(row_rect.bottom());
@@ -421,7 +433,7 @@ impl ArrangementState {
             );
             let comp_area_rect = Rect::from_min_max(
                 Pos2::new(lane_rect.left(), lane_rect.bottom()),
-                Pos2::new(lane_rect.right(), row_rect.bottom()),
+                Pos2::new(lane_rect.right(), lane_rect.bottom() + comp_h),
             );
 
             self.render_track_timeline_lane(
@@ -434,6 +446,20 @@ impl ArrangementState {
                 telem,
                 actions,
             );
+
+            // 4. Foldable Curved Bezier Automation Lanes right beneath the track!
+            if auto_lanes_count > 0 {
+                let auto_top = comp_area_rect.bottom();
+                self.render_track_automation_lanes(
+                    ui,
+                    Pos2::new(lane_rect.left(), auto_top),
+                    timeline_w,
+                    auto_lane_h,
+                    project,
+                    t_idx,
+                    actions,
+                );
+            }
         }
 
         // Release active clip drag on mouse up
@@ -562,9 +588,26 @@ impl ArrangementState {
                 {
                     actions.push(ArrangementAction::SelectTrack(track_id));
                 }
+                if pill_toggle(ui, "A", trk.show_automation, Color32::from_rgb(186, 108, 226))
+                    .on_hover_text("Show / Add Curved Bezier Automation Lanes (Left-click: Add/Drag, Shift+Drag: Curve Tension, Right-click: Delete)")
+                    .clicked()
+                {
+                    if !trk.show_automation && trk.automation_lanes.is_empty() {
+                        trk.ensure_automation_lane(ferric_model::AutomationTarget::Volume);
+                    } else {
+                        trk.show_automation = !trk.show_automation;
+                    }
+                    actions.push(ArrangementAction::ProjectMutated("Toggle Automation Lanes"));
+                }
+                if pill_toggle(ui, "❄", trk.frozen, Color32::from_rgb(100, 210, 255))
+                    .on_hover_text("1-Click Reversible Track Freeze (Renders 32-bit Stem & frees 100% DSP CPU!)")
+                    .clicked()
+                {
+                    actions.push(ArrangementAction::ToggleFreezeTrack(track_id));
+                }
                 if ui
                     .small_button("📂")
-                    .on_hover_text("Import WAV Audio Clip onto this Track")
+                    .on_hover_text("Import WAV/FLAC/MP3/OGG Audio Clip onto this Track")
                     .clicked()
                 {
                     actions.push(ArrangementAction::ImportAudioToTrack(track_id));
@@ -1009,7 +1052,7 @@ impl ArrangementState {
                     if t_resp.clicked() || t_resp.dragged() {
                         if let Some(pos) = t_resp.interact_pointer_pos() {
                             let local_b = ((pos.x - x0) / self.pixels_per_beat) as f64;
-                            let bar_step = 2.0_f64; // Snap swipe-comp to musical 2-beat half-bars (or Shift for fine!)
+                            let bar_step = 2.0_f64;
                             let (cs, ce) = if ui.input(|i| i.modifiers.shift) {
                                 ((local_b - 0.25).max(0.0), local_b + 0.25)
                             } else {
@@ -1020,6 +1063,146 @@ impl ArrangementState {
                             actions.push(ArrangementAction::ProjectMutated("Swipe Comp Take"));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_track_automation_lanes(
+        &mut self,
+        ui: &mut Ui,
+        origin: Pos2,
+        width: f32,
+        lane_h: f32,
+        project: &mut Project,
+        t_idx: usize,
+        actions: &mut Vec<ArrangementAction>,
+    ) {
+        let auto_col = Color32::from_rgb(198, 126, 246);
+        let fx_meta: Vec<(uuid::Uuid, ferric_model::FxKind)> = project.tracks[t_idx]
+            .fx_chain
+            .iter()
+            .map(|f| (f.id, f.kind))
+            .collect();
+
+        let mut y_cursor = origin.y;
+        for l_idx in 0..project.tracks[t_idx].automation_lanes.len() {
+            if !project.tracks[t_idx].automation_lanes[l_idx].visible {
+                continue;
+            }
+            let lane_rect = Rect::from_min_size(Pos2::new(origin.x, y_cursor), Vec2::new(width, lane_h - 1.0));
+            y_cursor += lane_h;
+
+            ui.painter()
+                .rect_filled(lane_rect, 0, Color32::from_rgb(15, 16, 23));
+            ui.painter().line_segment(
+                [lane_rect.left_bottom(), lane_rect.right_bottom()],
+                Stroke::new(1.0_f32, BORDER_SUBTLE),
+            );
+
+            let lane = &mut project.tracks[t_idx].automation_lanes[l_idx];
+            let target_lbl = match lane.target {
+                ferric_model::AutomationTarget::Volume => "Auto: Volume".to_string(),
+                ferric_model::AutomationTarget::Pan => "Auto: Pan".to_string(),
+                ferric_model::AutomationTarget::StereoWidth => "Auto: Width".to_string(),
+                ferric_model::AutomationTarget::FxWet { .. } => "Auto: FX Wet".to_string(),
+                ferric_model::AutomationTarget::FxParam { fx_id, param_index } => fx_meta
+                    .iter()
+                    .find(|(id, _)| *id == fx_id)
+                    .and_then(|(_, k)| {
+                        k.param_specs()
+                            .get(param_index)
+                            .map(|sp| format!("Auto: {} → {}", k.short_badge(), sp.name))
+                    })
+                    .unwrap_or_else(|| "Auto: FX Param".into()),
+            };
+
+            // Sample & draw smooth curved Bezier automation envelope across visible timeline
+            let samples = (width as usize / 4).clamp(24, 480);
+            let mut poly = Vec::with_capacity(samples + 1);
+            for s in 0..=samples {
+                let frac = s as f32 / samples as f32;
+                let beat = self.scroll_beat + (frac * width / self.pixels_per_beat) as f64;
+                let norm = lane.eval_at(beat).unwrap_or(0.5);
+                let x = lane_rect.left() + frac * width;
+                let y = lane_rect.bottom() - 4.0 - norm * (lane_rect.height() - 8.0);
+                poly.push(Pos2::new(x, y));
+            }
+            ui.painter()
+                .add(egui::Shape::line(poly, Stroke::new(1.8_f32, auto_col)));
+
+            ui.painter().text(
+                Pos2::new(lane_rect.left() + 6.0, lane_rect.top() + 3.0),
+                Align2::LEFT_TOP,
+                &target_lbl,
+                FontId::proportional(9.5),
+                auto_col,
+            );
+
+            // Interactive Breakpoint Handles (Drag = Move, Shift+Drag = Bezier Curve Tension, Right-Click = Delete)
+            let mut del_pt = None;
+            let mut interacted_pt = false;
+            for p_idx in 0..lane.points.len() {
+                let pt = lane.points[p_idx];
+                let px = lane_rect.left() + ((pt.beat - self.scroll_beat) as f32 * self.pixels_per_beat);
+                if px < lane_rect.left() - 6.0 || px > lane_rect.right() + 6.0 {
+                    continue;
+                }
+                let py = lane_rect.bottom() - 4.0 - pt.normalized_value * (lane_rect.height() - 8.0);
+                let hit = Rect::from_center_size(Pos2::new(px, py), Vec2::new(11.0, 11.0));
+                let p_resp = ui.interact(
+                    hit,
+                    ui.id().with(("auto_pt", pt.id)),
+                    Sense::click_and_drag(),
+                );
+                ui.painter().circle_filled(Pos2::new(px, py), 4.2, auto_col);
+                ui.painter().circle_stroke(
+                    Pos2::new(px, py),
+                    4.2,
+                    Stroke::new(1.0_f32, Color32::WHITE),
+                );
+
+                if p_resp.secondary_clicked() && lane.points.len() > 1 {
+                    del_pt = Some(p_idx);
+                    interacted_pt = true;
+                } else if p_resp.dragged() {
+                    interacted_pt = true;
+                    let d = p_resp.drag_delta();
+                    if ui.input(|i| i.modifiers.shift) {
+                        lane.points[p_idx].tension =
+                            (lane.points[p_idx].tension + d.y * 0.015).clamp(-0.92, 0.92);
+                    } else {
+                        lane.points[p_idx].beat =
+                            (lane.points[p_idx].beat + (d.x / self.pixels_per_beat) as f64).max(0.0);
+                        lane.points[p_idx].normalized_value = (lane.points[p_idx].normalized_value
+                            - d.y / (lane_rect.height() - 8.0))
+                            .clamp(0.0, 1.0);
+                    }
+                    lane.sort_points();
+                    actions.push(ArrangementAction::ProjectMutated("Edit Automation Curve"));
+                } else if p_resp.clicked() {
+                    interacted_pt = true;
+                }
+            }
+            if let Some(di) = del_pt {
+                lane.points.remove(di);
+                actions.push(ArrangementAction::ProjectMutated("Delete Automation Point"));
+            }
+
+            // Click empty spot on lane -> insert new automation point!
+            let bg_r = ui.interact(
+                lane_rect,
+                ui.id().with(("auto_lane_bg", lane.id)),
+                Sense::click(),
+            );
+            if bg_r.clicked() && !interacted_pt {
+                if let Some(pos) = bg_r.interact_pointer_pos() {
+                    let b = self.scroll_beat + ((pos.x - lane_rect.left()) / self.pixels_per_beat) as f64;
+                    let norm = ((lane_rect.bottom() - 4.0 - pos.y) / (lane_rect.height() - 8.0))
+                        .clamp(0.0, 1.0);
+                    lane.upsert_point(b, norm);
+                    actions.push(ArrangementAction::ProjectMutated("Add Automation Point"));
                 }
             }
         }
@@ -1105,7 +1288,7 @@ fn draw_clip_visual(
                     }
                 }
             }
-            TakeContent::Midi { notes } => {
+            TakeContent::Midi { notes, .. } => {
                 if !notes.is_empty() {
                     let min_p = notes.iter().map(|n| n.pitch).min().unwrap_or(48) as f32 - 2.0;
                     let max_p = notes.iter().map(|n| n.pitch).max().unwrap_or(72) as f32 + 2.0;
