@@ -2,6 +2,7 @@
 
 mod arrangement;
 mod browser;
+mod help_modal;
 mod mixer;
 mod palette;
 mod piano_roll;
@@ -9,6 +10,7 @@ mod theme;
 
 use arrangement::{ArrangementAction, ArrangementState};
 use browser::{BrowserAction, KaossPadState, StudioBrowserState, TapTempoTracker};
+use help_modal::{build_app_icon, render_quickstart_help_modal};
 use eframe::egui;
 use egui::{Color32, Context, Key, Stroke};
 use ferric_engine::{
@@ -79,6 +81,8 @@ struct FerricDawApp {
     selected_track: Option<TrackId>,
     selected_clip: Option<(TrackId, ClipId)>,
     clipboard_clip: Option<TimelineClip>,
+    recent_projects: Vec<PathBuf>,
+    show_help_modal: bool,
     dirty_since_autosave: bool,
     last_autosave_inst: std::time::Instant,
     pending_midi_learn: Option<PendingMidiLearn>,
@@ -148,6 +152,8 @@ impl FerricDawApp {
             show_bottom_dock: true,
             inspect_master_fx: false,
             clipboard_clip: None,
+            recent_projects: Self::load_recent_projects_list(),
+            show_help_modal: false,
             dirty_since_autosave: false,
             last_autosave_inst: std::time::Instant::now(),
             pending_midi_learn: None,
@@ -157,7 +163,74 @@ impl FerricDawApp {
             capture_inbox: Vec::new(),
         };
         app.engine.sync_project(&app.project);
+
+        // Support launching `ferricdaw.exe my_song.ferric` (or `.json` / `.wav` / `.flac` / `.mid`) from CLI / File Association!
+        if let Some(arg_path) = std::env::args_os().nth(1).map(PathBuf::from) {
+            if arg_path.exists() {
+                let ext = arg_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if matches!(ext.as_str(), "ferric" | "json") {
+                    app.open_project_from_path(&arg_path);
+                } else if matches!(ext.as_str(), "mid" | "midi") {
+                    app.import_smf_midi_dialog(Some(arg_path));
+                } else if let Ok(buf) = import_audio_file(&arg_path, app.engine.sample_rate) {
+                    let tid = app.project.add_track("Imported CLI Audio");
+                    let beats = app.project.seconds_to_beats(buf.duration_secs()).max(1.0);
+                    let nm = arg_path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Audio")
+                        .to_string();
+                    if let Some(trk) = app.project.find_track_mut(tid) {
+                        trk.clips.push(TimelineClip::new_audio(nm, 0.0, beats, buf));
+                    }
+                    app.selected_track = Some(tid);
+                    app.sync_engine();
+                }
+            }
+        }
         app
+    }
+
+    fn recent_projects_file() -> PathBuf {
+        let base = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+        base.join("FerricDAW").join("recent_projects.txt")
+    }
+
+    fn load_recent_projects_list() -> Vec<PathBuf> {
+        let p = Self::recent_projects_file();
+        std::fs::read_to_string(p)
+            .map(|txt| {
+                txt.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(PathBuf::from)
+                    .filter(|pb| pb.exists())
+                    .take(8)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn record_recent_project(&mut self, path: &PathBuf) {
+        self.recent_projects.retain(|p| p != path);
+        self.recent_projects.insert(0, path.clone());
+        self.recent_projects.truncate(8);
+        let p = Self::recent_projects_file();
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let body: String = self
+            .recent_projects
+            .iter()
+            .map(|pb| format!("{}\n", pb.to_string_lossy()))
+            .collect();
+        let _ = std::fs::write(p, body);
     }
 
     fn snapshot_before(&mut self, label: &'static str) {
@@ -606,6 +679,17 @@ impl FerricDawApp {
                     }
                 }
             }
+            PaletteCommand::GlueSelectedClips => self.glue_selected_clips(),
+            PaletteCommand::ToggleConductorLane => {
+                self.project.show_conductor_lane = !self.project.show_conductor_lane;
+                if self.project.show_conductor_lane && self.project.tempo_map.is_empty() {
+                    self.project.upsert_tempo_point(0.0, self.project.bpm, true);
+                }
+                self.sync_engine();
+            }
+            PaletteCommand::OpenQuickstartHelp => {
+                self.show_help_modal = true;
+            }
             PaletteCommand::QuantizeSelectedClip => {
                 if let Some((tid, cid)) = self.selected_clip {
                     self.snapshot_before("Quantize MIDI");
@@ -701,18 +785,35 @@ impl FerricDawApp {
                 .save_file()
         });
         if let Some(p) = path {
-            self.engine
-                .harvest_plugin_states_into_project(&mut self.project);
-            match save_project_bundle(&mut self.project, &p) {
-                Ok(()) => {
-                    self.project_path = Some(p.clone());
-                    self.dirty_since_autosave = false;
-                    self.status_banner =
-                        format!("Saved full session & audio bundle to {}", p.display());
-                }
-                Err(e) => {
-                    self.status_banner = format!("Save error: {}", e);
-                }
+            self.save_project_to_path(&p);
+        }
+    }
+
+    fn save_project_as_dialog(&mut self) {
+        if let Some(p) = rfd::FileDialog::new()
+            .set_title("Save FerricDAW Session As...")
+            .add_filter("FerricDAW Project (.ferric)", &["ferric"])
+            .add_filter("JSON Project (.json)", &["json"])
+            .set_file_name("session.ferric")
+            .save_file()
+        {
+            self.save_project_to_path(&p);
+        }
+    }
+
+    fn save_project_to_path(&mut self, p: &PathBuf) {
+        self.engine
+            .harvest_plugin_states_into_project(&mut self.project);
+        match save_project_bundle(&mut self.project, p) {
+            Ok(()) => {
+                self.project_path = Some(p.clone());
+                self.record_recent_project(p);
+                self.dirty_since_autosave = false;
+                self.status_banner =
+                    format!("Saved full session & audio bundle to {}", p.display());
+            }
+            Err(e) => {
+                self.status_banner = format!("Save error: {}", e);
             }
         }
     }
@@ -723,21 +824,56 @@ impl FerricDawApp {
             .add_filter("FerricDAW / JSON", &["ferric", "json"])
             .pick_file()
         {
-            match load_project_bundle(&p, self.engine.sample_rate) {
-                Ok(loaded) => {
-                    self.snapshot_before("Open Project");
-                    self.project = loaded;
-                    self.project_path = Some(p.clone());
-                    self.selected_track = self.project.tracks.first().map(|t| t.id);
-                    self.selected_clip = None;
-                    self.sync_engine();
-                    self.dirty_since_autosave = false;
-                    self.status_banner = format!("Opened session bundle {}", p.display());
-                }
-                Err(e) => {
-                    self.status_banner = format!("Open error: {}", e);
-                }
+            self.open_project_from_path(&p);
+        }
+    }
+
+    fn open_project_from_path(&mut self, p: &PathBuf) {
+        match load_project_bundle(p, self.engine.sample_rate) {
+            Ok(loaded) => {
+                self.snapshot_before("Open Project");
+                self.project = loaded;
+                self.project_path = Some(p.clone());
+                self.record_recent_project(p);
+                self.selected_track = self.project.tracks.first().map(|t| t.id);
+                self.selected_clip = None;
+                self.arrangement.multi_selected_clips.clear();
+                self.sync_engine();
+                self.dirty_since_autosave = false;
+                self.status_banner = format!("Opened session bundle {}", p.display());
             }
+            Err(e) => {
+                self.status_banner = format!("Open error: {}", e);
+            }
+        }
+    }
+
+    fn glue_selected_clips(&mut self) {
+        if self.arrangement.multi_selected_clips.len() < 2 {
+            self.status_banner =
+                "Select 2+ clips on a track (Shift+Click or Marquee Drag) then press Ctrl+G to Glue!".into();
+            return;
+        }
+        let target_tid = self.arrangement.multi_selected_clips[0].0;
+        let ids: Vec<ClipId> = self
+            .arrangement
+            .multi_selected_clips
+            .iter()
+            .filter(|&&(t, _)| t == target_tid)
+            .map(|&(_, c)| c)
+            .collect();
+        if ids.len() < 2 {
+            return;
+        }
+        self.snapshot_before("Glue / Consolidate Clips");
+        if let Some(glued_id) =
+            self.project
+                .glue_clips(target_tid, &ids, self.engine.sample_rate)
+        {
+            self.arrangement.multi_selected_clips.clear();
+            self.selected_clip = Some((target_tid, glued_id));
+            self.sync_engine();
+            self.status_banner = format!("✓ Glued {} clips into consolidated item!", ids.len());
         }
     }
 
@@ -783,6 +919,10 @@ impl FerricDawApp {
         let (ctrl, shift) =
             ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
 
+        if ctx.input(|i| i.key_pressed(Key::F1)) {
+            self.show_help_modal = !self.show_help_modal;
+            return;
+        }
         if ctrl && ctx.input(|i| i.key_pressed(Key::K)) {
             self.palette.toggle();
             return;
@@ -804,7 +944,15 @@ impl FerricDawApp {
             return;
         }
         if ctrl && ctx.input(|i| i.key_pressed(Key::S)) {
-            self.save_project_dialog();
+            if shift {
+                self.save_project_as_dialog();
+            } else {
+                self.save_project_dialog();
+            }
+            return;
+        }
+        if ctrl && ctx.input(|i| i.key_pressed(Key::G)) {
+            self.glue_selected_clips();
             return;
         }
         if ctrl && ctx.input(|i| i.key_pressed(Key::O)) {
@@ -1012,8 +1160,22 @@ impl FerricDawApp {
                         self.open_project_dialog();
                         ui.close_menu();
                     }
+                    if !self.recent_projects.is_empty() {
+                        ui.menu_button("🕘 Open Recent Session", |ui| {
+                            for rp in self.recent_projects.clone() {
+                                if ui.button(rp.display().to_string()).clicked() {
+                                    self.open_project_from_path(&rp);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
                     if ui.button("💾 Save Session Bundle (.ferric + Audio)...  Ctrl+S").clicked() {
                         self.save_project_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button("💾 Save Session As...  Ctrl+Shift+S").clicked() {
+                        self.save_project_as_dialog();
                         ui.close_menu();
                     }
                     if ui.button("🛡 Recover Last Crash-Autosave").clicked() {
@@ -1025,8 +1187,17 @@ impl FerricDawApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("💿 Bounce Master / Stems to WAV...  Ctrl+B").clicked() {
+                    if ui.button("💿 Bounce Master / Stems to FLAC or WAV...  Ctrl+B").clicked() {
                         self.execute_palette_command(PaletteCommand::OpenBounceModal);
+                        ui.close_menu();
+                    }
+                    if ui.button("🔗 Glue / Consolidate Selected Clips  Ctrl+G").clicked() {
+                        self.glue_selected_clips();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui.button("❓ Quickstart & Keyboard Shortcuts  F1").clicked() {
+                        self.show_help_modal = true;
                         ui.close_menu();
                     }
                     ui.separator();
@@ -1222,6 +1393,12 @@ impl FerricDawApp {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if pill_toggle(ui, "❓ Help", self.show_help_modal, ACCENT_TEAL)
+                    .on_hover_text("Open Studio Quickstart & Shortcut Guide (F1)")
+                    .clicked()
+                {
+                    self.show_help_modal = !self.show_help_modal;
+                }
                 if ui
                     .button(egui::RichText::new("⌘ Ctrl+K").size(11.0).color(ACCENT_FERRIC))
                     .clicked()
@@ -1701,6 +1878,7 @@ impl eframe::App for FerricDawApp {
             self.execute_palette_command(cmd);
         }
         self.render_bounce_modal(ctx);
+        render_quickstart_help_modal(ctx, &mut self.show_help_modal);
 
         // 1. Top Studio Transport Bar
         egui::TopBottomPanel::top("ferric_transport_top")
@@ -2106,7 +2284,8 @@ fn main() -> eframe::Result<()> {
             .with_title("FerricDAW v1.0 — Full-Fledged Open-Source Rust Hybrid DAW")
             .with_inner_size([1520.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(std::sync::Arc::new(build_app_icon())),
         ..Default::default()
     };
     eframe::run_native(

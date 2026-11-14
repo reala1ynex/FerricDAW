@@ -857,6 +857,137 @@ impl Project {
         id
     }
 
+    /// REAPER-style Glue / Consolidate Clips (`Ctrl+G`): merges two or more MIDI or Audio clips
+    /// on `track_id` into a single phase-accurate consolidated clip!
+    pub fn glue_clips(
+        &mut self,
+        track_id: TrackId,
+        clip_ids: &[ClipId],
+        sample_rate: u32,
+    ) -> Option<ClipId> {
+        let spb = 60.0 / self.bpm.max(20.0);
+        let track = self.find_track_mut(track_id)?;
+        let selected: Vec<TimelineClip> = track
+            .clips
+            .iter()
+            .filter(|c| clip_ids.contains(&c.id))
+            .cloned()
+            .collect();
+        if selected.len() < 2 {
+            return None;
+        }
+
+        let min_start = selected
+            .iter()
+            .map(|c| c.start_beat)
+            .fold(f64::MAX, f64::min);
+        let max_end = selected
+            .iter()
+            .map(|c| c.end_beat())
+            .fold(0.0_f64, f64::max);
+        let total_beats = (max_end - min_start).max(0.25);
+
+        let all_midi = selected.iter().all(|c| c.is_midi());
+        let glued = if all_midi {
+            let mut merged_notes = Vec::new();
+            let mut merged_ccs = Vec::new();
+            for clip in &selected {
+                let offset = clip.start_beat - min_start;
+                let loop_len = if clip.loop_enabled {
+                    clip.loop_length_beats.max(0.25)
+                } else {
+                    clip.length_beats.max(0.25)
+                };
+                let reps = (clip.length_beats / loop_len).ceil() as usize;
+                let t_idx = clip.active_take.min(clip.takes.len().saturating_sub(1));
+                if let Some(Take {
+                    content: TakeContent::Midi { notes, cc_points },
+                    ..
+                }) = clip.takes.get(t_idx)
+                {
+                    for rep in 0..reps.max(1) {
+                        let base_b = rep as f64 * loop_len;
+                        for n in notes {
+                            let local_s = base_b + n.start_beat - clip.slip_offset_beats;
+                            if local_s >= 0.0 && local_s < clip.length_beats {
+                                let len = n.length_beats.min(clip.length_beats - local_s);
+                                let mut copy = *n;
+                                copy.id = Uuid::new_v4();
+                                copy.start_beat = offset + local_s;
+                                copy.length_beats = len.max(0.0625);
+                                copy.pitch =
+                                    (copy.pitch as i32 + clip.pitch_semitones.round() as i32)
+                                        .clamp(0, 127) as u8;
+                                merged_notes.push(copy);
+                            }
+                        }
+                    }
+                    for cc in cc_points {
+                        let mut ccopy = *cc;
+                        ccopy.beat += offset;
+                        merged_ccs.push(ccopy);
+                    }
+                }
+            }
+            merged_notes.sort_by(|a, b| a.start_beat.partial_cmp(&b.start_beat).unwrap());
+            merged_ccs.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            let mut c = TimelineClip::new_midi(
+                format!("{} (Glued)", selected[0].name),
+                min_start,
+                total_beats,
+                merged_notes,
+            );
+            c.loop_enabled = false;
+            if let Some(Take {
+                content: TakeContent::Midi { cc_points, .. },
+                ..
+            }) = c.takes.first_mut()
+            {
+                *cc_points = merged_ccs;
+            }
+            c
+        } else {
+            let sr = sample_rate.max(44_100);
+            let total_frames = (total_beats * spb * sr as f64).ceil() as usize;
+            let mut out_l = vec![0.0_f32; total_frames];
+            let mut out_r = vec![0.0_f32; total_frames];
+            let beats_per_frame = 1.0 / (spb * sr as f64);
+
+            for (f_idx, (sl, sr_out)) in out_l.iter_mut().zip(out_r.iter_mut()).enumerate() {
+                let tl_beat = min_start + f_idx as f64 * beats_per_frame;
+                for clip in &selected {
+                    if let Some((local_b, inner_b)) = clip.content_beat(tl_beat) {
+                        let take_i = clip.take_at_local_beat(local_b);
+                        let env = clip.gain_envelope_at(local_b);
+                        if let Some(Take {
+                            content: TakeContent::Audio { buffer },
+                            ..
+                        }) = clip.takes.get(take_i)
+                        {
+                            let src_sec = clip.map_beat_to_source_seconds(inner_b, spb);
+                            let (l, r) =
+                                buffer.sample_interpolated(src_sec * buffer.sample_rate as f64);
+                            *sl += l * env;
+                            *sr_out += r * env;
+                        }
+                    }
+                }
+            }
+            let buf = AudioBuffer::from_stereo(sr, out_l, out_r, None);
+            TimelineClip::new_audio(
+                format!("{} (Glued)", selected[0].name),
+                min_start,
+                total_beats,
+                buf,
+            )
+        };
+
+        let new_id = glued.id;
+        track.clips.retain(|c| !clip_ids.contains(&c.id));
+        track.clips.push(glued);
+        Some(new_id)
+    }
+
     pub fn split_clip(
         &mut self,
         track_id: TrackId,

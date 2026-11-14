@@ -142,5 +142,19 @@ mod tests {
             assert!(((ga * ga + gb * gb) - 1.0).abs() < 1e-5);
             assert!((ga - gb).abs() < 1e-5);
         }
+
+        // Verify Glue / Consolidate (`Ctrl+G`) merges overlapping audio clips into one consolidated 10-beat clip!
+        let ids: Vec<ClipId> = proj
+            .find_track(tid)
+            .unwrap()
+            .clips
+            .iter()
+            .map(|c| c.id)
+            .collect();
+        let glued_id = proj.glue_clips(tid, &ids, 48_000).expect("glue clips");
+        let trk = proj.find_track(tid).unwrap();
+        assert_eq!(trk.clips.len(), 1);
+        assert_eq!(trk.clips[0].id, glued_id);
+        assert!((trk.clips[0].length_beats - 10.0).abs() < 1e-5);
     }
 }
