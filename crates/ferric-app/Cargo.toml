@@ -1,0 +1,21 @@
+[package]
+name = "ferric-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FerricDAW GPU-accelerated desktop studio application."
+
+[[bin]]
+name = "ferricdaw"
+path = "src/main.rs"
+
+[dependencies]
+ferric-model = { path = "../ferric-model" }
+ferric-dsp = { path = "../ferric-dsp" }
+ferric-engine = { path = "../ferric-engine" }
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+uuid.workspace = true
+log.workspace = true
+env_logger.workspace = true

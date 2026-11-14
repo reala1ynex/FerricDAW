@@ -1,0 +1,17 @@
+[package]
+name = "ferric-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lock-free real-time audio/MIDI engine, retroactive capture buffer, take recording, and offline stem/master bounce."
+
+[dependencies]
+ferric-model = { path = "../ferric-model" }
+ferric-dsp = { path = "../ferric-dsp" }
+rtrb.workspace = true
+cpal.workspace = true
+midir.workspace = true
+hound.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+log.workspace = true
