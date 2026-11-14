@@ -30,14 +30,41 @@ impl EditTool {
 pub enum ArrangementAction {
     Seek(f64),
     SelectTrack(TrackId),
-    SelectClip { track_id: TrackId, clip_id: ClipId },
+    SelectClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+    },
     ProjectMutated(&'static str),
-    SplitClip { track_id: TrackId, clip_id: ClipId, beat: f64 },
-    DuplicateClip { track_id: TrackId, clip_id: ClipId },
-    DeleteClip { track_id: TrackId, clip_id: ClipId },
-    OpenPianoRoll { track_id: TrackId, clip_id: ClipId },
+    SplitClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+        beat: f64,
+    },
+    DuplicateClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+    },
+    DeleteClip {
+        track_id: TrackId,
+        clip_id: ClipId,
+    },
+    MoveClipToTrack {
+        from_track: TrackId,
+        to_track: TrackId,
+        clip_id: ClipId,
+    },
+    OpenPianoRoll {
+        track_id: TrackId,
+        clip_id: ClipId,
+    },
     ImportAudioToTrack(TrackId),
     ToggleFreezeTrack(TrackId),
+    DeleteTrack(TrackId),
+    DuplicateTrack(TrackId),
+    MoveTrack {
+        track_id: TrackId,
+        delta: isize,
+    },
     AddTrack,
 }
 
@@ -47,12 +74,15 @@ pub struct ArrangementState {
     pub tool: EditTool,
     pub ripple_edit: bool,
     pub show_session_launcher: bool,
+    pub renaming_track: Option<TrackId>,
     drag_clip: Option<(TrackId, ClipId, DragKind, f64)>,
+    track_row_bounds: Vec<(TrackId, f32, f32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DragKind {
     Move,
+    ResizeLeft,
     ResizeRight,
 }
 
@@ -64,7 +94,9 @@ impl Default for ArrangementState {
             tool: EditTool::SmartPointer,
             ripple_edit: false,
             show_session_launcher: true,
+            renaming_track: None,
             drag_clip: None,
+            track_row_bounds: Vec::new(),
         }
     }
 }
@@ -324,7 +356,8 @@ impl ArrangementState {
         let bpb = project.time_signature.beats_per_bar();
         let max_vis_beat = self.scroll_beat + (timeline_w / self.pixels_per_beat) as f64;
 
-        // Loop Region highlight on ruler
+        // Loop Region highlight + Interactive Left/Right Loop Brace Drag Handles on Ruler!
+        let mut loop_handle_dragged = false;
         if project.loop_end_beat > project.loop_start_beat {
             let lx0 = ruler_tl_rect.left()
                 + ((project.loop_start_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
@@ -332,17 +365,82 @@ impl ArrangementState {
                 + ((project.loop_end_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
             let lrect = Rect::from_min_max(
                 Pos2::new(lx0.max(ruler_tl_rect.left()), ruler_tl_rect.top()),
-                Pos2::new(lx1.min(ruler_tl_rect.right()), ruler_tl_rect.top() + 7.0),
+                Pos2::new(lx1.min(ruler_tl_rect.right()), ruler_tl_rect.top() + 8.0),
             );
             if lrect.width() > 1.0 {
                 let col = if project.loop_enabled {
-                    Color32::from_rgba_unmultiplied(232, 114, 62, 180)
+                    Color32::from_rgba_unmultiplied(232, 114, 62, 195)
                 } else {
                     Color32::from_rgba_unmultiplied(110, 115, 130, 110)
                 };
                 ui.painter().rect_filled(lrect, 2, col);
             }
+
+            // Draggable Loop Start Handle `[`
+            if lx0 >= ruler_tl_rect.left() - 6.0 && lx0 <= ruler_tl_rect.right() {
+                let h_in = Rect::from_center_size(
+                    Pos2::new(lx0, ruler_tl_rect.top() + 5.0),
+                    Vec2::new(10.0, 11.0),
+                );
+                ui.painter().rect_filled(h_in, 2, ACCENT_FERRIC);
+                let r_in = ui
+                    .interact(h_in, ui.id().with("loop_in_handle"), Sense::drag())
+                    .on_hover_text("Drag Loop Start Brace");
+                if r_in.dragged() {
+                    loop_handle_dragged = true;
+                    let db = (r_in.drag_delta().x / self.pixels_per_beat) as f64;
+                    project.loop_start_beat = (project.loop_start_beat + db)
+                        .clamp(0.0, (project.loop_end_beat - 1.0).max(0.0));
+                    actions.push(ArrangementAction::ProjectMutated("Drag Loop Start"));
+                }
+            }
+
+            // Draggable Loop End Handle `]`
+            if lx1 >= ruler_tl_rect.left() && lx1 <= ruler_tl_rect.right() + 6.0 {
+                let h_out = Rect::from_center_size(
+                    Pos2::new(lx1, ruler_tl_rect.top() + 5.0),
+                    Vec2::new(10.0, 11.0),
+                );
+                ui.painter().rect_filled(h_out, 2, ACCENT_FERRIC);
+                let r_out = ui
+                    .interact(h_out, ui.id().with("loop_out_handle"), Sense::drag())
+                    .on_hover_text("Drag Loop End Brace");
+                if r_out.dragged() {
+                    loop_handle_dragged = true;
+                    let db = (r_out.drag_delta().x / self.pixels_per_beat) as f64;
+                    project.loop_end_beat =
+                        (project.loop_end_beat + db).max(project.loop_start_beat + 1.0);
+                    actions.push(ArrangementAction::ProjectMutated("Drag Loop End"));
+                }
+            }
         }
+        let _ = loop_handle_dragged;
+
+        // Right-Click Ruler Context Menu: Add Song Marker, Set Loop Start/End!
+        ruler_resp.context_menu(|ui| {
+            let ph = project
+                .snap_grid
+                .snap(telem.playhead_beat, project.time_signature);
+            if ui
+                .button(format!("🚩 Add Song Marker at Beat {:.1}", ph))
+                .clicked()
+            {
+                let n = project.markers.len() + 1;
+                project.add_marker(format!("Marker {}", n), ph);
+                actions.push(ArrangementAction::ProjectMutated("Add Song Marker"));
+                ui.close_menu();
+            }
+            if ui.button("⟦ Set Loop Start to Playhead").clicked() {
+                project.loop_start_beat = ph.min(project.loop_end_beat - 1.0).max(0.0);
+                actions.push(ArrangementAction::ProjectMutated("Set Loop Start"));
+                ui.close_menu();
+            }
+            if ui.button("⟧ Set Loop End to Playhead").clicked() {
+                project.loop_end_beat = ph.max(project.loop_start_beat + 1.0);
+                actions.push(ArrangementAction::ProjectMutated("Set Loop End"));
+                ui.close_menu();
+            }
+        });
 
         // Auto Punch-In / Punch-Out Crimson Bracket on ruler!
         if project.punch_in_enabled && project.punch_end_beat > project.punch_start_beat {
@@ -384,28 +482,60 @@ impl ArrangementState {
             bar_idx += 1;
         }
 
-        // Song Markers
-        for marker in &project.markers {
-            let mx = ruler_tl_rect.left()
-                + ((marker.beat - self.scroll_beat) as f32 * self.pixels_per_beat);
+        // Interactive Song Markers (Click to Jump, Right-Click to Rename/Delete!)
+        let mut del_marker_id = None;
+        for m_idx in 0..project.markers.len() {
+            let m_id = project.markers[m_idx].id;
+            let m_beat = project.markers[m_idx].beat;
+            let mx =
+                ruler_tl_rect.left() + ((m_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
             if mx >= ruler_tl_rect.left() && mx <= ruler_tl_rect.right() - 24.0 {
-                let mc = track_color32(marker.color);
-                ui.painter().rect_filled(
-                    Rect::from_min_size(Pos2::new(mx + 2.0, ruler_tl_rect.top() + 1.0), Vec2::new(46.0, 12.0)),
-                    2,
-                    mc.gamma_multiply(0.35),
+                let mc = track_color32(project.markers[m_idx].color);
+                let flag_rect = Rect::from_min_size(
+                    Pos2::new(mx + 2.0, ruler_tl_rect.top() + 1.0),
+                    Vec2::new(54.0, 13.0),
                 );
+                ui.painter()
+                    .rect_filled(flag_rect, 2, mc.gamma_multiply(0.35));
                 ui.painter().text(
-                    Pos2::new(mx + 5.0, ruler_tl_rect.top() + 7.0),
+                    Pos2::new(mx + 5.0, ruler_tl_rect.top() + 7.5),
                     Align2::LEFT_CENTER,
-                    &marker.name,
+                    &project.markers[m_idx].name,
                     FontId::proportional(9.5),
                     mc,
                 );
+                let m_resp = ui
+                    .interact(flag_rect, ui.id().with(("song_mk", m_id)), Sense::click())
+                    .on_hover_text("Click to jump Playhead • Right-click to rename or delete");
+                if m_resp.clicked() {
+                    actions.push(ArrangementAction::Seek(m_beat));
+                }
+                m_resp.context_menu(|ui| {
+                    ui.label("Marker Name:");
+                    if ui
+                        .text_edit_singleline(&mut project.markers[m_idx].name)
+                        .changed()
+                    {
+                        actions.push(ArrangementAction::ProjectMutated("Rename Marker"));
+                    }
+                    if ui
+                        .button(egui::RichText::new("🗑 Delete Marker").color(ACCENT_RED))
+                        .clicked()
+                    {
+                        del_marker_id = Some(m_id);
+                        ui.close_menu();
+                    }
+                });
             }
+        }
+        if let Some(dmid) = del_marker_id {
+            project.markers.retain(|m| m.id != dmid);
+            actions.push(ArrangementAction::ProjectMutated("Delete Marker"));
         }
 
         // Render Each Visible Track Row + Optional Multi-Take Comping Lanes!
+        let prev_row_bounds = self.track_row_bounds.clone();
+        self.track_row_bounds.clear();
         let mut playhead_top = ruler_tl_rect.top();
         let mut playhead_bot = ruler_tl_rect.bottom();
         playhead_top = playhead_top.min(ruler_tl_rect.top());
@@ -437,6 +567,8 @@ impl ArrangementState {
             let row_h = base_h + comp_h + (auto_lanes_count as f32) * auto_lane_h;
 
             let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, row_h), Sense::hover());
+            self.track_row_bounds
+                .push((track_id, row_rect.top(), row_rect.bottom()));
             playhead_bot = playhead_bot.max(row_rect.bottom());
 
             let row_bg = if selected_track == Some(track_id) {
@@ -496,6 +628,7 @@ impl ArrangementState {
                 ui,
                 lane_rect,
                 comp_area_rect,
+                &prev_row_bounds,
                 project,
                 t_idx,
                 selected_clip,
@@ -569,6 +702,64 @@ impl ArrangementState {
         if bg_resp.clicked() {
             actions.push(ArrangementAction::SelectTrack(track_id));
         }
+        if bg_resp.double_clicked() {
+            self.renaming_track = Some(track_id);
+        }
+
+        // Right-Click Track Header Context Menu: Rename, Color Swatches, Move Up/Down, Duplicate, Delete!
+        bg_resp.context_menu(|ui| {
+            ui.label(egui::RichText::new("Track Name:").size(10.5).color(TEXT_DIM));
+            if ui
+                .text_edit_singleline(&mut project.tracks[t_idx].name)
+                .changed()
+            {
+                actions.push(ArrangementAction::ProjectMutated("Rename Track"));
+            }
+            ui.separator();
+            ui.label(egui::RichText::new("Studio Color:").size(10.5).color(TEXT_DIM));
+            ui.horizontal(|ui| {
+                for &rgb in ferric_model::STUDIO_TRACK_COLORS {
+                    let c32 = track_color32(rgb);
+                    if ui
+                        .add(egui::Button::new("").fill(c32).min_size(Vec2::new(16.0, 16.0)))
+                        .clicked()
+                    {
+                        project.tracks[t_idx].color = rgb;
+                        actions.push(ArrangementAction::ProjectMutated("Change Track Color"));
+                        ui.close_menu();
+                    }
+                }
+            });
+            ui.separator();
+            if ui.button("▲ Move Track Up").clicked() {
+                actions.push(ArrangementAction::MoveTrack {
+                    track_id,
+                    delta: -1,
+                });
+                ui.close_menu();
+            }
+            if ui.button("▼ Move Track Down").clicked() {
+                actions.push(ArrangementAction::MoveTrack {
+                    track_id,
+                    delta: 1,
+                });
+                ui.close_menu();
+            }
+            if ui.button("⧉ Duplicate Track").clicked() {
+                actions.push(ArrangementAction::DuplicateTrack(track_id));
+                ui.close_menu();
+            }
+            if project.tracks.len() > 1 {
+                ui.separator();
+                if ui
+                    .button(egui::RichText::new("🗑 Delete Track").color(ACCENT_RED))
+                    .clicked()
+                {
+                    actions.push(ArrangementAction::DeleteTrack(track_id));
+                    ui.close_menu();
+                }
+            }
+        });
 
         // Color strip on left
         let strip = Rect::from_min_size(
@@ -603,12 +794,27 @@ impl ArrangementState {
                             !project.tracks[t_idx].folder_collapsed;
                     }
                 }
-                let lbl = egui::RichText::new(&project.tracks[t_idx].name)
-                    .size(12.0)
-                    .strong()
-                    .color(TEXT_MAIN);
-                if ui.add(egui::Label::new(lbl).truncate()).clicked() {
-                    actions.push(ArrangementAction::SelectTrack(track_id));
+                if self.renaming_track == Some(track_id) {
+                    let te = ui.text_edit_singleline(&mut project.tracks[t_idx].name);
+                    if te.lost_focus() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        self.renaming_track = None;
+                        actions.push(ArrangementAction::ProjectMutated("Rename Track"));
+                    } else {
+                        te.request_focus();
+                    }
+                } else {
+                    let lbl = egui::RichText::new(&project.tracks[t_idx].name)
+                        .size(12.0)
+                        .strong()
+                        .color(TEXT_MAIN);
+                    let l_resp = ui
+                        .add(egui::Label::new(lbl).truncate().sense(Sense::click()))
+                        .on_hover_text("Click to select • Double-click or Right-click to rename, color, reorder, or delete");
+                    if l_resp.double_clicked() {
+                        self.renaming_track = Some(track_id);
+                    } else if l_resp.clicked() {
+                        actions.push(ArrangementAction::SelectTrack(track_id));
+                    }
                 }
             });
 
@@ -808,6 +1014,7 @@ impl ArrangementState {
         ui: &mut Ui,
         lane_rect: Rect,
         comp_area_rect: Rect,
+        row_bounds: &[(TrackId, f32, f32)],
         project: &mut Project,
         t_idx: usize,
         selected_clip: Option<(TrackId, ClipId)>,
@@ -917,8 +1124,11 @@ impl ArrangementState {
 
             if clip_resp.drag_started() && self.tool == EditTool::SmartPointer {
                 if let Some(pos) = clip_resp.interact_pointer_pos() {
+                    let near_left = (pos.x - x0).abs() < 10.0;
                     let near_right = (x1 - pos.x).abs() < 10.0;
-                    let kind = if near_right {
+                    let kind = if near_left && len_b > 0.5 {
+                        DragKind::ResizeLeft
+                    } else if near_right {
                         DragKind::ResizeRight
                     } else {
                         DragKind::Move
@@ -929,24 +1139,45 @@ impl ArrangementState {
                 }
             }
 
-            if let Some((dt, dc, kind, _)) = self.drag_clip {
+            if let Some((dt, dc, kind, init_v)) = self.drag_clip {
                 if dt == track_id && dc == clip_id && clip_resp.dragged() {
                     let d_beats = (clip_resp.drag_delta().x / self.pixels_per_beat) as f64;
                     let clip_mut = &mut project.tracks[t_idx].clips[c_idx];
                     match kind {
                         DragKind::Move => {
-                            let next = (clip_mut.start_beat + d_beats).max(0.0);
-                            clip_mut.start_beat = if ui.input(|i| i.modifiers.shift) {
-                                next
-                            } else {
-                                next
-                            };
+                            clip_mut.start_beat = (clip_mut.start_beat + d_beats).max(0.0);
+
+                            // Vertical Track-to-Track Clip Drag!
+                            if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
+                                if let Some(&(hover_tid, _, _)) = row_bounds
+                                    .iter()
+                                    .find(|&&(_, y0, y1)| ptr.y >= y0 && ptr.y <= y1)
+                                {
+                                    if hover_tid != track_id {
+                                        self.drag_clip = Some((hover_tid, clip_id, kind, init_v));
+                                        actions.push(ArrangementAction::MoveClipToTrack {
+                                            from_track: track_id,
+                                            to_track: hover_tid,
+                                            clip_id,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        DragKind::ResizeLeft => {
+                            let max_trim = (clip_mut.length_beats - 0.25).max(0.0);
+                            let trim = d_beats.clamp(-clip_mut.start_beat, max_trim);
+                            clip_mut.start_beat += trim;
+                            clip_mut.length_beats = (clip_mut.length_beats - trim).max(0.25);
+                            clip_mut.slip_offset_beats =
+                                (clip_mut.slip_offset_beats + trim * clip_mut.stretch_rate as f64)
+                                    .max(0.0);
                         }
                         DragKind::ResizeRight => {
                             clip_mut.length_beats = (clip_mut.length_beats + d_beats).max(0.25);
                         }
                     }
-                    actions.push(ArrangementAction::ProjectMutated("Move/Resize Clip"));
+                    actions.push(ArrangementAction::ProjectMutated("Move/Trim Clip"));
                 }
             }
 

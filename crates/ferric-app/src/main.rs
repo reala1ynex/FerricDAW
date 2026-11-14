@@ -374,9 +374,9 @@ impl FerricDawApp {
             return;
         }
         let events: Vec<CapturedTakeEvent> = self.capture_inbox.drain(..).collect();
+        self.snapshot_before("Commit Captured Take(s)");
         for ev in events {
-            self.snapshot_before("Commit Captured Take");
-            let target_tid = self
+            let fallback_tid = self
                 .project
                 .tracks
                 .iter()
@@ -387,11 +387,13 @@ impl FerricDawApp {
 
             match ev {
                 CapturedTakeEvent::MidiTake {
+                    target_track,
                     start_beat,
                     length_beats,
                     notes,
                     is_retroactive,
                 } => {
+                    let target_tid = target_track.unwrap_or(fallback_tid);
                     if let Some(trk) = self.project.find_track_mut(target_tid) {
                         if let Some(existing) = trk
                             .clips
@@ -423,6 +425,7 @@ impl FerricDawApp {
                     };
                 }
                 CapturedTakeEvent::AudioTake {
+                    target_track,
                     start_beat,
                     length_beats,
                     sample_rate,
@@ -430,6 +433,7 @@ impl FerricDawApp {
                     right,
                     is_retroactive,
                 } => {
+                    let target_tid = target_track.unwrap_or(fallback_tid);
                     let buf = audio_buffer_from_capture(sample_rate, left, right);
                     if let Some(trk) = self.project.find_track_mut(target_tid) {
                         if let Some(existing) = trk
@@ -461,8 +465,8 @@ impl FerricDawApp {
                     };
                 }
             }
-            self.sync_engine();
         }
+        self.sync_engine();
     }
 
     fn execute_palette_command(&mut self, cmd: PaletteCommand) {
@@ -1839,6 +1843,47 @@ impl eframe::App for FerricDawApp {
                         ArrangementAction::ToggleFreezeTrack(tid) => {
                             self.toggle_freeze_track(tid);
                         }
+                        ArrangementAction::MoveClipToTrack {
+                            from_track,
+                            to_track,
+                            clip_id,
+                        } => {
+                            self.snapshot_before("Move Clip Between Tracks");
+                            if self
+                                .project
+                                .move_clip_to_track(from_track, to_track, clip_id)
+                            {
+                                self.selected_track = Some(to_track);
+                                self.selected_clip = Some((to_track, clip_id));
+                                need_sync = true;
+                            }
+                        }
+                        ArrangementAction::DeleteTrack(tid) => {
+                            self.snapshot_before("Delete Track");
+                            if self.project.delete_track(tid) {
+                                if self.selected_track == Some(tid) {
+                                    self.selected_track =
+                                        self.project.tracks.first().map(|t| t.id);
+                                }
+                                if self.selected_clip.map(|(t, _)| t) == Some(tid) {
+                                    self.selected_clip = None;
+                                }
+                                need_sync = true;
+                            }
+                        }
+                        ArrangementAction::DuplicateTrack(tid) => {
+                            self.snapshot_before("Duplicate Track");
+                            if let Some(new_tid) = self.project.duplicate_track(tid) {
+                                self.selected_track = Some(new_tid);
+                                need_sync = true;
+                            }
+                        }
+                        ArrangementAction::MoveTrack { track_id, delta } => {
+                            self.snapshot_before("Reorder Track");
+                            if self.project.move_track(track_id, delta) {
+                                need_sync = true;
+                            }
+                        }
                         ArrangementAction::AddTrack => {
                             self.snapshot_before("Add Track");
                             let idx = self.project.tracks.len() + 1;
@@ -1865,7 +1910,7 @@ fn main() -> eframe::Result<()> {
     env_logger::init();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FerricDAW v0.2 — Full-Fledged Open-Source Rust Hybrid DAW")
+            .with_title("FerricDAW — Full-Fledged Open-Source Rust Hybrid DAW")
             .with_inner_size([1520.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
             .with_drag_and_drop(true),

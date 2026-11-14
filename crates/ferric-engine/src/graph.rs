@@ -246,6 +246,11 @@ impl AudioGraphCore {
         self.input_tuner.last_reading
     }
 
+    #[inline]
+    pub fn track_post_fader_slices(&self, t_idx: usize, frames: usize) -> (&[f32], &[f32]) {
+        (&self.bus_l[t_idx][..frames], &self.bus_r[t_idx][..frames])
+    }
+
     /// Zero-allocation real-time audio block evaluation with PDC, Freeze, WSOLA & Sidechains!
     pub fn render_block(
         &mut self,

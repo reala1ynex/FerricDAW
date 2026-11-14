@@ -17,7 +17,7 @@ use ferric_dsp::{
     db_to_lin, lin_to_db, FxRuntimeInstance, MasterMeterSnapshot, MidiEvent, ModulatorRuntime,
     TunerReading, VocalPitchTelemetry,
 };
-use ferric_model::{AudioBuffer, FxKind, MidiNote, Project, TrackId};
+use ferric_model::{AudioBuffer, FxKind, InputSource, MidiNote, Project, TrackId};
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{Arc, Mutex};
@@ -124,12 +124,14 @@ impl Default for EngineTelemetry {
 
 pub enum CapturedTakeEvent {
     MidiTake {
+        target_track: Option<TrackId>,
         start_beat: f64,
         length_beats: f64,
         notes: Vec<MidiNote>,
         is_retroactive: bool,
     },
     AudioTake {
+        target_track: Option<TrackId>,
         start_beat: f64,
         length_beats: f64,
         sample_rate: u32,
@@ -169,6 +171,9 @@ struct RtCallbackState {
     rec_midi: Vec<StampedMidi>,
     rec_audio_l: Vec<f32>,
     rec_audio_r: Vec<f32>,
+    rec_resample_track: Option<TrackId>,
+    rec_resample_l: Vec<f32>,
+    rec_resample_r: Vec<f32>,
     last_midi_note: Option<u8>,
     last_midi_cc: Option<(u8, u8, u8)>,
     samples_since_telem: usize,
@@ -191,11 +196,13 @@ enum CaptureRequest {
         right: Vec<f32>,
     },
     FinishedLiveMidi {
+        target_track: Option<TrackId>,
         start_beat: f64,
         end_beat: f64,
         events: Vec<StampedMidi>,
     },
     FinishedLiveAudio {
+        target_track: Option<TrackId>,
         start_beat: f64,
         end_beat: f64,
         sample_rate: u32,
@@ -324,6 +331,9 @@ impl EngineHandle {
             rec_midi: Vec::with_capacity(4096),
             rec_audio_l: Vec::with_capacity(sample_rate as usize * 180),
             rec_audio_r: Vec::with_capacity(sample_rate as usize * 180),
+            rec_resample_track: None,
+            rec_resample_l: Vec::with_capacity(sample_rate as usize * 180),
+            rec_resample_r: Vec::with_capacity(sample_rate as usize * 180),
             last_midi_note: None,
             last_midi_cc: None,
             samples_since_telem: 0,
@@ -706,6 +716,9 @@ impl RtCallbackState {
                         self.rec_midi.clear();
                         self.rec_audio_l.clear();
                         self.rec_audio_r.clear();
+                        self.rec_resample_l.clear();
+                        self.rec_resample_r.clear();
+                        self.rec_resample_track = None;
                     }
                 }
                 EngineCommand::Stop => {
@@ -734,6 +747,9 @@ impl RtCallbackState {
                         self.rec_midi.clear();
                         self.rec_audio_l.clear();
                         self.rec_audio_r.clear();
+                        self.rec_resample_l.clear();
+                        self.rec_resample_r.clear();
+                        self.rec_resample_track = None;
                     }
                 }
                 EngineCommand::SeekBeat(beat) => {
@@ -887,6 +903,27 @@ impl RtCallbackState {
                 &mut self.out_r[..chunk],
             );
 
+            // Capture live ResampleTrackOutput post-fader audio if any armed track selects it!
+            if self.is_actively_recording_now()
+                && self.rec_resample_l.len() + chunk <= self.rec_resample_l.capacity()
+            {
+                if let Some((t_idx, trk)) = self
+                    .project
+                    .tracks
+                    .iter()
+                    .take(MAX_ENGINE_TRACKS)
+                    .enumerate()
+                    .find(|(_, t)| {
+                        t.record_arm && t.input_source == InputSource::ResampleTrackOutput
+                    })
+                {
+                    self.rec_resample_track = Some(trk.id);
+                    let (rl, rr) = self.core.track_post_fader_slices(t_idx, chunk);
+                    self.rec_resample_l.extend_from_slice(rl);
+                    self.rec_resample_r.extend_from_slice(rr);
+                }
+            }
+
             // Mix Browser Sample Audition Preview!
             if let Some(ref pbuf) = self.preview_buf {
                 let step = pbuf.sample_rate as f64 / self.core.sample_rate as f64;
@@ -1015,29 +1052,78 @@ impl RtCallbackState {
     }
 
     fn flush_live_recording_at(&mut self, end_beat: f64) {
+        let safe_end = end_beat.max(self.record_start_beat + 1.0);
+
+        // 1. Flush MIDI Take (simultaneously alongside Audio if both LPK25 & DS-10 were played!)
         if !self.rec_midi.is_empty() {
+            let midi_target = self
+                .project
+                .tracks
+                .iter()
+                .find(|t| t.record_arm && t.input_source == InputSource::MidiAll)
+                .or_else(|| {
+                    self.project.tracks.iter().find(|t| {
+                        t.record_arm && matches!(t.input_source, InputSource::AudioAndMidi { .. })
+                    })
+                })
+                .map(|t| t.id);
+
             let events = self.rec_midi.clone();
             self.rec_midi.clear();
             let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveMidi {
+                target_track: midi_target,
                 start_beat: self.record_start_beat,
-                end_beat: end_beat.max(self.record_start_beat + 1.0),
+                end_beat: safe_end,
                 events,
             });
-            self.rec_audio_l.clear();
-            self.rec_audio_r.clear();
-        } else if self.has_hw_audio_signal && self.rec_audio_l.len() > 2048 {
+        }
+
+        // 2. Flush Hardware Line-In / Mic Audio Take (e.g., Nintendo DS KORG DS-10!)
+        let audio_target = self
+            .project
+            .tracks
+            .iter()
+            .find(|t| {
+                t.record_arm
+                    && matches!(
+                        t.input_source,
+                        InputSource::AudioMono { .. } | InputSource::AudioAndMidi { .. }
+                    )
+            })
+            .map(|t| t.id);
+
+        if self.has_hw_audio_signal && audio_target.is_some() && self.rec_audio_l.len() > 2048 {
             let left = self.rec_audio_l.clone();
             let right = self.rec_audio_r.clone();
-            self.rec_audio_l.clear();
-            self.rec_audio_r.clear();
             let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveAudio {
+                target_track: audio_target,
                 start_beat: self.record_start_beat,
-                end_beat: end_beat.max(self.record_start_beat + 1.0),
+                end_beat: safe_end,
                 sample_rate: self.core.sample_rate as u32,
                 left,
                 right,
             });
         }
+        self.rec_audio_l.clear();
+        self.rec_audio_r.clear();
+
+        // 3. Flush ResampleTrackOutput Take (internal synth/arp/KAOSS resample!)
+        if let Some(res_tid) = self.rec_resample_track.take() {
+            if self.rec_resample_l.len() > 2048 {
+                let left = self.rec_resample_l.clone();
+                let right = self.rec_resample_r.clone();
+                let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveAudio {
+                    target_track: Some(res_tid),
+                    start_beat: self.record_start_beat,
+                    end_beat: safe_end,
+                    sample_rate: self.core.sample_rate as u32,
+                    left,
+                    right,
+                });
+            }
+        }
+        self.rec_resample_l.clear();
+        self.rec_resample_r.clear();
     }
 
     fn emit_retroactive_capture(&mut self, seconds_back: f32) {
@@ -1127,6 +1213,7 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
                 return None;
             }
             Some(CapturedTakeEvent::MidiTake {
+                target_track: None,
                 start_beat,
                 length_beats: span_beats,
                 notes,
@@ -1143,6 +1230,7 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
             let secs = left.len() as f64 / sample_rate as f64;
             let beats = (secs * bpm / 60.0).max(1.0);
             Some(CapturedTakeEvent::AudioTake {
+                target_track: None,
                 start_beat: (current_beat - beats).max(0.0),
                 length_beats: beats,
                 sample_rate,
@@ -1152,6 +1240,7 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
             })
         }
         CaptureRequest::FinishedLiveMidi {
+            target_track,
             start_beat,
             end_beat,
             events,
@@ -1181,6 +1270,7 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
                 return None;
             }
             Some(CapturedTakeEvent::MidiTake {
+                target_track,
                 start_beat,
                 length_beats: (end_beat - start_beat).max(1.0),
                 notes,
@@ -1188,12 +1278,14 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
             })
         }
         CaptureRequest::FinishedLiveAudio {
+            target_track,
             start_beat,
             end_beat,
             sample_rate,
             left,
             right,
         } => Some(CapturedTakeEvent::AudioTake {
+            target_track,
             start_beat,
             length_beats: (end_beat - start_beat).max(1.0),
             sample_rate,

@@ -75,6 +75,7 @@ pub fn render_mixer_console(
                                             InputSource::AudioMono { channel: 0 },
                                             InputSource::AudioMono { channel: 1 },
                                             InputSource::MidiAll,
+                                            InputSource::ResampleTrackOutput,
                                         ] {
                                             if ui
                                                 .selectable_value(

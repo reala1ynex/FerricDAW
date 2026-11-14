@@ -507,6 +507,107 @@ impl Project {
         id
     }
 
+    /// Cleanly removes a track and cleans up any folder/send/sidechain/MIDI-learn references pointing to it!
+    pub fn delete_track(&mut self, track_id: TrackId) -> bool {
+        let Some(pos) = self.tracks.iter().position(|t| t.id == track_id) else {
+            return false;
+        };
+        let parent_of_deleted = self.tracks[pos].parent_folder_id;
+        self.tracks.remove(pos);
+
+        for t in &mut self.tracks {
+            if t.parent_folder_id == Some(track_id) {
+                t.parent_folder_id = parent_of_deleted;
+            }
+            t.sends.retain(|s| s.target_track_id != track_id);
+            for fx in &mut t.fx_chain {
+                if fx.sidechain_source == Some(track_id) {
+                    fx.sidechain_source = None;
+                }
+            }
+        }
+        self.midi_learn_mappings
+            .retain(|m| m.track_id != track_id);
+        true
+    }
+
+    pub fn duplicate_track(&mut self, track_id: TrackId) -> Option<TrackId> {
+        let pos = self.tracks.iter().position(|t| t.id == track_id)?;
+        let mut dup = self.tracks[pos].clone();
+        dup.id = Uuid::new_v4();
+        dup.name = format!("{} (Copy)", dup.name);
+        for fx in &mut dup.fx_chain {
+            fx.id = Uuid::new_v4();
+        }
+        for m in &mut dup.modulators {
+            m.id = Uuid::new_v4();
+            m.routings.clear();
+        }
+        for c in &mut dup.clips {
+            c.id = Uuid::new_v4();
+            for fx in &mut c.clip_fx {
+                fx.id = Uuid::new_v4();
+            }
+        }
+        let new_id = dup.id;
+        self.tracks.insert(pos + 1, dup);
+        Some(new_id)
+    }
+
+    pub fn move_track(&mut self, track_id: TrackId, delta: isize) -> bool {
+        let Some(pos) = self.tracks.iter().position(|t| t.id == track_id) else {
+            return false;
+        };
+        let target = (pos as isize + delta).clamp(0, self.tracks.len().saturating_sub(1) as isize)
+            as usize;
+        if target == pos {
+            return false;
+        }
+        self.tracks.swap(pos, target);
+        true
+    }
+
+    /// Moves a `TimelineClip` from `from_track` onto `to_track` cleanly!
+    pub fn move_clip_to_track(
+        &mut self,
+        from_track: TrackId,
+        to_track: TrackId,
+        clip_id: ClipId,
+    ) -> bool {
+        if from_track == to_track {
+            return false;
+        }
+        let Some(src) = self.find_track_mut(from_track) else {
+            return false;
+        };
+        let Some(pos) = src.clips.iter().position(|c| c.id == clip_id) else {
+            return false;
+        };
+        let clip = src.clips.remove(pos);
+        if let Some(dst) = self.find_track_mut(to_track) {
+            dst.clips.push(clip);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn add_marker(&mut self, name: impl Into<String>, beat: f64) -> Uuid {
+        let idx = self.markers.len();
+        let col = crate::track::STUDIO_TRACK_COLORS[idx % crate::track::STUDIO_TRACK_COLORS.len()];
+        let m = TimelineMarker {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            beat: beat.max(0.0),
+            color: col,
+        };
+        let id = m.id;
+        self.markers.push(m);
+        self.markers
+            .sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+        id
+    }
+
     pub fn split_clip(
         &mut self,
         track_id: TrackId,
