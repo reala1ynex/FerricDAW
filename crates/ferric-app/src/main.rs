@@ -580,6 +580,21 @@ impl FerricDawApp {
                 self.selected_track = Some(id);
                 self.sync_engine();
             }
+            PaletteCommand::AddWavetableSynthTrack => {
+                self.snapshot_before("Add FerricWave Wavetable Synth Track");
+                let id = self.project.add_track(format!(
+                    "{:02} FerricWave Cloud",
+                    self.project.tracks.len() + 1
+                ));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.fx_chain.push(FxSlot::new(FxKind::WavetableSynth));
+                    t.fx_chain.push(FxSlot::new(FxKind::MultibandOtt));
+                    t.fx_chain.push(FxSlot::new(FxKind::ConvolutionIr));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
             PaletteCommand::AddSynthTrack => {
                 self.snapshot_before("Add PolySynth Track");
                 let id = self
@@ -2112,6 +2127,36 @@ impl eframe::App for FerricDawApp {
                             }
                             DockAction::ReloadSamplerFx(fx_slot) => {
                                 self.engine.force_reload_sampler(&fx_slot);
+                                need_sync = true;
+                            }
+                            DockAction::CreateMidiTrackFromAudioBlobs {
+                                source_name,
+                                start_beat,
+                                length_beats,
+                                notes,
+                            } => {
+                                self.snapshot_before("Convert Audio Pitch Blobs to MIDI Track");
+                                let note_cnt = notes.len();
+                                let new_tid = self
+                                    .project
+                                    .add_track(format!("{} (Audio→MIDI)", source_name));
+                                let clip = TimelineClip::new_midi(
+                                    format!("{} Melody", source_name),
+                                    start_beat,
+                                    length_beats.max(1.0),
+                                    notes,
+                                );
+                                let cid = clip.id;
+                                if let Some(trk) = self.project.find_track_mut(new_tid) {
+                                    trk.fx_chain.push(FxSlot::new(FxKind::WavetableSynth));
+                                    trk.clips.push(clip);
+                                }
+                                self.selected_track = Some(new_tid);
+                                self.selected_clip = Some((new_tid, cid));
+                                self.status_banner = format!(
+                                    "🎹 Extracted {} MIDI note(s) from '{}' onto a new FerricWave Wavetable Synth track!",
+                                    note_cnt, source_name
+                                );
                                 need_sync = true;
                             }
                             DockAction::ToggleExternalPluginEditor(fx_id) => {

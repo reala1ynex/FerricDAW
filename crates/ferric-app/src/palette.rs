@@ -11,6 +11,7 @@ pub enum PaletteCommand {
     ToggleFreezeSelectedTrack,
     AddUniversalTrack,
     AddSynthTrack,
+    AddWavetableSynthTrack,
     AddSamplerTrack,
     AddVocalPitchTrack,
     AddDrumTrack,
@@ -239,6 +240,12 @@ impl CommandPalette {
                 shortcut: "",
                 category: "TRACK",
                 cmd: PaletteCommand::AddGuitarAmpTrack,
+            },
+            ActionItem {
+                title: "Add FerricWave Track (Wavetable + Granular Shimmer Cloud + OTT)",
+                shortcut: "",
+                category: "TRACK",
+                cmd: PaletteCommand::AddWavetableSynthTrack,
             },
             ActionItem {
                 title: "Add PolySynth Track (16-Voice VA/FM + Stereo Delay)",

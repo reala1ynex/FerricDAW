@@ -385,6 +385,51 @@ pub struct StretchMarker {
     pub source_sec: f64,
 }
 
+/// Melodyne / VariAudio / ReaTune style Visual Pitch Blob detected inside a monophonic Audio Clip!
+/// Lets users drag individual sung/played notes up/down on a pitch grid, flatten vibrato/drift,
+/// OR convert any hummed/guitar audio take directly into a playable MIDI clip in 1 click!
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NotePitchBlob {
+    pub id: Uuid,
+    pub start_beat: f64,
+    pub end_beat: f64,
+    /// Original detected MIDI pitch center (e.g. `64.18` = slightly sharp E4).
+    pub detected_midi: f32,
+    /// User-edited target MIDI note (`0..=127`, defaults to `detected_midi.round()`).
+    pub target_midi: f32,
+    /// Fine pitch offset in cents (`-100 ..= +100`).
+    pub fine_cents: f32,
+    /// `0.0` = preserve 100% original drift/vibrato, `1.0` = hard pitch-center lock!
+    pub drift_flatten: f32,
+    /// Normalized RMS amplitude (`0.0 ..= 1.0`) for visual blob thickness AND MIDI velocity!
+    pub rms_norm: f32,
+    /// Sub-blob pitch contour offsets in semitones relative to `detected_midi` (up to 16 points) for drawing the exact vocal pitch curve!
+    #[serde(default)]
+    pub contour_semitones: Vec<f32>,
+}
+
+impl NotePitchBlob {
+    /// Net pitch shift in semitones applied by the WSOLA audio engine across `[start_beat .. end_beat]`.
+    #[inline]
+    pub fn net_pitch_shift_semitones(&self) -> f32 {
+        let center_shift = (self.target_midi + self.fine_cents * 0.01) - self.detected_midi;
+        center_shift.clamp(-24.0, 24.0)
+    }
+
+    pub fn to_midi_note(&self) -> MidiNote {
+        let pitch = (self.target_midi + self.fine_cents * 0.01)
+            .round()
+            .clamp(0.0, 127.0) as u8;
+        let vel = (38.0 + self.rms_norm.clamp(0.0, 1.0) * 89.0).round() as u8;
+        MidiNote::new(
+            pitch,
+            vel,
+            self.start_beat,
+            (self.end_beat - self.start_beat).max(0.125),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineClip {
     pub id: ClipId,
@@ -405,6 +450,8 @@ pub struct TimelineClip {
     pub stretch_mode: TimeStretchMode,
     #[serde(default)]
     pub warp_markers: Vec<StretchMarker>,
+    #[serde(default)]
+    pub pitch_blobs: Vec<NotePitchBlob>,
     pub fade_in_beats: f64,
     pub fade_out_beats: f64,
     pub fade_shape: FadeShape,
@@ -442,6 +489,7 @@ impl TimelineClip {
             stretch_rate: 1.0,
             stretch_mode: TimeStretchMode::ElastiqueWsola,
             warp_markers: Vec::new(),
+            pitch_blobs: Vec::new(),
             fade_in_beats: 0.0,
             fade_out_beats: 0.0,
             fade_shape: FadeShape::EqualPower,
@@ -475,6 +523,7 @@ impl TimelineClip {
             stretch_rate: 1.0,
             stretch_mode: TimeStretchMode::ElastiqueWsola,
             warp_markers: Vec::new(),
+            pitch_blobs: Vec::new(),
             fade_in_beats: 0.04,
             fade_out_beats: 0.04,
             fade_shape: FadeShape::EqualPower,
@@ -488,6 +537,24 @@ impl TimelineClip {
 
     pub fn end_beat(&self) -> f64 {
         self.start_beat + self.length_beats
+    }
+
+    /// Evaluates total pitch-shift in semitones at `local_beat`, combining clip-level transpose
+    /// with any Melodyne-style per-note `NotePitchBlob` edit!
+    #[inline]
+    pub fn effective_pitch_semitones_at(&self, local_beat: f64) -> f32 {
+        let mut semi = self.pitch_semitones;
+        for blob in &self.pitch_blobs {
+            if local_beat >= blob.start_beat && local_beat <= blob.end_beat {
+                semi += blob.net_pitch_shift_semitones();
+                break;
+            }
+        }
+        semi.clamp(-36.0, 36.0)
+    }
+
+    pub fn pitch_blobs_to_midi_notes(&self) -> Vec<MidiNote> {
+        self.pitch_blobs.iter().map(|b| b.to_midi_note()).collect()
     }
 
     pub fn is_midi(&self) -> bool {

@@ -1,7 +1,8 @@
 use crate::biquad::StereoBiquad;
 use crate::tuner::ChromaticTuner;
-use ferric_model::{AudioBuffer, MusicalScale};
+use ferric_model::{AudioBuffer, MusicalScale, NotePitchBlob};
 use std::f32::consts::PI;
+use uuid::Uuid;
 
 const PITCH_RING_LEN: usize = 8192; // Power of 2 (~170ms @ 48kHz)
 const GRAIN_LEN_SAMPLES: f32 = 1536.0; // ~32ms Hann grain for clean vocal/guitar pitch shifting
@@ -238,4 +239,211 @@ impl VocalPitchProcessor {
             right[i] = r;
         }
     }
+}
+
+/// Melodyne / ReaTune Offline Note-Blob Pitch & Rhythm Extractor!
+/// Scans any monophonic vocal, guitar, bass, or synth `AudioBuffer` using 25 ms YIN windows,
+/// segments contiguous pitched phrases into discrete `NotePitchBlob`s with 16-point vibrato contours,
+/// and enables both per-note Melodyne pitch dragging AND 1-click **Audio-to-MIDI** conversion!
+pub fn analyze_audio_pitch_blobs(
+    buffer: &AudioBuffer,
+    bpm: f64,
+    clip_len_beats: f64,
+) -> Vec<NotePitchBlob> {
+    let total_frames = buffer.len_frames();
+    let sr = buffer.sample_rate.max(8_000) as f32;
+    if total_frames < 1024 {
+        return Vec::new();
+    }
+
+    let hop = ((0.020 * sr).round() as usize).max(256); // 20 ms hop
+    let win = ((0.042 * sr).round() as usize).clamp(512, 4096); // ~42 ms YIN window
+    let min_tau = (sr / 1100.0).floor().max(2.0) as usize;
+    let max_tau = ((sr / 48.0).ceil() as usize).min(win / 2 - 2);
+    let spb = 60.0 / bpm.max(20.0);
+
+    #[derive(Clone, Copy)]
+    struct FrameEst {
+        beat: f64,
+        voiced: bool,
+        midi: f32,
+        rms: f32,
+    }
+
+    let mut frames_est = Vec::with_capacity(total_frames / hop + 1);
+    let mut diff = vec![0.0_f32; max_tau + 2];
+    let mut max_rms = 0.01_f32;
+
+    let mut pos = 0usize;
+    while pos + win <= total_frames {
+        let sec = (pos as f64) / (sr as f64);
+        let beat = sec / spb;
+        if beat > clip_len_beats {
+            break;
+        }
+
+        let mut energy = 0.0_f32;
+        for i in 0..(win / 2) {
+            let m = 0.5 * (buffer.left[pos + i] + buffer.right[pos + i]);
+            energy += m * m;
+        }
+        let rms = (energy / (win / 2) as f32).sqrt();
+        max_rms = max_rms.max(rms);
+
+        if rms < 0.008 {
+            frames_est.push(FrameEst {
+                beat,
+                voiced: false,
+                midi: 0.0,
+                rms,
+            });
+            pos += hop;
+            continue;
+        }
+
+        diff[0] = 1.0;
+        let mut run_sum = 0.0_f32;
+        let half = win / 2;
+        for tau in 1..=max_tau {
+            let mut s = 0.0_f32;
+            let mut j = 0;
+            while j < half {
+                let a = 0.5 * (buffer.left[pos + j] + buffer.right[pos + j]);
+                let b = 0.5 * (buffer.left[pos + j + tau] + buffer.right[pos + j + tau]);
+                let d = a - b;
+                s += d * d;
+                j += 2;
+            }
+            run_sum += s;
+            diff[tau] = if run_sum > 1e-12 {
+                s * (tau as f32) / run_sum
+            } else {
+                1.0
+            };
+        }
+
+        let mut best_tau = None;
+        let mut tau = min_tau;
+        while tau < max_tau {
+            if diff[tau] < 0.18 {
+                while tau + 1 < max_tau && diff[tau + 1] < diff[tau] {
+                    tau += 1;
+                }
+                best_tau = Some(tau);
+                break;
+            }
+            tau += 1;
+        }
+        if best_tau.is_none() {
+            let mut mv = 1.0_f32;
+            let mut mi = 0usize;
+            for (t, &dv) in diff.iter().enumerate().take(max_tau).skip(min_tau) {
+                if dv < mv {
+                    mv = dv;
+                    mi = t;
+                }
+            }
+            if mv < 0.30 {
+                best_tau = Some(mi);
+            }
+        }
+
+        if let Some(t0) = best_tau {
+            let (y0, y1, y2) = (diff[t0 - 1], diff[t0], diff[t0 + 1]);
+            let den = 2.0 * (2.0 * y1 - y2 - y0);
+            let refined = if den.abs() > 1e-9 {
+                t0 as f32 + (y2 - y0) / den
+            } else {
+                t0 as f32
+            };
+            let freq = sr / refined.max(1.0);
+            let midi = 69.0 + 12.0 * (freq / 440.0).log2();
+            if (24.0..=108.0).contains(&midi) {
+                frames_est.push(FrameEst {
+                    beat,
+                    voiced: true,
+                    midi,
+                    rms,
+                });
+            } else {
+                frames_est.push(FrameEst {
+                    beat,
+                    voiced: false,
+                    midi: 0.0,
+                    rms,
+                });
+            }
+        } else {
+            frames_est.push(FrameEst {
+                beat,
+                voiced: false,
+                midi: 0.0,
+                rms,
+            });
+        }
+
+        pos += hop;
+    }
+
+    // Group contiguous voiced frames within ±0.80 semitones (and split on sharp onset jumps!) into `NotePitchBlob`s
+    let hop_beats = (hop as f64 / sr as f64) / spb;
+    let mut blobs = Vec::new();
+    let mut seg: Vec<FrameEst> = Vec::new();
+
+    let flush_seg = |seg: &mut Vec<FrameEst>, blobs: &mut Vec<NotePitchBlob>| {
+        if seg.len() < 3 {
+            seg.clear();
+            return;
+        }
+        let start_b = seg.first().unwrap().beat;
+        let end_b = seg.last().unwrap().beat + hop_beats;
+        if end_b - start_b < 0.10 {
+            seg.clear();
+            return;
+        }
+        // Median MIDI pitch for vibrato-immune pitch center
+        let mut pitches: Vec<f32> = seg.iter().map(|f| f.midi).collect();
+        pitches.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median_midi = pitches[pitches.len() / 2];
+        let avg_rms = seg.iter().map(|f| f.rms).sum::<f32>() / seg.len() as f32;
+
+        // Downsample 16-point contour for Melodyne pitch-curve rendering
+        let mut contour = Vec::with_capacity(16);
+        for k in 0..16 {
+            let idx = (k * (seg.len() - 1)) / 15;
+            contour.push((seg[idx].midi - median_midi).clamp(-2.0, 2.0));
+        }
+
+        blobs.push(NotePitchBlob {
+            id: Uuid::new_v4(),
+            start_beat: start_b,
+            end_beat: end_b,
+            detected_midi: median_midi,
+            target_midi: median_midi.round(),
+            fine_cents: (median_midi - median_midi.round()) * 100.0, // Starts at 0 net shift until user snaps or drags!
+            drift_flatten: 0.0,
+            rms_norm: (avg_rms / max_rms).clamp(0.15, 1.0),
+            contour_semitones: contour,
+        });
+        seg.clear();
+    };
+
+    for est in frames_est {
+        if !est.voiced {
+            flush_seg(&mut seg, &mut blobs);
+            continue;
+        }
+        if let Some(first) = seg.first() {
+            let prev = seg.last().unwrap();
+            let pitch_jump = (est.midi - first.midi).abs() > 0.85;
+            let onset_reattack = est.rms > prev.rms * 2.1 && seg.len() >= 4;
+            if pitch_jump || onset_reattack {
+                flush_seg(&mut seg, &mut blobs);
+            }
+        }
+        seg.push(est);
+    }
+    flush_seg(&mut seg, &mut blobs);
+
+    blobs
 }

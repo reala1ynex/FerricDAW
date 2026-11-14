@@ -8,3 +8,4 @@ description = "Zero-allocation real-time DSP effects, VA/FM poly synth, drum eng
 [dependencies]
 ferric-model = { path = "../ferric-model" }
 rustfft.workspace = true
+uuid.workspace = true

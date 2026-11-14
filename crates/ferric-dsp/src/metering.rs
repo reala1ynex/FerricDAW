@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 use std::sync::Arc;
 
 pub const SPECTRUM_BANDS: usize = 64;
+pub const VECTORSCOPE_POINTS: usize = 48;
 const FFT_SIZE: usize = 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -16,6 +17,8 @@ pub struct MasterMeterSnapshot {
     pub short_term_lufs: f32,
     pub phase_correlation: f32,
     pub spectrum_db: [f32; SPECTRUM_BANDS],
+    /// 45°-rotated Mid/Side Lissajous Goniometer coordinates `(side_x, mid_y)` in `[-1.0 ..= 1.0]`!
+    pub vectorscope_xy: [(f32, f32); VECTORSCOPE_POINTS],
 }
 
 impl Default for MasterMeterSnapshot {
@@ -29,6 +32,7 @@ impl Default for MasterMeterSnapshot {
             short_term_lufs: -70.0,
             phase_correlation: 1.0,
             spectrum_db: [-84.0; SPECTRUM_BANDS],
+            vectorscope_xy: [(0.0, 0.0); VECTORSCOPE_POINTS],
         }
     }
 }
@@ -156,6 +160,18 @@ impl LoudnessAndSpectrumAnalyzer {
         let short_term_lufs =
             (-0.691 + 10.0 * self.short_term_ms_energy.max(1e-10).log10()).clamp(-70.0, 6.0);
 
+        let mut vectorscope_xy = [(0.0_f32, 0.0_f32); VECTORSCOPE_POINTS];
+        let stride = (frames / VECTORSCOPE_POINTS).max(1);
+        for p in 0..VECTORSCOPE_POINTS {
+            let idx = (p * stride).min(frames - 1);
+            let l = left[idx];
+            let r = right[idx];
+            // Standard 45° Studio Goniometer rotation: Y = Mid (L+R)*0.707, X = Side (L-R)*0.707
+            let mid = ((l + r) * 0.7071).clamp(-1.0, 1.0);
+            let side = ((l - r) * 0.7071).clamp(-1.0, 1.0);
+            vectorscope_xy[p] = (side, mid);
+        }
+
         MasterMeterSnapshot {
             peak_l_db: lin_to_db(peak_l),
             peak_r_db: lin_to_db(peak_r),
@@ -165,6 +181,7 @@ impl LoudnessAndSpectrumAnalyzer {
             short_term_lufs,
             phase_correlation: phase_corr,
             spectrum_db: self.smoothed_spectrum,
+            vectorscope_xy,
         }
     }
 

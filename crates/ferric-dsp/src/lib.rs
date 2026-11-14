@@ -1,4 +1,5 @@
 pub mod biquad;
+pub mod convolution_ott;
 pub mod effects;
 pub mod instruments;
 pub mod metering;
@@ -6,8 +7,10 @@ pub mod sampler;
 pub mod tempo_arp;
 pub mod tuner;
 pub mod warp_pitch;
+pub mod wavetable;
 
 pub use biquad::StereoBiquad;
+pub use convolution_ott::{ConvolutionIrProcessor, MultibandOttProcessor};
 pub use effects::{
     AmpCabProcessor, CompressorProcessor, NoiseGateProcessor, ParametricEqProcessor,
     PlateReverbProcessor, StereoDelayProcessor, TapeSaturatorProcessor,
@@ -16,14 +19,16 @@ pub use instruments::{DrumKitProcessor, MidiEvent, PolySynthProcessor};
 pub use metering::{
     db_to_lin, lin_to_db, master_normalize_and_limit_true_peak, measure_integrated_lufs,
     measure_true_peak_dbtp, LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, TpdfDither,
-    SPECTRUM_BANDS,
+    SPECTRUM_BANDS, VECTORSCOPE_POINTS,
 };
 pub use sampler::SamplePlayerProcessor;
 pub use tempo_arp::{ArpRuntime, MidiExpression, OnsetBpmDetector};
 pub use tuner::{ChromaticTuner, TunerReading};
 pub use warp_pitch::{
-    sample_wsola_decoupled, DualGrainPitchShifter, VocalPitchProcessor, VocalPitchTelemetry,
+    analyze_audio_pitch_blobs, sample_wsola_decoupled, DualGrainPitchShifter, VocalPitchProcessor,
+    VocalPitchTelemetry,
 };
+pub use wavetable::{WavetableSynthProcessor, WT_FRAMES, WT_SAMPLES};
 
 use ferric_model::{AudioBuffer, FxId, FxKind, LfoShape, ModulatorId, ModulatorKind};
 use std::f32::consts::TAU;
@@ -68,6 +73,7 @@ impl ExternalPluginAdapter for PassthroughExternalPlugin {
 
 pub enum DspProcessor {
     PolySynth(PolySynthProcessor),
+    WavetableSynth(WavetableSynthProcessor),
     DrumKit(DrumKitProcessor),
     SamplePlayer(SamplePlayerProcessor),
     ChromaticTuner(ChromaticTuner),
@@ -75,10 +81,12 @@ pub enum DspProcessor {
     NoiseGate(NoiseGateProcessor),
     ParametricEq(ParametricEqProcessor),
     Compressor(CompressorProcessor),
+    MultibandOtt(MultibandOttProcessor),
     AmpCabSim(AmpCabProcessor),
     TapeSaturator(TapeSaturatorProcessor),
     StereoDelay(StereoDelayProcessor),
     PlateHallReverb(PlateReverbProcessor),
+    ConvolutionIr(ConvolutionIrProcessor),
     ExternalClap(Box<dyn ExternalPluginAdapter>),
 }
 
@@ -94,6 +102,9 @@ impl FxRuntimeInstance {
     pub fn new(id: FxId, kind: FxKind, sample_rate: f32, max_block: usize) -> Self {
         let processor = match kind {
             FxKind::PolySynth => DspProcessor::PolySynth(PolySynthProcessor::new(sample_rate)),
+            FxKind::WavetableSynth => {
+                DspProcessor::WavetableSynth(WavetableSynthProcessor::new(sample_rate))
+            }
             FxKind::DrumKit => DspProcessor::DrumKit(DrumKitProcessor::new(sample_rate)),
             FxKind::SamplePlayer => {
                 DspProcessor::SamplePlayer(SamplePlayerProcessor::new(sample_rate))
@@ -107,6 +118,9 @@ impl FxRuntimeInstance {
                 DspProcessor::ParametricEq(ParametricEqProcessor::new(sample_rate))
             }
             FxKind::Compressor => DspProcessor::Compressor(CompressorProcessor::new(sample_rate)),
+            FxKind::MultibandOtt => {
+                DspProcessor::MultibandOtt(MultibandOttProcessor::new(sample_rate))
+            }
             FxKind::AmpCabSim => DspProcessor::AmpCabSim(AmpCabProcessor::new(sample_rate)),
             FxKind::TapeSaturator => {
                 DspProcessor::TapeSaturator(TapeSaturatorProcessor::new(sample_rate))
@@ -116,6 +130,9 @@ impl FxRuntimeInstance {
             }
             FxKind::PlateHallReverb => {
                 DspProcessor::PlateHallReverb(PlateReverbProcessor::new(sample_rate))
+            }
+            FxKind::ConvolutionIr => {
+                DspProcessor::ConvolutionIr(ConvolutionIrProcessor::new(sample_rate))
             }
             FxKind::ExternalClap => {
                 DspProcessor::ExternalClap(Box::new(PassthroughExternalPlugin))
@@ -145,8 +162,17 @@ impl FxRuntimeInstance {
     }
 
     pub fn set_sampler_data(&mut self, buffer: Option<AudioBuffer>, slices: Vec<usize>) {
-        if let DspProcessor::SamplePlayer(sp) = &mut self.processor {
-            sp.set_sample(buffer, slices);
+        match &mut self.processor {
+            DspProcessor::SamplePlayer(sp) => sp.set_sample(buffer, slices),
+            DspProcessor::WavetableSynth(wt) => {
+                if let Some(ref b) = buffer {
+                    wt.load_custom_wavetable(b);
+                }
+            }
+            DspProcessor::ConvolutionIr(conv) => {
+                conv.set_custom_ir(buffer);
+            }
+            _ => {}
         }
     }
 
@@ -230,6 +256,9 @@ impl FxRuntimeInstance {
             DspProcessor::PolySynth(p) => {
                 p.process_with_expression(left, right, params, midi_events, midi_expr)
             }
+            DspProcessor::WavetableSynth(p) => {
+                p.process_with_expression(left, right, params, midi_events, midi_expr)
+            }
             DspProcessor::DrumKit(p) => p.process(left, right, params, midi_events),
             DspProcessor::SamplePlayer(p) => {
                 p.process_with_expression(left, right, params, midi_events, midi_expr)
@@ -250,10 +279,12 @@ impl FxRuntimeInstance {
             DspProcessor::Compressor(p) => {
                 p.process_with_sidechain(left, right, params, sidechain_key)
             }
+            DspProcessor::MultibandOtt(p) => p.process(left, right, params),
             DspProcessor::AmpCabSim(p) => p.process(left, right, params),
             DspProcessor::TapeSaturator(p) => p.process(left, right, params),
             DspProcessor::StereoDelay(p) => p.process(left, right, params, bpm),
             DspProcessor::PlateHallReverb(p) => p.process(left, right, params),
+            DspProcessor::ConvolutionIr(p) => p.process(left, right, params),
             DspProcessor::ExternalClap(ext) => ext.process(left, right, params, bpm, midi_events),
         }
 
@@ -511,5 +542,127 @@ mod tests {
         assert!(note_ons.len() >= 4);
         assert_eq!(note_ons[0], 60);
         assert_eq!(note_ons[1], 64);
+    }
+
+    #[test]
+    fn milestone8_wavetable_convolution_ott_and_melodyne_blobs_verified() {
+        let sr = 48_000.0;
+
+        // 1. Test FerricWave Wavetable + Shimmer Granular Cloud + Custom WAV Import
+        let mut wt = WavetableSynthProcessor::new(sr);
+        let custom_samples: Vec<f32> = (0..4096)
+            .map(|i| (TAU * (i as f32 / 128.0)).sin() * 0.7 + (TAU * 3.0 * (i as f32 / 128.0)).sin() * 0.25)
+            .collect();
+        let custom_buf =
+            AudioBuffer::from_stereo(48_000, custom_samples.clone(), custom_samples, None);
+        wt.load_custom_wavetable(&custom_buf);
+
+        let mut wt_params: Vec<f32> = FxKind::WavetableSynth
+            .param_specs()
+            .iter()
+            .map(|s| s.default)
+            .collect();
+        wt_params[0] = 3.0; // Bank 3 = Custom WAV!
+        wt_params[2] = 6.0; // 6x Stereo Unison
+        wt_params[4] = 45.0; // 45% Shimmer Granular Cloud
+        let mut wl = vec![0.0_f32; 4096];
+        let mut wr = vec![0.0_f32; 4096];
+        wt.process_with_expression(
+            &mut wl,
+            &mut wr,
+            &wt_params,
+            &[MidiEvent {
+                sample_offset: 0,
+                note: 60,
+                velocity: 112,
+                is_note_on: true,
+            }],
+            MidiExpression::default(),
+        );
+        let wt_energy: f32 = wl.iter().zip(&wr).map(|(a, b)| a * a + b * b).sum();
+        assert!(wt_energy > 0.05, "FerricWave should produce clean stereo audio");
+        assert!(wl.iter().chain(&wr).all(|v| v.is_finite()));
+
+        // 2. Test Partitioned FFT Convolution IR Engine (Direct FIR head + FFT tail)
+        let mut conv = ConvolutionIrProcessor::new(sr);
+        let mut ir_samples = vec![0.0_f32; 1024];
+        ir_samples[10] = 1.0; // Direct FIR tap (< 64)
+        ir_samples[400] = 0.8; // Partitioned FFT tail tap (> 256)
+        let ir_buf = AudioBuffer::from_stereo(48_000, ir_samples.clone(), ir_samples, None);
+        conv.set_custom_ir(Some(ir_buf));
+
+        let conv_params = [4.0, 0.0, 100.0, 20.0, 18000.0, 0.0]; // Custom IR, 0ms pre-delay, flat EQ
+        let mut cl = vec![0.0_f32; 1024];
+        let mut cr = vec![0.0_f32; 1024];
+        cl[0] = 1.0;
+        cr[0] = 1.0;
+        conv.process(&mut cl, &mut cr, &conv_params);
+        let conv_energy: f32 = cl.iter().map(|v| v * v).sum();
+        assert!(conv_energy > 0.001, "Convolution IR must output impulse energy");
+        assert!(cl[10].abs() > 0.02, "Direct zero-latency FIR tap at sample 10 must fire");
+        assert!(cl.iter().chain(&cr).all(|v| v.is_finite()));
+
+        // 3. Test 3-Band Linkwitz-Riley Upward/Downward ("OTT") Multiband Compressor
+        let mut ott = MultibandOttProcessor::new(sr);
+        let mut ott_params: Vec<f32> = FxKind::MultibandOtt
+            .param_specs()
+            .iter()
+            .map(|s| s.default)
+            .collect();
+        ott_params[0] = 100.0; // 100% OTT Depth
+        ott_params[1] = 25.0; // Fast Time Scale
+        // Feed a quiet (-48 dBFS) 440 Hz tone for 24,000 samples (0.5s) and verify upward lift
+        let quiet_amp = 0.004_f32;
+        let mut ql: Vec<f32> = (0..24_000)
+            .map(|i| quiet_amp * (TAU * 440.0 * (i as f32 / sr)).sin())
+            .collect();
+        let mut qr = ql.clone();
+        let in_rms = (ql[20_000..].iter().map(|x| x * x).sum::<f32>() / 4_000.0).sqrt();
+        ott.process(&mut ql, &mut qr, &ott_params);
+        let out_rms = (ql[20_000..].iter().map(|x| x * x).sum::<f32>() / 4_000.0).sqrt();
+        assert!(
+            out_rms > in_rms * 1.5,
+            "OTT upward compression should lift quiet signal (in_rms={}, out_rms={})",
+            in_rms,
+            out_rms
+        );
+        // Also verify hot (+0 dBFS) signal gets downward-compressed cleanly
+        let mut hl: Vec<f32> = (0..12_000)
+            .map(|i| 0.95 * (TAU * 440.0 * (i as f32 / sr)).sin())
+            .collect();
+        let mut hr = hl.clone();
+        let hot_in = (hl[8_000..].iter().map(|x| x * x).sum::<f32>() / 4_000.0).sqrt();
+        ott.process(&mut hl, &mut hr, &ott_params);
+        let hot_out = (hl[8_000..].iter().map(|x| x * x).sum::<f32>() / 4_000.0).sqrt();
+        assert!(
+            hot_out < hot_in * 0.75,
+            "OTT downward compression should tame hot signal (hot_in={}, hot_out={})",
+            hot_in,
+            hot_out
+        );
+        assert!(ql.iter().chain(&qr).chain(&hl).all(|v| v.is_finite()));
+
+        // 4. Test Melodyne-style Audio-to-Pitch-Blobs + 1-Click Audio-to-MIDI Conversion!
+        // Synthesize a 3-note sung/lead line at 120 BPM (0.5s per beat): C4 (261.63Hz), E4 (329.63Hz), G4 (392.00Hz)
+        let note_freqs = [261.6256_f32, 329.6276_f32, 391.9954_f32];
+        let samples_per_beat = 24_000usize;
+        let mut melody = vec![0.0_f32; samples_per_beat * 3];
+        for (n_idx, &hz) in note_freqs.iter().enumerate() {
+            let base = n_idx * samples_per_beat;
+            // Leave a tiny 40ms breath gap at the end of each beat so segmenter cleanly splits notes
+            let voiced_len = samples_per_beat - 2_400;
+            for k in 0..voiced_len {
+                melody[base + k] = 0.55 * (TAU * hz * (k as f32 / sr)).sin();
+            }
+        }
+        let mel_buf = AudioBuffer::from_stereo(48_000, melody.clone(), melody, None);
+        let blobs = analyze_audio_pitch_blobs(&mel_buf, 120.0, 3.0);
+        assert_eq!(blobs.len(), 3, "Expected 3 detected Melodyne pitch blobs, got {}", blobs.len());
+
+        let mut clip = ferric_model::TimelineClip::new_audio("VocalLead", 0.0, 3.0, mel_buf);
+        clip.pitch_blobs = blobs;
+        let extracted_midi = clip.pitch_blobs_to_midi_notes();
+        let pitches: Vec<u8> = extracted_midi.iter().map(|n| n.pitch).collect();
+        assert_eq!(pitches, vec![60, 64, 67], "Audio->MIDI must extract C4 (60), E4 (64), G4 (67)");
     }
 }

@@ -10,6 +10,7 @@ pub type ModulatorId = Uuid;
 pub enum FxKind {
     // Instruments (MIDI -> Audio)
     PolySynth,
+    WavetableSynth,
     DrumKit,
     SamplePlayer,
     // Studio Utility, Pitch & Dynamics
@@ -18,19 +19,22 @@ pub enum FxKind {
     NoiseGate,
     ParametricEq,
     Compressor,
+    MultibandOtt,
     // Home Recording & Character
     AmpCabSim,
     TapeSaturator,
-    // Time & Space
+    // Time, Space & Acoustic IR Convolution
     StereoDelay,
     PlateHallReverb,
-    // Open-Standard External Plugin Hosting (.clap)
+    ConvolutionIr,
+    // Open-Standard External Plugin Hosting (.clap / .vst3)
     ExternalClap,
 }
 
 impl FxKind {
     pub const ALL: &'static [FxKind] = &[
         FxKind::PolySynth,
+        FxKind::WavetableSynth,
         FxKind::DrumKit,
         FxKind::SamplePlayer,
         FxKind::ChromaticTuner,
@@ -38,16 +42,19 @@ impl FxKind {
         FxKind::NoiseGate,
         FxKind::ParametricEq,
         FxKind::Compressor,
+        FxKind::MultibandOtt,
         FxKind::AmpCabSim,
         FxKind::TapeSaturator,
         FxKind::StereoDelay,
         FxKind::PlateHallReverb,
+        FxKind::ConvolutionIr,
         FxKind::ExternalClap,
     ];
 
     pub fn display_name(self) -> &'static str {
         match self {
             FxKind::PolySynth => "Ferric PolySynth (16-Voice VA/FM)",
+            FxKind::WavetableSynth => "FerricWave (Wavetable + Granular Cloud Synth)",
             FxKind::DrumKit => "Ferric 8-Pad Studio Drum Kit",
             FxKind::SamplePlayer => "Ferric Chromatic & Slice Sampler",
             FxKind::ChromaticTuner => "Chromatic Strobe Tuner",
@@ -55,17 +62,20 @@ impl FxKind {
             FxKind::NoiseGate => "Hysteresis Studio Gate (+Sidechain)",
             FxKind::ParametricEq => "4-Band Parametric EQ + Analyzer",
             FxKind::Compressor => "Opto/VCA Studio Compressor (+Sidechain)",
+            FxKind::MultibandOtt => "3-Band OTT Up/Down Multiband Dynamics",
             FxKind::AmpCabSim => "Ferric Tube Amp & Cab Modeler",
             FxKind::TapeSaturator => "Oxide Tape Saturator & Limiter",
             FxKind::StereoDelay => "Tempo Ping-Pong Tape Delay",
             FxKind::PlateHallReverb => "Lush Plate / Hall Reverb",
-            FxKind::ExternalClap => "External CLAP Audio/Instrument Plugin",
+            FxKind::ConvolutionIr => "Zero-Latency Convolution Reverb & Cab IR",
+            FxKind::ExternalClap => "External CLAP / VST3 Plugin",
         }
     }
 
     pub fn short_badge(self) -> &'static str {
         match self {
             FxKind::PolySynth => "SYNTH",
+            FxKind::WavetableSynth => "WAVE+GRAN",
             FxKind::DrumKit => "DRUMS",
             FxKind::SamplePlayer => "SAMPLER",
             FxKind::ChromaticTuner => "TUNER",
@@ -73,10 +83,12 @@ impl FxKind {
             FxKind::NoiseGate => "GATE",
             FxKind::ParametricEq => "EQ-4",
             FxKind::Compressor => "COMP",
+            FxKind::MultibandOtt => "OTT-3",
             FxKind::AmpCabSim => "AMP",
             FxKind::TapeSaturator => "TAPE",
             FxKind::StereoDelay => "DELAY",
             FxKind::PlateHallReverb => "REVERB",
+            FxKind::ConvolutionIr => "CONV-IR",
             FxKind::ExternalClap => "CLAP",
         }
     }
@@ -84,7 +96,7 @@ impl FxKind {
     pub fn is_instrument(self) -> bool {
         matches!(
             self,
-            FxKind::PolySynth | FxKind::DrumKit | FxKind::SamplePlayer
+            FxKind::PolySynth | FxKind::WavetableSynth | FxKind::DrumKit | FxKind::SamplePlayer
         )
     }
 
@@ -201,9 +213,42 @@ impl FxKind {
             ParamSpec::new("Macro P4", "%", 0.0, 100.0, 50.0),
             ParamSpec::new("Output Trim", "dB", -24.0, 12.0, 0.0),
         ];
+        const WAVETABLE_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("WT Bank", "", 0.0, 3.0, 0.0),        // 0=AnalogMorph, 1=FormantVocal, 2=DigitalFM, 3=CustomWAV
+            ParamSpec::new("WT Pos", "%", 0.0, 100.0, 32.0),     // Morph across 64 wavetable frames!
+            ParamSpec::new("Unison", "v", 1.0, 8.0, 4.0),        // 1..=8 stereo unison voices
+            ParamSpec::new("Detune", "%", 0.0, 100.0, 26.0),
+            ParamSpec::new("Grain Cloud", "%", 0.0, 100.0, 24.0), // Shimmer granular cloud layer blend!
+            ParamSpec::new("Grain Size", "ms", 12.0, 180.0, 58.0),
+            ParamSpec::new("Cutoff", "Hz", 60.0, 18000.0, 4200.0),
+            ParamSpec::new("Resonance", "", 0.05, 0.92, 0.24),
+            ParamSpec::new("Attack", "ms", 1.0, 2000.0, 18.0),
+            ParamSpec::new("Decay", "ms", 10.0, 3000.0, 420.0),
+            ParamSpec::new("Sustain", "%", 0.0, 100.0, 72.0),
+            ParamSpec::new("Release", "ms", 10.0, 4000.0, 460.0),
+        ];
+        const MULTIBAND_OTT_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Depth (OTT)", "%", 0.0, 100.0, 55.0),
+            ParamSpec::new("Time", "%", 10.0, 250.0, 100.0),
+            ParamSpec::new("Low X-Over", "Hz", 60.0, 400.0, 120.0),
+            ParamSpec::new("High X-Over", "Hz", 1200.0, 8000.0, 2500.0),
+            ParamSpec::new("Low Gain", "dB", -12.0, 12.0, 0.5),
+            ParamSpec::new("Mid Gain", "dB", -12.0, 12.0, 0.0),
+            ParamSpec::new("High Sheen", "dB", -12.0, 12.0, 1.5),
+            ParamSpec::new("Output", "dB", -18.0, 18.0, 0.0),
+        ];
+        const CONVOLUTION_IR_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("IR Space", "", 0.0, 4.0, 0.0), // 0=Studio Hall, 1=Vintage EMT Plate, 2=Spring Tank, 3=4x12 Celestion Cab, 4=Custom WAV IR
+            ParamSpec::new("Pre-Delay", "ms", 0.0, 120.0, 12.0),
+            ParamSpec::new("IR Stretch", "%", 50.0, 200.0, 100.0),
+            ParamSpec::new("Low Cut", "Hz", 20.0, 500.0, 90.0),
+            ParamSpec::new("High Damp", "Hz", 1500.0, 18000.0, 11000.0),
+            ParamSpec::new("Output", "dB", -24.0, 12.0, 0.0),
+        ];
 
         match self {
             FxKind::PolySynth => POLYSYNTH_SPECS,
+            FxKind::WavetableSynth => WAVETABLE_SPECS,
             FxKind::DrumKit => DRUMKIT_SPECS,
             FxKind::SamplePlayer => SAMPLER_SPECS,
             FxKind::ChromaticTuner => TUNER_SPECS,
@@ -211,10 +256,12 @@ impl FxKind {
             FxKind::NoiseGate => GATE_SPECS,
             FxKind::ParametricEq => EQ_SPECS,
             FxKind::Compressor => COMP_SPECS,
+            FxKind::MultibandOtt => MULTIBAND_OTT_SPECS,
             FxKind::AmpCabSim => AMP_SPECS,
             FxKind::TapeSaturator => TAPE_SPECS,
             FxKind::StereoDelay => DELAY_SPECS,
             FxKind::PlateHallReverb => REVERB_SPECS,
+            FxKind::ConvolutionIr => CONVOLUTION_IR_SPECS,
             FxKind::ExternalClap => CLAP_SPECS,
         }
     }
@@ -345,6 +392,7 @@ impl FxSlot {
         let wet_mix = match kind {
             FxKind::StereoDelay => 0.30,
             FxKind::PlateHallReverb => 0.25,
+            FxKind::ConvolutionIr => 0.32,
             _ => 1.0,
         };
         Self {
@@ -536,6 +584,41 @@ pub struct FactoryPreset {
 }
 
 pub const FACTORY_PRESETS: &[FactoryPreset] = &[
+    FactoryPreset {
+        category: "Synth",
+        name: "FerricWave Lush Shimmer Cloud Pad",
+        kind: FxKind::WavetableSynth,
+        params: &[1.0, 48.0, 6.0, 34.0, 52.0, 82.0, 6200.0, 0.22, 120.0, 650.0, 82.0, 920.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Synth",
+        name: "FerricWave Hyper-Saw Unison Lead",
+        kind: FxKind::WavetableSynth,
+        params: &[0.0, 85.0, 8.0, 44.0, 12.0, 40.0, 9500.0, 0.30, 4.0, 280.0, 75.0, 260.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Mixing",
+        name: "Modern Pop / EDM 3-Band OTT Sheen",
+        kind: FxKind::MultibandOtt,
+        params: &[62.0, 95.0, 115.0, 2600.0, 1.0, 0.0, 2.2, 0.0],
+        wet_mix: 0.65,
+    },
+    FactoryPreset {
+        category: "Space",
+        name: "Cathedral True Convolution IR",
+        kind: FxKind::ConvolutionIr,
+        params: &[0.0, 18.0, 125.0, 110.0, 9500.0, 0.0],
+        wet_mix: 0.35,
+    },
+    FactoryPreset {
+        category: "Guitar & Bass",
+        name: "4x12 Celestion Studio Cab IR (100% Wet)",
+        kind: FxKind::ConvolutionIr,
+        params: &[3.0, 0.0, 100.0, 75.0, 6200.0, 0.0],
+        wet_mix: 1.0,
+    },
     FactoryPreset {
         category: "Synth",
         name: "Warm Juno Brass Pad",

@@ -782,7 +782,7 @@ impl EngineHandle {
                 self.load_external_plugin_instance(fx, sr)
             } else {
                 let mut i = FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
-                if fx.kind == FxKind::SamplePlayer {
+                if fx.sampler_buffer.is_some() {
                     i.set_sampler_data(fx.sampler_buffer.clone(), fx.sampler_slices.clone());
                 }
                 i
@@ -951,8 +951,7 @@ impl EngineHandle {
     }
 
     pub fn force_reload_sampler(&mut self, fx: &ferric_model::FxSlot) {
-        let mut inst =
-            FxRuntimeInstance::new(fx.id, FxKind::SamplePlayer, self.sample_rate as f32, 4096);
+        let mut inst = FxRuntimeInstance::new(fx.id, fx.kind, self.sample_rate as f32, 4096);
         inst.set_sampler_data(fx.sampler_buffer.clone(), fx.sampler_slices.clone());
         let _ = self.cmd_tx.push(EngineCommand::RegisterFx(Box::new(inst)));
     }

@@ -181,13 +181,19 @@ impl AudioGraphCore {
 
     fn ensure_fx(&mut self, fx: &ferric_model::FxSlot) {
         if let Some(existing) = self.fx_pool.iter_mut().find(|x| x.id == fx.id) {
-            if fx.kind == ferric_model::FxKind::SamplePlayer {
+            if matches!(
+                fx.kind,
+                ferric_model::FxKind::SamplePlayer
+                    | ferric_model::FxKind::WavetableSynth
+                    | ferric_model::FxKind::ConvolutionIr
+            ) && fx.sampler_buffer.is_some()
+            {
                 existing.set_sampler_data(fx.sampler_buffer.clone(), fx.sampler_slices.clone());
             }
             return;
         }
         let mut inst = FxRuntimeInstance::new(fx.id, fx.kind, self.sample_rate, self.max_block);
-        if fx.kind == ferric_model::FxKind::SamplePlayer {
+        if fx.sampler_buffer.is_some() {
             inst.set_sampler_data(fx.sampler_buffer.clone(), fx.sampler_slices.clone());
         }
         self.fx_pool.push(inst);
@@ -228,6 +234,7 @@ impl AudioGraphCore {
         for fx in &mut self.fx_pool {
             match &mut fx.processor {
                 ferric_dsp::DspProcessor::PolySynth(s) => s.all_notes_off(),
+                ferric_dsp::DspProcessor::WavetableSynth(w) => w.all_notes_off(),
                 ferric_dsp::DspProcessor::SamplePlayer(sp) => sp.all_notes_off(),
                 ferric_dsp::DspProcessor::ExternalClap(ext) => ext.reset(),
                 _ => {}
@@ -927,13 +934,18 @@ impl AudioGraphCore {
                     }
                     TakeContent::Audio { buffer } => {
                         let source_sec = clip.map_beat_to_source_seconds(inner_beat, spb);
+                        let eff_pitch_semi = clip.effective_pitch_semitones_at(local_beat);
                         let (mut l, mut r) = match clip.stretch_mode {
                             TimeStretchMode::ElastiqueWsola => {
-                                sample_wsola_decoupled(buffer, source_sec, clip.pitch_semitones)
+                                sample_wsola_decoupled(buffer, source_sec, eff_pitch_semi)
                             }
-                            TimeStretchMode::TapeVarispeed => buffer.sample_interpolated(
-                                source_sec * (buffer.sample_rate as f64) * varispeed_ratio,
-                            ),
+                            TimeStretchMode::TapeVarispeed => {
+                                let ratio = 2.0_f64.powf(eff_pitch_semi as f64 / 12.0);
+                                let _ = varispeed_ratio;
+                                buffer.sample_interpolated(
+                                    source_sec * (buffer.sample_rate as f64) * ratio,
+                                )
+                            }
                         };
 
                         // Smooth crossfade across Swipe-Comping boundaries
@@ -950,7 +962,7 @@ impl AudioGraphCore {
                                         let (pl, pr) = sample_wsola_decoupled(
                                             prev_buf,
                                             source_sec,
-                                            clip.pitch_semitones,
+                                            eff_pitch_semi,
                                         );
                                         let alpha = ((local_beat - (seg.start_beat - xfade_beats))
                                             / (2.0 * xfade_beats))

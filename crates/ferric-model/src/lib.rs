@@ -6,7 +6,8 @@ pub mod track;
 
 pub use clip::{
     eval_midi_cc_curve, AudioBuffer, ClipId, CompSegment, FadeShape, MidiCcPoint, MidiCcTarget,
-    MidiNote, SessionSlot, StretchMarker, Take, TakeContent, TakeId, TimeStretchMode, TimelineClip,
+    MidiNote, NotePitchBlob, SessionSlot, StretchMarker, Take, TakeContent, TakeId,
+    TimeStretchMode, TimelineClip,
 };
 pub use fx::{
     ExternalPluginFormat, FactoryPreset, FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget,
