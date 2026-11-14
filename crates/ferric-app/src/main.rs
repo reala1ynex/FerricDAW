@@ -131,7 +131,7 @@ impl FerricDawApp {
                 last_report: None,
             },
             status_banner: format!(
-                "v0.6 Mastering Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
+                "v1.0 Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
                 engine.audio_device_name, engine.sample_rate, engine.audio_input_name, lpk_badge
             ),
             project,
@@ -824,7 +824,18 @@ impl FerricDawApp {
             return;
         }
         if ctrl && ctx.input(|i| i.key_pressed(Key::D)) {
-            if let Some((tid, cid)) = self.selected_clip {
+            if self.arrangement.multi_selected_clips.len() > 1 {
+                self.snapshot_before("Duplicate Selected Clips");
+                let mut new_sel = Vec::new();
+                let batch = self.arrangement.multi_selected_clips.clone();
+                for (tid, cid) in batch {
+                    if let Some(nid) = self.project.duplicate_clip(tid, cid) {
+                        new_sel.push((tid, nid));
+                    }
+                }
+                self.arrangement.multi_selected_clips = new_sel;
+                self.sync_engine();
+            } else if let Some((tid, cid)) = self.selected_clip {
                 self.snapshot_before("Duplicate Clip");
                 if let Some(nid) = self.project.duplicate_clip(tid, cid) {
                     self.selected_clip = Some((tid, nid));
@@ -889,7 +900,16 @@ impl FerricDawApp {
             return;
         }
         if !ctrl && !shift && ctx.input(|i| i.key_pressed(Key::Delete)) {
-            if let Some((tid, cid)) = self.selected_clip.take() {
+            if self.arrangement.multi_selected_clips.len() > 1 {
+                self.snapshot_before("Delete Selected Clips");
+                let batch: Vec<_> = self.arrangement.multi_selected_clips.drain(..).collect();
+                for (tid, cid) in batch {
+                    self.project
+                        .delete_clip(tid, cid, self.arrangement.ripple_edit);
+                }
+                self.selected_clip = None;
+                self.sync_engine();
+            } else if let Some((tid, cid)) = self.selected_clip.take() {
                 self.snapshot_before("Delete Clip");
                 self.project
                     .delete_clip(tid, cid, self.arrangement.ripple_edit);
@@ -1135,6 +1155,7 @@ impl FerricDawApp {
                         } else {
                             let bbt = self.project.format_bar_beat_tick(telem.playhead_beat);
                             let secs = self.project.beats_to_seconds(telem.playhead_beat);
+                            let cur_ts = self.project.time_signature_at_beat(telem.playhead_beat);
                             ui.label(
                                 egui::RichText::new(bbt)
                                     .size(14.0)
@@ -1143,16 +1164,29 @@ impl FerricDawApp {
                                     .color(ACCENT_TEAL),
                             );
                             ui.label(
-                                egui::RichText::new(format!("{:05.2}s", secs))
-                                    .size(11.0)
-                                    .monospace()
-                                    .color(TEXT_DIM),
+                                egui::RichText::new(format!(
+                                    "{:05.2}s  {}/{}",
+                                    secs, cur_ts.numerator, cur_ts.denominator
+                                ))
+                                .size(11.0)
+                                .monospace()
+                                .color(TEXT_DIM),
                             );
                         }
                     });
                 });
 
-            if ui
+            if !self.project.tempo_map.is_empty() {
+                let live_bpm = self.project.bpm_at_beat(telem.playhead_beat);
+                ui.label(
+                    egui::RichText::new(format!("🎼 {:.1} BPM", live_bpm))
+                        .size(11.5)
+                        .monospace()
+                        .strong()
+                        .color(ACCENT_AMBER),
+                )
+                .on_hover_text("Live Conductor Tempo Map Active!");
+            } else if ui
                 .add(
                     egui::DragValue::new(&mut self.project.bpm)
                         .range(30.0..=300.0)
@@ -2069,7 +2103,7 @@ fn main() -> eframe::Result<()> {
     env_logger::init();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FerricDAW — Full-Fledged Open-Source Rust Hybrid DAW")
+            .with_title("FerricDAW v1.0 — Full-Fledged Open-Source Rust Hybrid DAW")
             .with_inner_size([1520.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
             .with_drag_and_drop(true),

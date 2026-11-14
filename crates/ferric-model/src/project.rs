@@ -98,6 +98,49 @@ pub struct TimelineMarker {
     pub color: [u8; 3],
 }
 
+/// Conductor Tempo Map node: supports both Instant Step changes AND smooth Linear Accelerando / Ritardando ramps!
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TempoPoint {
+    pub id: Uuid,
+    pub beat: f64,
+    pub bpm: f64,
+    /// When `true`, tempo interpolates linearly from this point's `bpm` to the next `TempoPoint`'s `bpm`!
+    #[serde(default)]
+    pub ramp_to_next: bool,
+}
+
+impl TempoPoint {
+    pub fn new(beat: f64, bpm: f64, ramp_to_next: bool) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            beat: beat.max(0.0),
+            bpm: bpm.clamp(20.0, 320.0),
+            ramp_to_next,
+        }
+    }
+}
+
+/// Conductor Time-Signature Change node (`4/4` -> `3/4` -> `7/8` -> `6/8` mid-song!).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeterChange {
+    pub id: Uuid,
+    pub beat: u32,
+    pub signature: TimeSignature,
+}
+
+impl MeterChange {
+    pub fn new(beat: u32, numerator: u8, denominator: u8) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            beat,
+            signature: TimeSignature {
+                numerator: numerator.clamp(1, 32),
+                denominator: denominator.clamp(1, 16),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scene {
     pub id: Uuid,
@@ -167,6 +210,12 @@ pub struct Project {
     pub count_in_bars: u8,
     #[serde(default)]
     pub midi_learn_mappings: Vec<MidiLearnMapping>,
+    #[serde(default)]
+    pub tempo_map: Vec<TempoPoint>,
+    #[serde(default)]
+    pub meter_map: Vec<MeterChange>,
+    #[serde(default)]
+    pub show_conductor_lane: bool,
     pub scenes: Vec<Scene>,
     pub markers: Vec<TimelineMarker>,
     pub tracks: Vec<Track>,
@@ -229,6 +278,9 @@ impl Project {
             metronome_enabled: false,
             count_in_bars: 0,
             midi_learn_mappings: Vec::new(),
+            tempo_map: Vec::new(),
+            meter_map: Vec::new(),
+            show_conductor_lane: false,
             scenes,
             markers: vec![
                 TimelineMarker {
@@ -249,21 +301,219 @@ impl Project {
         }
     }
 
+    /// Evaluates instantaneous BPM at `beat` from the Conductor `tempo_map` (supporting linear ramps!),
+    /// falling back cleanly to `self.bpm` when `tempo_map` is empty.
+    #[inline]
+    pub fn bpm_at_beat(&self, beat: f64) -> f64 {
+        if self.tempo_map.is_empty() {
+            return self.bpm.clamp(20.0, 320.0);
+        }
+        if beat <= self.tempo_map[0].beat {
+            return self.tempo_map[0].bpm.clamp(20.0, 320.0);
+        }
+        for pair in self.tempo_map.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            if beat >= a.beat && beat < b.beat {
+                if a.ramp_to_next {
+                    let span = (b.beat - a.beat).max(1e-6);
+                    let u = ((beat - a.beat) / span).clamp(0.0, 1.0);
+                    return (a.bpm + (b.bpm - a.bpm) * u).clamp(20.0, 320.0);
+                } else {
+                    return a.bpm.clamp(20.0, 320.0);
+                }
+            }
+        }
+        self.tempo_map.last().unwrap().bpm.clamp(20.0, 320.0)
+    }
+
+    /// Evaluates active `TimeSignature` at `beat` from the Conductor `meter_map`!
+    #[inline]
+    pub fn time_signature_at_beat(&self, beat: f64) -> TimeSignature {
+        let mut cur = self.time_signature;
+        for mc in &self.meter_map {
+            if beat + 1e-6 >= mc.beat as f64 {
+                cur = mc.signature;
+            } else {
+                break;
+            }
+        }
+        cur
+    }
+
+    pub fn upsert_tempo_point(&mut self, beat: f64, bpm: f64, ramp_to_next: bool) -> Uuid {
+        let bpm = bpm.clamp(20.0, 320.0);
+        if self.tempo_map.is_empty() && beat > 0.1 {
+            self.tempo_map
+                .push(TempoPoint::new(0.0, self.bpm, true));
+        }
+        if let Some(existing) = self
+            .tempo_map
+            .iter_mut()
+            .find(|p| (p.beat - beat).abs() < 0.12)
+        {
+            existing.bpm = bpm;
+            existing.beat = beat.max(0.0);
+            let id = existing.id;
+            self.sort_conductor_maps();
+            return id;
+        }
+        let pt = TempoPoint::new(beat, bpm, ramp_to_next);
+        let id = pt.id;
+        self.tempo_map.push(pt);
+        self.sort_conductor_maps();
+        id
+    }
+
+    pub fn add_meter_change(&mut self, beat: u32, numerator: u8, denominator: u8) -> Uuid {
+        if let Some(existing) = self.meter_map.iter_mut().find(|m| m.beat == beat) {
+            existing.signature = TimeSignature {
+                numerator: numerator.clamp(1, 32),
+                denominator: denominator.clamp(1, 16),
+            };
+            return existing.id;
+        }
+        let mc = MeterChange::new(beat, numerator, denominator);
+        let id = mc.id;
+        self.meter_map.push(mc);
+        self.sort_conductor_maps();
+        id
+    }
+
+    pub fn sort_conductor_maps(&mut self) {
+        self.tempo_map
+            .sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+        self.meter_map.sort_by_key(|m| m.beat);
+        if let Some(first) = self.tempo_map.first() {
+            if first.beat <= 0.01 {
+                self.bpm = first.bpm;
+            }
+        }
+    }
+
+    /// Exact closed-form analytical integral `\int_0^beats (60 / BPM(b)) db` across Stepped & Linear Tempo Ramps!
     pub fn beats_to_seconds(&self, beats: f64) -> f64 {
-        beats * 60.0 / self.bpm.max(20.0)
+        let target = beats.max(0.0);
+        if target <= 0.0 {
+            return 0.0;
+        }
+        if self.tempo_map.is_empty() {
+            return target * 60.0 / self.bpm.max(20.0);
+        }
+
+        let mut secs = 0.0_f64;
+        let mut cursor = 0.0_f64;
+
+        // Pre-first-point segment `[0 .. tempo_map[0].beat]`
+        let first = &self.tempo_map[0];
+        if first.beat > 0.0 {
+            let seg_end = target.min(first.beat);
+            secs += seg_end * (60.0 / first.bpm.max(20.0));
+            cursor = seg_end;
+            if cursor >= target {
+                return secs;
+            }
+        }
+
+        for pair in self.tempo_map.windows(2) {
+            let a = &pair[0];
+            let b = &pair[1];
+            if target <= a.beat {
+                break;
+            }
+            let s0 = cursor.max(a.beat);
+            let s1 = target.min(b.beat);
+            if s1 > s0 {
+                let db = s1 - s0;
+                if a.ramp_to_next && (b.bpm - a.bpm).abs() > 1e-4 && (b.beat - a.beat) > 1e-6 {
+                    let bpm0 = self.bpm_at_beat(s0);
+                    let bpm1 = self.bpm_at_beat(s1);
+                    secs += 60.0 * db * (bpm1 / bpm0).ln() / (bpm1 - bpm0);
+                } else {
+                    secs += db * (60.0 / a.bpm.max(20.0));
+                }
+                cursor = s1;
+            }
+            if cursor >= target {
+                return secs;
+            }
+        }
+
+        let last_bpm = self.tempo_map.last().unwrap().bpm.max(20.0);
+        if target > cursor {
+            secs += (target - cursor) * (60.0 / last_bpm);
+        }
+        secs
     }
 
+    pub fn beat_range_duration_secs(&self, start_beat: f64, end_beat: f64) -> f64 {
+        (self.beats_to_seconds(end_beat) - self.beats_to_seconds(start_beat)).max(0.0)
+    }
+
+    /// Monotonic inverse `seconds -> beats` solver (exact for constant BPM, sub-microsecond bisection for variable ramps!).
     pub fn seconds_to_beats(&self, secs: f64) -> f64 {
-        secs * self.bpm.max(20.0) / 60.0
+        let s = secs.max(0.0);
+        if self.tempo_map.is_empty() {
+            return s * self.bpm.max(20.0) / 60.0;
+        }
+        let mut lo = 0.0_f64;
+        let mut hi = (s * 320.0 / 60.0).max(4.0);
+        while self.beats_to_seconds(hi) < s {
+            hi *= 2.0;
+        }
+        for _ in 0..42 {
+            let mid = 0.5 * (lo + hi);
+            if self.beats_to_seconds(mid) < s {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
     }
 
+    /// Multi-Meter Bar.Beat.Tick formatter (`001.1.000`) supporting mid-song Time Signature changes!
     pub fn format_bar_beat_tick(&self, beat: f64) -> String {
-        let bpb = self.time_signature.beats_per_bar();
-        let bar = (beat / bpb).floor() as i64 + 1;
-        let in_bar = beat.rem_euclid(bpb);
-        let beat_num = in_bar.floor() as i64 + 1;
-        let ticks = ((in_bar.fract()) * 960.0).round() as i64;
+        let (bar, in_bar_beat, _ts) = self.bar_and_beat_at(beat.max(0.0));
+        let beat_num = in_bar_beat.floor() as i64 + 1;
+        let ticks = ((in_bar_beat.fract()) * 960.0).round() as i64;
         format!("{:03}.{}.{:03}", bar, beat_num, ticks.clamp(0, 959))
+    }
+
+    pub fn bar_and_beat_at(&self, beat: f64) -> (i64, f64, TimeSignature) {
+        let b = beat.max(0.0);
+        if self.meter_map.is_empty() {
+            let bpb = self.time_signature.beats_per_bar();
+            let bar = (b / bpb).floor() as i64 + 1;
+            let in_bar = b.rem_euclid(bpb);
+            return (bar, in_bar, self.time_signature);
+        }
+
+        let mut cur_bar = 1_i64;
+        let mut cur_beat = 0.0_f64;
+        let mut cur_ts = self.time_signature;
+
+        for mc in &self.meter_map {
+            let m_beat = mc.beat as f64;
+            if m_beat <= cur_beat {
+                cur_ts = mc.signature;
+                continue;
+            }
+            if b < m_beat {
+                break;
+            }
+            let bpb = cur_ts.beats_per_bar();
+            let bars_elapsed = ((m_beat - cur_beat) / bpb).ceil() as i64;
+            cur_bar += bars_elapsed.max(0);
+            cur_beat = m_beat;
+            cur_ts = mc.signature;
+        }
+
+        let bpb = cur_ts.beats_per_bar();
+        let rem = (b - cur_beat).max(0.0);
+        let add_bars = (rem / bpb).floor() as i64;
+        let in_bar = rem.rem_euclid(bpb);
+        (cur_bar + add_bars, in_bar, cur_ts)
     }
 
     pub fn project_end_beat(&self) -> f64 {

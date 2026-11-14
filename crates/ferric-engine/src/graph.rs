@@ -303,7 +303,8 @@ impl AudioGraphCore {
         }
         self.total_pdc_samples = max_pdc;
 
-        let beats_per_sample = (project.bpm.max(20.0) / 60.0) / self.sample_rate as f64;
+        let current_bpm = project.bpm_at_beat(self.playhead_beat).max(20.0);
+        let beats_per_sample = (current_bpm / 60.0) / self.sample_rate as f64;
         let in_count_in = self.is_playing && self.count_in_beats_remaining > 1e-5;
         let arrangement_playing = self.is_playing && !in_count_in;
         let block_start_beat = self.playhead_beat;
@@ -334,10 +335,10 @@ impl AudioGraphCore {
             if track.frozen {
                 if arrangement_playing {
                     if let Some(ref fbuf) = track.frozen_buffer {
-                        let spb = 60.0 / project.bpm.max(20.0);
+                        let start_sec = project.beats_to_seconds(block_start_beat);
+                        let dt_sec = 1.0 / self.sample_rate as f64;
                         for i in 0..frames {
-                            let b = block_start_beat + i as f64 * beats_per_sample;
-                            let pos = b * spb * fbuf.sample_rate as f64;
+                            let pos = (start_sec + i as f64 * dt_sec) * fbuf.sample_rate as f64;
                             let (l, r) = fbuf.sample_interpolated(pos);
                             self.bus_l[t_idx][i] += l;
                             self.bus_r[t_idx][i] += r;
@@ -410,20 +411,22 @@ impl AudioGraphCore {
                                 frames,
                                 block_start_beat,
                                 beats_per_sample,
-                                project.bpm,
+                                current_bpm,
                             );
                         }
                     } else {
-                        for clip in &track.clips {
+                        for (c_idx, clip) in track.clips.iter().enumerate() {
                             if !clip.muted {
                                 self.evaluate_timeline_clip(
+                                    track,
+                                    c_idx,
                                     clip,
                                     t_idx,
                                     frames,
                                     block_start_beat,
                                     block_end_beat,
                                     beats_per_sample,
-                                    project,
+                                    current_bpm,
                                 );
                             }
                         }
@@ -437,7 +440,7 @@ impl AudioGraphCore {
                     &track.arpeggiator,
                     frames,
                     self.sample_rate,
-                    project.bpm,
+                    current_bpm,
                     arrangement_playing,
                     block_start_beat,
                     &mut self.midi_scratch,
@@ -454,7 +457,7 @@ impl AudioGraphCore {
                                 &m.kind,
                                 self.sample_rate,
                                 frames,
-                                project.bpm,
+                                current_bpm,
                                 block_start_beat,
                                 pre_rms,
                             );
@@ -545,7 +548,7 @@ impl AudioGraphCore {
                             &mut self.bus_r[t_idx][..frames],
                             &self.param_scratch,
                             wet,
-                            project.bpm,
+                            current_bpm,
                             &self.midi_scratch,
                             self.clip_midi_expr,
                             sc_slices,
@@ -699,7 +702,7 @@ impl AudioGraphCore {
                         &mut out_r[..frames],
                         &fx.params,
                         fx.wet_mix,
-                        project.bpm,
+                        current_bpm,
                         &[],
                     );
                 }
@@ -709,7 +712,9 @@ impl AudioGraphCore {
         // 12. Metronome Click (always clicks during Count-In pre-roll, or when Click is enabled!)
         if self.is_playing && (in_count_in || project.metronome_enabled) {
             let click_ref_beat = if in_count_in {
-                let bpb = project.time_signature.beats_per_bar();
+                let bpb = project
+                    .time_signature_at_beat(block_start_beat)
+                    .beats_per_bar();
                 let total_ci = (project.count_in_bars.max(1) as f64) * bpb;
                 total_ci - self.count_in_beats_remaining
             } else {
@@ -827,13 +832,15 @@ impl AudioGraphCore {
     #[allow(clippy::too_many_arguments)]
     fn evaluate_timeline_clip(
         &mut self,
+        track: &Track,
+        clip_idx: usize,
         clip: &TimelineClip,
         t_idx: usize,
         frames: usize,
         block_start_beat: f64,
         block_end_beat: f64,
         beats_per_sample: f64,
-        project: &Project,
+        current_bpm: f64,
     ) {
         if clip.end_beat() < block_start_beat
             || clip.start_beat > block_end_beat
@@ -843,7 +850,7 @@ impl AudioGraphCore {
         }
         let varispeed_ratio = 2.0_f64.powf(clip.pitch_semitones as f64 / 12.0);
         let pitch_semi_round = clip.pitch_semitones.round() as i32;
-        let spb = 60.0 / project.bpm.max(20.0);
+        let spb = 60.0 / current_bpm.max(20.0);
 
         let has_audio = clip
             .takes
@@ -861,7 +868,8 @@ impl AudioGraphCore {
             };
 
             let take_idx = clip.take_at_local_beat(local_beat);
-            let env = clip.gain_envelope_at(local_beat);
+            // Combine Clip Gain + Fade In/Out + Automatic Equal-Power Overlap Crossfade!
+            let env = clip.gain_envelope_at(local_beat) * track.auto_crossfade_gain(clip_idx, beat);
 
             if let Some(take) = clip.takes.get(take_idx) {
                 match &take.content {
@@ -971,7 +979,7 @@ impl AudioGraphCore {
                             &mut self.clip_r[..frames],
                             &fx.params,
                             fx.wet_mix,
-                            project.bpm,
+                            current_bpm,
                             &[],
                         );
                     }
@@ -1032,7 +1040,6 @@ impl AudioGraphCore {
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) {
-        let bpb = project.time_signature.numerator.max(1) as i64;
         for i in 0..out_l.len() {
             let beat = block_start_beat + i as f64 * beats_per_sample;
             let step = beat.floor() as i64;
@@ -1040,8 +1047,9 @@ impl AudioGraphCore {
                 self.last_click_step = step;
                 self.click_env = 1.0;
                 self.click_phase = 0.0;
-                self.click_freq = if step.rem_euclid(bpb) == 0 {
-                    1560.0
+                let (_bar, in_bar_beat, _ts) = project.bar_and_beat_at(beat);
+                self.click_freq = if in_bar_beat < 0.15 {
+                    1560.0 // Bar downbeat accent (respects mid-song 3/4, 7/8, 6/8 meter changes!)
                 } else {
                     1040.0
                 };

@@ -464,8 +464,8 @@ pub fn render_master_with_options(
         render_proj.master.safety_limiter = false;
     }
 
-    let dur_beats = (opts.end_beat - opts.start_beat).max(1.0);
-    let dur_secs = render_proj.beats_to_seconds(dur_beats) + 0.75;
+    let end_beat = opts.end_beat.max(opts.start_beat + 1.0);
+    let dur_secs = render_proj.beat_range_duration_secs(opts.start_beat, end_beat) + 0.75;
     let total_frames = (dur_secs * opts.sample_rate as f64).ceil() as usize;
 
     let block_size = 512usize;

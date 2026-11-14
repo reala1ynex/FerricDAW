@@ -13,8 +13,9 @@ pub use fx::{
     ModulatorId, ModulatorKind, ModulatorSlot, ParamSpec, PluginParamDescriptor, FACTORY_PRESETS,
 };
 pub use project::{
-    build_demo_project, synthesize_browser_sample, HistoryManager, MasterBus, MidiLearnMapping,
-    ModelError, Project, Scene, SnapGrid, TimeSignature, TimelineMarker,
+    build_demo_project, synthesize_browser_sample, HistoryManager, MasterBus, MeterChange,
+    MidiLearnMapping, ModelError, Project, Scene, SnapGrid, TempoPoint, TimeSignature,
+    TimelineMarker,
 };
 pub use theory::{
     export_smf_clip, import_smf_file, ChordStamp, ImportedMidiTrack, MusicalScale,
@@ -106,5 +107,40 @@ mod tests {
         let mid = lane.eval_at(2.0).unwrap();
         // Positive tension = slow exponential start, so at midpoint value < 0.5
         assert!(mid > 0.0 && mid < 0.45);
+    }
+
+    #[test]
+    fn conductor_linear_tempo_ramp_integral_meter_map_and_auto_crossfade_work() {
+        let mut proj = Project::new_empty("Conductor Test");
+        proj.upsert_tempo_point(0.0, 60.0, true);
+        proj.upsert_tempo_point(4.0, 120.0, false);
+
+        // Analytical integral of 60 / (60 + 15*b) over [0..4] = 4 * ln(2) = 2.7725887222s!
+        let secs = proj.beats_to_seconds(4.0);
+        let exact = 4.0 * 2.0_f64.ln();
+        assert!((secs - exact).abs() < 1e-6, "got {} vs {}", secs, exact);
+
+        // Inverse `seconds_to_beats` recovers beat 4.0 within 1e-6!
+        let inv_beat = proj.seconds_to_beats(secs);
+        assert!((inv_beat - 4.0).abs() < 1e-5);
+
+        // Mid-song Time Signature change: 2 bars of 4/4 (beats 0..8) -> switch to 3/4 at beat 8!
+        proj.add_meter_change(8, 3, 4);
+        assert_eq!(proj.format_bar_beat_tick(8.0), "003.1.000");
+        assert_eq!(proj.format_bar_beat_tick(11.0), "004.1.000"); // 8 + 3 = Bar 4 Beat 1!
+
+        // Equal-Power Auto-Crossfade across two overlapping audio clips (`[0..6]` and `[4..10]`)
+        let tid = proj.add_track("Audio Crossfade");
+        let buf = AudioBuffer::from_stereo(48_000, vec![0.5; 4800], vec![0.5; 4800], None);
+        {
+            let trk = proj.find_track_mut(tid).unwrap();
+            trk.clips.push(TimelineClip::new_audio("Clip A", 0.0, 6.0, buf.clone()));
+            trk.clips.push(TimelineClip::new_audio("Clip B", 4.0, 6.0, buf));
+            // At midpoint of overlap (beat 5.0), g_a^2 + g_b^2 == 1.0 (equal power!)
+            let ga = trk.auto_crossfade_gain(0, 5.0);
+            let gb = trk.auto_crossfade_gain(1, 5.0);
+            assert!(((ga * ga + gb * gb) - 1.0).abs() < 1e-5);
+            assert!((ga - gb).abs() < 1e-5);
+        }
     }
 }

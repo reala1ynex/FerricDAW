@@ -351,6 +351,38 @@ impl Track {
         self.clips.iter_mut().find(|c| c.id == clip_id)
     }
 
+    /// Automatic Equal-Power Overlap Crossfade Gain (`cos(t*pi/2)` fade-out for earlier clip,
+    /// `sin(t*pi/2)` fade-in for later clip so `g_a^2 + g_b^2 == 1.0`!).
+    #[inline]
+    pub fn auto_crossfade_gain(&self, clip_idx: usize, beat: f64) -> f32 {
+        let Some(me) = self.clips.get(clip_idx) else {
+            return 1.0;
+        };
+        if me.muted || me.is_midi() {
+            return 1.0;
+        }
+        let mut gain = 1.0_f32;
+        for (other_idx, other) in self.clips.iter().enumerate() {
+            if other_idx == clip_idx || other.muted || other.is_midi() {
+                continue;
+            }
+            let ov_start = me.start_beat.max(other.start_beat);
+            let ov_end = me.end_beat().min(other.end_beat());
+            let span = ov_end - ov_start;
+            if span > 1e-4 && beat >= ov_start && beat <= ov_end {
+                let t = ((beat - ov_start) / span).clamp(0.0, 1.0) as f32;
+                let me_is_later = me.start_beat > other.start_beat
+                    || ((me.start_beat - other.start_beat).abs() < 1e-5 && clip_idx > other_idx);
+                if me_is_later {
+                    gain *= (t * std::f32::consts::FRAC_PI_2).sin();
+                } else {
+                    gain *= (t * std::f32::consts::FRAC_PI_2).cos();
+                }
+            }
+        }
+        gain
+    }
+
     pub fn ensure_scene_count(&mut self, scenes: usize) {
         if self.session_slots.len() < scenes {
             self.session_slots.resize_with(scenes, || None);

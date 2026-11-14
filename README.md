@@ -1,31 +1,33 @@
-# FerricDAW v0.2
+# FerricDAW v1.0
 
 **Full-Fledged, Ultra-Lightweight Open-Source Hybrid Digital Audio Workstation in 100% Pure Rust.**
 
-FerricDAW combines **REAPER's** universal "Track = Anything" philosophy, multi-take swipe comping, and tiny native footprint with **Bitwig/Ableton** hybrid session launching, modulators, **WSOLA time-stretching**, **Scale-Aware Vocal Auto-Pitch**, **Bezier automation**, **CLAP plugin hosting + Automatic PDC**, and dedicated **Akai LPK25 + Nintendo DS (KORG DS-10)** hardware integration.
+FerricDAW combines **REAPER's** universal *"Track = Anything"* architecture, multi-take swipe comping, and ~9.4 MB native standalone binary with **Bitwig/Ableton** hybrid session clip launching, modulators, **WSOLA time-stretching**, **Scale-Aware Vocal Auto-Pitch**, **Bezier automation**, **full `.CLAP` + `.VST3` plugin hosting with native Win32 `HWND` editors**, **Lossless `FLAC` + `-14 LUFS` Mastering**, **Dynamic Tempo/Meter Conductor Maps**, and dedicated **Akai LPK25 + Nintendo DS (KORG DS-10)** hardware integration.
 
 ---
 
-## Studio Feature Set
+## Complete v1.0 Studio Feature Set
 
-- **REAPER Universal Track Graph + Pro Mixing (`ferric-model` & `ferric-engine`):**
-  - Universal tracks simultaneously hold Audio, MIDI, Folder Submix children, Session Clips, Instruments, Audio FX, Modulators, and Pre-FX / Pre-Fader / Post-Fader Aux Sends.
-  - **True External Sidechain Routing:** Key any `Compressor` or `Noise Gate` off any other track (e.g. Kick ducking Sub Bass) with topological DAG cycle protection.
-  - **1-Click Reversible Track Freeze (`❄` / `Ctrl+F`):** Renders heavy Instrument + FX chains faster-than-realtime to a 32-bit float stem, dropping live DSP CPU to `0.0%` while remaining 1-click reversible.
-  - **Automatic Plugin Delay Compensation (PDC):** Sample-accurate delay alignment across parallel tracks for lookahead/pitch-shifting processors and external plugins.
-- **WSOLA Time-Stretching, Warp Markers & Vocal Auto-Pitch (`ferric-dsp`):**
-  - **Decoupled WSOLA Time-Stretch & Pitch-Shift:** Stretch audio loops (`0.25x`–`4.0x`) or transpose (`±24 st`) with zero chipmunk speed coupling, plus automatic transient onset detection and draggable **Stretch/Warp Markers** directly on the waveform.
-  - **Scale-Aware Vocal Auto-Pitch Corrector:** Real-time sub-cent YIN pitch tracking + dual-grain Hann pitch shifting (`0 ms` hard snap to `160 ms` natural polish + vibrato humanize).
-  - **16-Voice Chromatic & Transient-Slice Sampler:** Play any `WAV`/`FLAC`/`MP3`/`OGG`/`AIFF` chromatically across 128 keys or auto-slice drum breaks across pads (`C2+`).
-- **Curved Bezier Automation, SMF `.MID` & 1-Click MIDI Learn:**
-  - Foldable per-track Bezier automation lanes (`Shift+Drag` adjusts exponential/logarithmic curve tension) with `Read`, `Touch`, `Latch`, and `Write` modes.
-  - Full **Standard MIDI File (`.mid`) Import & Export**, Piano Roll **Scale Lock**, **1-Click Chord Stamps** (`Maj7`, `Min9`, `Dom7`, `Sus4`, `Power5`), **Humanize**, and **MIDI CC / Pitch-Bend Lanes**.
-- **Open-Standard `.clap` Plugin Hosting & Multi-Codec Audio:**
-  - Built-in C-ABI `.clap` bundle scanner & stereo/MIDI host (`CommonProgramFiles\CLAP` + custom folders).
-  - Native drag-and-drop decoding for **`WAV`, `FLAC`, `MP3`, `OGG/Vorbis`, `AIFF`, and `.MID`** via pure-Rust `symphonia` & `midly`.
-- **Akai LPK25 + Nintendo DS (KORG DS-10) Hardware Studio Integration:**
-  - Multi-port USB MIDI hot-plugging auto-detects the **Akai LPK25** (including `CC64` Sustain button & MIDI Learn).
-  - Universal stereo `F32`/`I16` Line-In stream with real-time sample-rate conversion, Input Gain Trim, **Tap Tempo**, **1-Click LPK25 + DS-10 Hybrid Rig Spawner**, and a **KORG DS-10 inspired Touch KAOSS X-Y Pad**!
+1. **REAPER Universal Track Graph & Pro Mixing (`ferric-model` & `ferric-engine`):**
+   - Every track simultaneously supports Audio clips, MIDI clips, Folder Submix children, Session Launcher loops, Instruments, Audio FX, Modulators, and Pre-FX / Pre-Fader / Post-Fader Aux Sends.
+   - **True External Sidechain Routing** (`Compressor` & `Noise Gate` keyed off any track with topological DAG cycle protection).
+   - **1-Click Reversible Track Freeze (`❄` / `Ctrl+F`)** & **Automatic Plugin Delay Compensation (PDC)**.
+   - **Equal-Power Auto-Crossfades** whenever audio clips overlap + **Rubber-Band Marquee Multi-Clip Selection** (`Shift+Click` or drag box to group-move, duplicate, or delete).
+2. **Dynamic Song Conductor (`🎼 Tempo / Meter Map`):**
+   - Foldable Master Conductor Lane supporting stepped & linear **Accelerando / Ritardando Tempo Ramps** (with exact closed-form logarithmic beat↔second integration) and mid-song **Time Signature Changes** (`4/4`, `3/4`, `6/8`, `7/8`, `5/4`, `12/8`).
+3. **Full `.CLAP` & `.VST3` Plugin Ecosystem (`clap_host.rs`, `vst3_host.rs`, `plugin_window.rs`):**
+   - Battle-tested pure-Rust C-ABI `.clap` and COM `.vst3` scanners & multi-bus real-time hosts (verified end-to-end against **Dexed** and **Six Sines** in both `.clap` and `.vst3`).
+   - Real plugin parameter discovery (`clap.params` / `IEditController`), Base64 binary patch state save/reload (`clap.state` / `IBStream`), floating native Win32 **`HWND` Graphical Editors (`🗔 Open UI`)**, and automatic **Crash Quarantine**.
+4. **WSOLA Warp, Vocal Auto-Pitch & 16-Voice Slice Sampler (`ferric-dsp`):**
+   - Decoupled WSOLA time-stretch (`0.25x`–`4.0x`) & pitch-shift (`±24 st`), automatic transient detection, and draggable **Stretch/Warp Markers**.
+   - **Scale-Aware Vocal Auto-Pitch Corrector**, **Chromatic & Transient-Slice Sampler**, `PolySynth`, `8-Pad Studio Drum Kit`, `Chromatic Strobe Tuner`, `Tube Amp & Cab Modeler`, `4-Band Parametric EQ + 64-Band FFT`, `Compressor`, `Noise Gate`, `Oxide Tape Saturator`, `Ping-Pong Delay`, and `Lush Plate Reverb`.
+5. **Curved Bezier Automation, 16-Step Drum Grid, Arpeggiator & SMF `.MID`:**
+   - Foldable Bezier automation lanes (`Read / Touch / Latch / Write`), 1-Click **MIDI CC Learn**, **Track MIDI Arpeggiator (`🎹 ARP`)**, **TR-808 / DS-10 16-Step Drum Grid**, Piano Roll **Scale Lock & Chord Stamps**, and `.MID` Import/Export.
+6. **Low-Latency Calibration & Mastering Suite (`flac_enc.rs`, `wav_io.rs`):**
+   - Selectable hardware buffer sizes (`64`–`1024` samples), **1-Click `📡 Loopback Ping` Round-Trip Latency Calibrator** + automatic overdub trim.
+   - Pure-Rust RFC 9639 **Lossless Stereo `FLAC` (16/24-bit + MD5)** & **`WAV` (16/24/32f)** export with **ITU-R BS.1770-4 Integrated `-14 LUFS` Normalization**, **4x True-Peak (`dBTP`) Lookahead Limiter**, and **Triangular `TPDF` Dither**.
+7. **Akai LPK25 + Nintendo DS (KORG DS-10) Hardware Rig:**
+   - Multi-port USB MIDI hot-plugging (`CC64` Sustain, Pitch-Bend, Mod Wheel), simultaneous LPK25 MIDI + DS-10 Stereo Line-In multitrack recording, automatic Line-In BPM detector, **Tap Tempo**, and an interactive **KORG DS-10 KAOSS X-Y Pad**.
 
 ---
 
@@ -35,28 +37,11 @@ FerricDAW combines **REAPER's** universal "Track = Anything" philosophy, multi-t
 cargo run --release
 ```
 
-### Run Workspace Tests
+### Run Full Workspace & Real Plugin Verification Suite
 
 ```powershell
 cargo test --workspace
 ```
-
----
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Space` | Play / Stop Transport |
-| `Ctrl+K` | Open Instant Action, Track & FX Command Palette |
-| `Shift+R` | Capture Last 15s from Always-Listening Retroactive Audio/MIDI Buffer |
-| `Ctrl+F` | Freeze / Unfreeze Selected Track (`0.0%` DSP CPU 32-bit Stem) |
-| `A W S E D F T G Y H U J K` | Computer Keyboard Musical Typing (`Z` / `X` shifts octave) |
-| `Ctrl+T` | Add New Universal Track |
-| `Ctrl+D` | Duplicate Selected Clip |
-| `Ctrl+B` | Offline Bounce Master WAV / Multi-Track Stems |
-| `Ctrl+S` / `Ctrl+O` | Save / Open `.ferric` (Git-friendly RON) or `.json` Session |
-| `Ctrl+Z` / `Ctrl+Y` | Undo / Redo |
 
 ---
 

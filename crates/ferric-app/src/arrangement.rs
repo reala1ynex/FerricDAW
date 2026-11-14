@@ -75,6 +75,10 @@ pub struct ArrangementState {
     pub ripple_edit: bool,
     pub show_session_launcher: bool,
     pub renaming_track: Option<TrackId>,
+    pub multi_selected_clips: Vec<(TrackId, ClipId)>,
+    marquee_start_pos: Option<Pos2>,
+    marquee_current_pos: Option<Pos2>,
+    clip_hit_rects: Vec<(TrackId, ClipId, Rect)>,
     drag_clip: Option<(TrackId, ClipId, DragKind, f64)>,
     track_row_bounds: Vec<(TrackId, f32, f32)>,
 }
@@ -95,6 +99,10 @@ impl Default for ArrangementState {
             ripple_edit: false,
             show_session_launcher: true,
             renaming_track: None,
+            multi_selected_clips: Vec::new(),
+            marquee_start_pos: None,
+            marquee_current_pos: None,
+            clip_hit_rects: Vec::new(),
             drag_clip: None,
             track_row_bounds: Vec::new(),
         }
@@ -124,6 +132,22 @@ impl ArrangementState {
             .clicked()
             {
                 self.show_session_launcher = !self.show_session_launcher;
+            }
+            if pill_toggle(
+                ui,
+                "🎼 Tempo / Meter Map",
+                project.show_conductor_lane,
+                ACCENT_AMBER,
+            )
+            .on_hover_text(
+                "Show/Hide Dynamic Song Conductor Lane (Variable BPM Ramps & Mid-Song Time Signature Changes!)",
+            )
+            .clicked()
+            {
+                project.show_conductor_lane = !project.show_conductor_lane;
+                if project.show_conductor_lane && project.tempo_map.is_empty() {
+                    project.upsert_tempo_point(0.0, project.bpm, true);
+                }
             }
             ui.separator();
 
@@ -165,6 +189,14 @@ impl ArrangementState {
 
             if ui.button("+ Track").clicked() {
                 actions.push(ArrangementAction::AddTrack);
+            }
+            if self.multi_selected_clips.len() > 1 {
+                ui.label(
+                    egui::RichText::new(format!("({} clips selected)", self.multi_selected_clips.len()))
+                        .size(10.5)
+                        .strong()
+                        .color(ACCENT_TEAL),
+                );
             }
             if project.tracks.iter().any(|t| t.active_session_slot.is_some())
                 && ui
@@ -440,6 +472,27 @@ impl ArrangementState {
                 actions.push(ArrangementAction::ProjectMutated("Set Loop End"));
                 ui.close_menu();
             }
+            ui.separator();
+            ui.menu_button("🕒 Add Time Signature Change at Playhead", |ui| {
+                for (num, den) in [(4, 4), (3, 4), (6, 8), (5, 4), (7, 8), (12, 8)] {
+                    if ui.button(format!("{}/{} Meter", num, den)).clicked() {
+                        project.add_meter_change(ph.round().max(0.0) as u32, num, den);
+                        project.show_conductor_lane = true;
+                        actions.push(ArrangementAction::ProjectMutated("Add Meter Change"));
+                        ui.close_menu();
+                    }
+                }
+            });
+            if ui
+                .button(format!("⏱ Add Tempo Point ({:.1} BPM) at Playhead", project.bpm_at_beat(ph)))
+                .clicked()
+            {
+                let cur = project.bpm_at_beat(ph);
+                project.upsert_tempo_point(ph, cur, true);
+                project.show_conductor_lane = true;
+                actions.push(ArrangementAction::ProjectMutated("Add Tempo Point"));
+                ui.close_menu();
+            }
         });
 
         // Auto Punch-In / Punch-Out Crimson Bracket on ruler!
@@ -533,12 +586,25 @@ impl ArrangementState {
             actions.push(ArrangementAction::ProjectMutated("Delete Marker"));
         }
 
+        // Render Optional Master Tempo & Time-Signature Conductor Lane right under the Ruler!
+        let playhead_top = ruler_tl_rect.top();
+        let mut playhead_bot = ruler_tl_rect.bottom();
+        if project.show_conductor_lane {
+            let cond_bot = self.render_conductor_lane(
+                ui,
+                avail_w,
+                timeline_x0_rel,
+                timeline_w,
+                project,
+                actions,
+            );
+            playhead_bot = playhead_bot.max(cond_bot);
+        }
+
         // Render Each Visible Track Row + Optional Multi-Take Comping Lanes!
         let prev_row_bounds = self.track_row_bounds.clone();
         self.track_row_bounds.clear();
-        let mut playhead_top = ruler_tl_rect.top();
-        let mut playhead_bot = ruler_tl_rect.bottom();
-        playhead_top = playhead_top.min(ruler_tl_rect.top());
+        self.clip_hit_rects.clear();
 
         for (vis_pos, &t_idx) in visible_indices.iter().enumerate() {
             let track_id = project.tracks[t_idx].id;
@@ -651,9 +717,41 @@ impl ArrangementState {
             }
         }
 
-        // Release active clip drag on mouse up
+        // Release active clip drag & finalize Rubber-Band Marquee Multi-Selection!
         if self.drag_clip.is_some() && !ui.input(|i| i.pointer.any_down()) {
             self.drag_clip = None;
+        }
+        if let (Some(m0), Some(m1)) = (self.marquee_start_pos, self.marquee_current_pos) {
+            let mrect = Rect::from_two_pos(m0, m1);
+            if mrect.width() > 4.0 || mrect.height() > 4.0 {
+                ui.painter().rect_filled(
+                    mrect,
+                    2,
+                    Color32::from_rgba_unmultiplied(66, 196, 176, 36),
+                );
+                ui.painter().rect_stroke(
+                    mrect,
+                    2,
+                    Stroke::new(1.2_f32, ACCENT_TEAL),
+                    StrokeKind::Inside,
+                );
+                self.multi_selected_clips.clear();
+                for &(tid, cid, crect) in &self.clip_hit_rects {
+                    if mrect.intersects(crect) {
+                        self.multi_selected_clips.push((tid, cid));
+                    }
+                }
+                if let Some(&(first_t, first_c)) = self.multi_selected_clips.first() {
+                    actions.push(ArrangementAction::SelectClip {
+                        track_id: first_t,
+                        clip_id: first_c,
+                    });
+                }
+            }
+            if !ui.input(|i| i.pointer.any_down()) {
+                self.marquee_start_pos = None;
+                self.marquee_current_pos = None;
+            }
         }
 
         // Draw crisp Playhead Line across entire ruler + all tracks!
@@ -1045,10 +1143,11 @@ impl ArrangementState {
         let t_col = track_color32(project.tracks[t_idx].color);
 
         // Background click in DrawPencil mode -> create new 4-bar MIDI clip!
+        // Background drag in SmartPointer mode -> Rubber-Band Marquee Multi-Clip Selection!
         let bg_resp = ui.interact(
             lane_rect,
             ui.id().with(("lane_bg", track_id)),
-            Sense::click(),
+            Sense::click_and_drag(),
         );
         if bg_resp.double_clicked() || (bg_resp.clicked() && self.tool == EditTool::DrawPencil) {
             if let Some(pos) = bg_resp.interact_pointer_pos() {
@@ -1064,7 +1163,19 @@ impl ArrangementState {
                     clip_id: cid,
                 });
             }
+        } else if bg_resp.drag_started() && self.tool == EditTool::SmartPointer {
+            if let Some(pos) = bg_resp.interact_pointer_pos() {
+                self.marquee_start_pos = Some(pos);
+                self.marquee_current_pos = Some(pos);
+            }
+        } else if bg_resp.dragged() && self.marquee_start_pos.is_some() {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                self.marquee_current_pos = Some(pos);
+            }
         } else if bg_resp.clicked() {
+            if !ui.input(|i| i.modifiers.shift) {
+                self.multi_selected_clips.clear();
+            }
             actions.push(ArrangementAction::SelectTrack(track_id));
         }
 
@@ -1085,7 +1196,9 @@ impl ArrangementState {
                 Pos2::new(x0.max(lane_rect.left()), lane_rect.top() + 3.0),
                 Pos2::new(x1.min(lane_rect.right()), lane_rect.bottom() - 3.0),
             );
-            let is_sel = selected_clip == Some((track_id, clip_id));
+            self.clip_hit_rects.push((track_id, clip_id, clip_rect));
+            let is_sel = selected_clip == Some((track_id, clip_id))
+                || self.multi_selected_clips.contains(&(track_id, clip_id));
 
             let clip_resp = ui.interact(
                 clip_rect,
@@ -1102,8 +1215,26 @@ impl ArrangementState {
                 is_sel,
             );
 
-            // Interactions: Select, Double-Click Piano Roll, Split Razor, Drag Move/Resize!
+            // Interactions: Select (Shift+Click adds to Multi-Selection!), Double-Click Piano Roll, Split Razor, Drag!
             if clip_resp.clicked() {
+                if ui.input(|i| i.modifiers.shift) {
+                    if let Some(pos) = self
+                        .multi_selected_clips
+                        .iter()
+                        .position(|&x| x == (track_id, clip_id))
+                    {
+                        self.multi_selected_clips.remove(pos);
+                    } else {
+                        if let Some(prev) = selected_clip {
+                            if !self.multi_selected_clips.contains(&prev) {
+                                self.multi_selected_clips.push(prev);
+                            }
+                        }
+                        self.multi_selected_clips.push((track_id, clip_id));
+                    }
+                } else if !self.multi_selected_clips.contains(&(track_id, clip_id)) {
+                    self.multi_selected_clips.clear();
+                }
                 actions.push(ArrangementAction::SelectClip { track_id, clip_id });
                 if self.tool == EditTool::SplitRazor {
                     if let Some(pos) = clip_resp.interact_pointer_pos() {
@@ -1142,29 +1273,44 @@ impl ArrangementState {
             if let Some((dt, dc, kind, init_v)) = self.drag_clip {
                 if dt == track_id && dc == clip_id && clip_resp.dragged() {
                     let d_beats = (clip_resp.drag_delta().x / self.pixels_per_beat) as f64;
-                    let clip_mut = &mut project.tracks[t_idx].clips[c_idx];
                     match kind {
                         DragKind::Move => {
-                            clip_mut.start_beat = (clip_mut.start_beat + d_beats).max(0.0);
+                            if self.multi_selected_clips.len() > 1
+                                && self.multi_selected_clips.contains(&(track_id, clip_id))
+                            {
+                                // Group Move ALL Marquee-Selected Clips across all tracks simultaneously!
+                                for &(mt, mc) in &self.multi_selected_clips {
+                                    if let Some(c) =
+                                        project.find_track_mut(mt).and_then(|t| t.find_clip_mut(mc))
+                                    {
+                                        c.start_beat = (c.start_beat + d_beats).max(0.0);
+                                    }
+                                }
+                            } else {
+                                let clip_mut = &mut project.tracks[t_idx].clips[c_idx];
+                                clip_mut.start_beat = (clip_mut.start_beat + d_beats).max(0.0);
 
-                            // Vertical Track-to-Track Clip Drag!
-                            if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
-                                if let Some(&(hover_tid, _, _)) = row_bounds
-                                    .iter()
-                                    .find(|&&(_, y0, y1)| ptr.y >= y0 && ptr.y <= y1)
-                                {
-                                    if hover_tid != track_id {
-                                        self.drag_clip = Some((hover_tid, clip_id, kind, init_v));
-                                        actions.push(ArrangementAction::MoveClipToTrack {
-                                            from_track: track_id,
-                                            to_track: hover_tid,
-                                            clip_id,
-                                        });
+                                // Vertical Track-to-Track Clip Drag!
+                                if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
+                                    if let Some(&(hover_tid, _, _)) = row_bounds
+                                        .iter()
+                                        .find(|&&(_, y0, y1)| ptr.y >= y0 && ptr.y <= y1)
+                                    {
+                                        if hover_tid != track_id {
+                                            self.drag_clip =
+                                                Some((hover_tid, clip_id, kind, init_v));
+                                            actions.push(ArrangementAction::MoveClipToTrack {
+                                                from_track: track_id,
+                                                to_track: hover_tid,
+                                                clip_id,
+                                            });
+                                        }
                                     }
                                 }
                             }
                         }
                         DragKind::ResizeLeft => {
+                            let clip_mut = &mut project.tracks[t_idx].clips[c_idx];
                             let max_trim = (clip_mut.length_beats - 0.25).max(0.0);
                             let trim = d_beats.clamp(-clip_mut.start_beat, max_trim);
                             clip_mut.start_beat += trim;
@@ -1174,6 +1320,7 @@ impl ArrangementState {
                                     .max(0.0);
                         }
                         DragKind::ResizeRight => {
+                            let clip_mut = &mut project.tracks[t_idx].clips[c_idx];
                             clip_mut.length_beats = (clip_mut.length_beats + d_beats).max(0.25);
                         }
                     }
@@ -1353,6 +1500,267 @@ impl ArrangementState {
                 }
             }
         }
+
+        // Draw Visual Equal-Power Auto-Crossfade `X` Overlays wherever two Audio Clips overlap on this Track!
+        for i in 0..clip_count {
+            if project.tracks[t_idx].clips[i].muted || project.tracks[t_idx].clips[i].is_midi() {
+                continue;
+            }
+            for j in (i + 1)..clip_count {
+                if project.tracks[t_idx].clips[j].muted || project.tracks[t_idx].clips[j].is_midi()
+                {
+                    continue;
+                }
+                let ci = &project.tracks[t_idx].clips[i];
+                let cj = &project.tracks[t_idx].clips[j];
+                let ov0 = ci.start_beat.max(cj.start_beat);
+                let ov1 = ci.end_beat().min(cj.end_beat());
+                if ov1 - ov0 > 0.02 {
+                    let ox0 =
+                        lane_rect.left() + ((ov0 - self.scroll_beat) as f32 * self.pixels_per_beat);
+                    let ox1 =
+                        lane_rect.left() + ((ov1 - self.scroll_beat) as f32 * self.pixels_per_beat);
+                    if ox1 >= lane_rect.left() && ox0 <= lane_rect.right() {
+                        let xrect = Rect::from_min_max(
+                            Pos2::new(ox0.max(lane_rect.left()), lane_rect.top() + 18.0),
+                            Pos2::new(ox1.min(lane_rect.right()), lane_rect.bottom() - 4.0),
+                        );
+                        ui.painter().rect_filled(
+                            xrect,
+                            2,
+                            Color32::from_rgba_unmultiplied(240, 182, 62, 34),
+                        );
+                        let steps = 16usize;
+                        let mut fade_out_pts = Vec::with_capacity(steps + 1);
+                        let mut fade_in_pts = Vec::with_capacity(steps + 1);
+                        for s in 0..=steps {
+                            let t = s as f32 / steps as f32;
+                            let px = xrect.left() + t * xrect.width();
+                            let g_out = (t * std::f32::consts::FRAC_PI_2).cos();
+                            let g_in = (t * std::f32::consts::FRAC_PI_2).sin();
+                            fade_out_pts.push(Pos2::new(px, xrect.bottom() - g_out * xrect.height()));
+                            fade_in_pts.push(Pos2::new(px, xrect.bottom() - g_in * xrect.height()));
+                        }
+                        ui.painter().add(egui::Shape::line(
+                            fade_out_pts,
+                            Stroke::new(1.5_f32, ACCENT_AMBER),
+                        ));
+                        ui.painter().add(egui::Shape::line(
+                            fade_in_pts,
+                            Stroke::new(1.5_f32, ACCENT_TEAL),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    fn render_conductor_lane(
+        &mut self,
+        ui: &mut Ui,
+        avail_w: f32,
+        timeline_x0_rel: f32,
+        timeline_w: f32,
+        project: &mut Project,
+        actions: &mut Vec<ArrangementAction>,
+    ) -> f32 {
+        let cond_h = 56.0_f32;
+        let (row_rect, _) = ui.allocate_exact_size(Vec2::new(avail_w, cond_h), Sense::hover());
+        ui.painter()
+            .rect_filled(row_rect, 0, Color32::from_rgb(24, 21, 18));
+        ui.painter().line_segment(
+            [row_rect.left_bottom(), row_rect.right_bottom()],
+            Stroke::new(1.0_f32, ACCENT_AMBER.gamma_multiply(0.55)),
+        );
+
+        // Left Header Controls for Conductor Lane
+        let hdr_rect = Rect::from_min_size(row_rect.min, Vec2::new(236.0, cond_h));
+        let mut hdr_ui = ui.new_child(egui::UiBuilder::new().max_rect(hdr_rect.shrink(5.0)));
+        hdr_ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("🎼 CONDUCTOR: TEMPO & METER")
+                    .size(10.5)
+                    .strong()
+                    .color(ACCENT_AMBER),
+            );
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Base Meter:").size(10.0).color(TEXT_DIM));
+                let mut num = project.time_signature.numerator;
+                let mut den = project.time_signature.denominator;
+                if ui
+                    .add(egui::DragValue::new(&mut num).range(1..=16).speed(0.1))
+                    .changed()
+                {
+                    project.time_signature.numerator = num;
+                    actions.push(ArrangementAction::ProjectMutated("Change Time Signature"));
+                }
+                ui.label("/");
+                egui::ComboBox::from_id_salt("base_meter_den")
+                    .selected_text(format!("{}", den))
+                    .width(42.0)
+                    .show_ui(ui, |ui| {
+                        for d in [4u8, 8, 16, 2] {
+                            if ui.selectable_value(&mut den, d, format!("{}", d)).changed() {
+                                project.time_signature.denominator = den;
+                                actions.push(ArrangementAction::ProjectMutated(
+                                    "Change Time Signature",
+                                ));
+                            }
+                        }
+                    });
+                if !project.tempo_map.is_empty() && ui.small_button("Reset").clicked() {
+                    project.tempo_map.clear();
+                    project.meter_map.clear();
+                    actions.push(ArrangementAction::ProjectMutated("Reset Conductor Map"));
+                }
+            });
+        });
+
+        let tl_rect = Rect::from_min_size(
+            Pos2::new(row_rect.left() + timeline_x0_rel, row_rect.top()),
+            Vec2::new(timeline_w, cond_h - 1.0),
+        );
+        ui.painter()
+            .rect_filled(tl_rect, 0, Color32::from_rgb(16, 15, 20));
+
+        let min_bpm = 50.0_f64;
+        let max_bpm = 220.0_f64;
+        let bpm_to_y = |bpm: f64| -> f32 {
+            let norm = ((bpm - min_bpm) / (max_bpm - min_bpm)).clamp(0.0, 1.0) as f32;
+            tl_rect.bottom() - 6.0 - norm * (tl_rect.height() - 14.0)
+        };
+        let y_to_bpm = |y: f32| -> f64 {
+            let norm = ((tl_rect.bottom() - 6.0 - y) / (tl_rect.height() - 14.0)).clamp(0.0, 1.0);
+            min_bpm + (norm as f64) * (max_bpm - min_bpm)
+        };
+
+        // Sample & draw Tempo Curve across timeline
+        let samples = (timeline_w as usize / 4).clamp(24, 480);
+        let mut curve = Vec::with_capacity(samples + 1);
+        for s in 0..=samples {
+            let frac = s as f32 / samples as f32;
+            let b = self.scroll_beat + (frac * timeline_w / self.pixels_per_beat) as f64;
+            let bpm = project.bpm_at_beat(b);
+            curve.push(Pos2::new(tl_rect.left() + frac * timeline_w, bpm_to_y(bpm)));
+        }
+        ui.painter()
+            .add(egui::Shape::line(curve, Stroke::new(1.8_f32, ACCENT_AMBER)));
+
+        // Interactive Tempo Point Handles (Drag to change Beat/BPM, Click+Shift or Right-Click to toggle Ramp/Step or Delete!)
+        let mut del_tp = None;
+        let mut hit_tp = false;
+        for idx in 0..project.tempo_map.len() {
+            let tp = project.tempo_map[idx];
+            let px = tl_rect.left() + ((tp.beat - self.scroll_beat) as f32 * self.pixels_per_beat);
+            if px < tl_rect.left() - 6.0 || px > tl_rect.right() + 6.0 {
+                continue;
+            }
+            let py = bpm_to_y(tp.bpm);
+            let hrect = Rect::from_center_size(Pos2::new(px, py), Vec2::new(12.0, 12.0));
+            let resp = ui
+                .interact(
+                    hrect,
+                    ui.id().with(("tempo_pt", tp.id)),
+                    Sense::click_and_drag(),
+                )
+                .on_hover_text(format!(
+                    "{:.1} BPM @ Beat {:.1} ({}) — Drag to adjust, Right-click for Ramp/Step or Delete",
+                    tp.bpm,
+                    tp.beat,
+                    if tp.ramp_to_next { "Linear Ramp" } else { "Step" }
+                ));
+
+            ui.painter().circle_filled(Pos2::new(px, py), 4.5, ACCENT_AMBER);
+            ui.painter().text(
+                Pos2::new(px + 6.0, (py - 8.0).max(tl_rect.top() + 6.0)),
+                Align2::LEFT_CENTER,
+                format!("{:.0}", tp.bpm),
+                FontId::monospace(9.0),
+                ACCENT_AMBER,
+            );
+
+            if resp.dragged() {
+                hit_tp = true;
+                let d = resp.drag_delta();
+                project.tempo_map[idx].beat =
+                    (project.tempo_map[idx].beat + (d.x / self.pixels_per_beat) as f64).max(0.0);
+                project.tempo_map[idx].bpm = y_to_bpm(py + d.y).clamp(30.0, 260.0);
+                project.sort_conductor_maps();
+                actions.push(ArrangementAction::ProjectMutated("Drag Tempo Point"));
+            } else if resp.clicked() {
+                hit_tp = true;
+            }
+
+            resp.context_menu(|ui| {
+                if ui
+                    .checkbox(
+                        &mut project.tempo_map[idx].ramp_to_next,
+                        "Linear Tempo Ramp to Next Point",
+                    )
+                    .changed()
+                {
+                    actions.push(ArrangementAction::ProjectMutated("Toggle Tempo Ramp"));
+                }
+                if project.tempo_map.len() > 1
+                    && ui
+                        .button(egui::RichText::new("🗑 Delete Tempo Point").color(ACCENT_RED))
+                        .clicked()
+                {
+                    del_tp = Some(idx);
+                    ui.close_menu();
+                }
+            });
+        }
+        if let Some(di) = del_tp {
+            project.tempo_map.remove(di);
+            project.sort_conductor_maps();
+            actions.push(ArrangementAction::ProjectMutated("Delete Tempo Point"));
+        }
+
+        // Render Mid-Song Time-Signature Badges (`3/4`, `7/8`, etc.)
+        let mut del_mc = None;
+        for (mi, mc) in project.meter_map.iter().enumerate() {
+            let mx =
+                tl_rect.left() + ((mc.beat as f64 - self.scroll_beat) as f32 * self.pixels_per_beat);
+            if mx >= tl_rect.left() && mx <= tl_rect.right() - 28.0 {
+                let brect = Rect::from_min_size(
+                    Pos2::new(mx + 2.0, tl_rect.top() + 2.0),
+                    Vec2::new(34.0, 14.0),
+                );
+                ui.painter()
+                    .rect_filled(brect, 3, ACCENT_TEAL.gamma_multiply(0.30));
+                ui.painter().text(
+                    brect.center(),
+                    Align2::CENTER_CENTER,
+                    format!("{}/{}", mc.signature.numerator, mc.signature.denominator),
+                    FontId::monospace(9.5),
+                    ACCENT_TEAL,
+                );
+                let mr = ui.interact(brect, ui.id().with(("meter_chg", mc.id)), Sense::click());
+                if mr.secondary_clicked() {
+                    del_mc = Some(mi);
+                }
+            }
+        }
+        if let Some(dmi) = del_mc {
+            project.meter_map.remove(dmi);
+            actions.push(ArrangementAction::ProjectMutated("Delete Meter Change"));
+        }
+
+        // Click empty Conductor Lane -> Insert new Tempo Point!
+        let bg_r = ui.interact(tl_rect, ui.id().with("cond_lane_bg"), Sense::click());
+        if bg_r.clicked() && !hit_tp {
+            if let Some(pos) = bg_r.interact_pointer_pos() {
+                let raw_b =
+                    self.scroll_beat + ((pos.x - tl_rect.left()) / self.pixels_per_beat) as f64;
+                let snapped_b = project.snap_grid.snap(raw_b, project.time_signature);
+                let new_bpm = (y_to_bpm(pos.y) * 2.0).round() * 0.5;
+                project.upsert_tempo_point(snapped_b, new_bpm, true);
+                actions.push(ArrangementAction::ProjectMutated("Insert Tempo Point"));
+            }
+        }
+
+        row_rect.bottom()
     }
 
     #[allow(clippy::too_many_arguments)]
