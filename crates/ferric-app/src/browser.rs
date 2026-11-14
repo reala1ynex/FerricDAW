@@ -64,8 +64,17 @@ pub struct StudioBrowserState {
 
 impl Default for StudioBrowserState {
     fn default() -> Self {
+        let mut custom_plugin_dirs = Vec::new();
+        for cand in [
+            PathBuf::from("plugins"),
+            PathBuf::from("C:\\Users\\ndrpe\\Projects\\FerricDAW\\plugins"),
+        ] {
+            if cand.is_dir() && !custom_plugin_dirs.contains(&cand) {
+                custom_plugin_dirs.push(cand);
+            }
+        }
         let mut q = PluginQuarantine::load_default();
-        let plugins = scan_all_external_plugins(&[], &mut q);
+        let plugins = scan_all_external_plugins(&custom_plugin_dirs, &mut q);
         let q_count = q.count();
         let mut s = Self {
             visible: true,
@@ -73,7 +82,7 @@ impl Default for StudioBrowserState {
             search: String::new(),
             plugin_search: String::new(),
             plugin_format_filter: None,
-            custom_plugin_dirs: Vec::new(),
+            custom_plugin_dirs,
             user_folders: Vec::new(),
             scanned_files: Vec::new(),
             external_plugins: plugins,

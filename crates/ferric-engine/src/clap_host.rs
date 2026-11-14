@@ -9,10 +9,46 @@ use crate::plugin_window::{NativePluginGuiView, PluginQuarantine};
 use ferric_dsp::{db_to_lin, ExternalPluginAdapter, MidiEvent};
 use ferric_model::{ExternalPluginFormat, PluginParamDescriptor};
 use libloading::Library;
+use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Process-lifetime resident `.clap` DLL cache (matching REAPER/Bitwig):
+/// Initializes `clap_entry.init` once per DLL and keeps the module loaded until process exit
+/// so C++/JUCE background `TimerThread` / `MessageManager` threads never deadlock under the Windows Loader Lock!
+static CLAP_RESIDENT_LIBS: OnceLock<Mutex<HashMap<PathBuf, Arc<Library>>>> = OnceLock::new();
+
+unsafe fn get_or_init_clap_lib(path: &Path) -> Result<(Arc<Library>, *const ClapPluginEntry), String> {
+    let cache = CLAP_RESIDENT_LIBS.get_or_init(|| Mutex::new(HashMap::new()));
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut guard = cache.lock().map_err(|_| "CLAP cache poisoned".to_string())?;
+
+    if let Some(lib) = guard.get(&canon) {
+        let entry_sym: libloading::Symbol<*const ClapPluginEntry> =
+            lib.get(b"clap_entry\0").map_err(|e| e.to_string())?;
+        return Ok((lib.clone(), *entry_sym));
+    }
+
+    let lib = Arc::new(Library::new(&canon).map_err(|e| e.to_string())?);
+    let entry_ptr = {
+        let entry_sym: libloading::Symbol<*const ClapPluginEntry> =
+            lib.get(b"clap_entry\0").map_err(|e| e.to_string())?;
+        *entry_sym
+    };
+    if entry_ptr.is_null() {
+        return Err("Null clap_entry".into());
+    }
+    let c_path = CString::new(canon.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    if let Some(init_fn) = (*entry_ptr).init {
+        if !init_fn(c_path.as_ptr()) {
+            return Err("clap_entry.init returned false".into());
+        }
+    }
+    guard.insert(canon, lib.clone());
+    Ok((lib, entry_ptr))
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -191,6 +227,12 @@ pub(crate) struct ClapPluginLatency {
 }
 
 #[repr(C)]
+pub(crate) struct ClapPluginAudioPorts {
+    pub count: Option<unsafe extern "C" fn(plugin: *const ClapPlugin, is_input: bool) -> u32>,
+    pub get: *const c_void,
+}
+
+#[repr(C)]
 pub(crate) struct ClapWindow {
     pub api: *const c_char,
     pub handle: *mut c_void, // Win32 HWND union
@@ -264,6 +306,7 @@ pub(crate) struct ClapPluginGui {
 // --- Audio & Event Process Structs ---
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub(crate) struct ClapAudioBuffer {
     pub data32: *mut *mut f32,
     pub data64: *mut *mut f64,
@@ -343,7 +386,7 @@ pub(crate) struct ClapProcess {
 
 pub(crate) const CLAP_EVENT_NOTE_ON: u16 = 0;
 pub(crate) const CLAP_EVENT_NOTE_OFF: u16 = 1;
-pub(crate) const CLAP_EVENT_PARAM_VALUE: u16 = 4;
+pub(crate) const CLAP_EVENT_PARAM_VALUE: u16 = 5; // 0=NOTE_ON, 1=NOTE_OFF, 2=CHOKE, 3=END, 4=NOTE_EXPR, 5=PARAM_VALUE!
 
 struct HostCallbackState {
     needs_main_thread: AtomicBool,
@@ -511,19 +554,7 @@ unsafe fn fixed_cchar_to_string(buf: &[c_char]) -> String {
 
 pub fn inspect_clap_bundle(path: &Path) -> Result<Vec<DiscoveredExternalPlugin>, String> {
     unsafe {
-        let lib = Library::new(path).map_err(|e| e.to_string())?;
-        let entry_sym: libloading::Symbol<*const ClapPluginEntry> =
-            lib.get(b"clap_entry\0").map_err(|e| e.to_string())?;
-        let entry_ptr = *entry_sym;
-        if entry_ptr.is_null() {
-            return Err("Null clap_entry".into());
-        }
-        let c_path = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
-        if let Some(init_fn) = (*entry_ptr).init {
-            if !init_fn(c_path.as_ptr()) {
-                return Err("clap_entry.init returned false".into());
-            }
-        }
+        let (_lib, entry_ptr) = get_or_init_clap_lib(path)?;
         let mut plugins = Vec::new();
         if let Some(get_fac) = (*entry_ptr).get_factory {
             let fac_id = b"clap.plugin-factory\0";
@@ -558,9 +589,6 @@ pub fn inspect_clap_bundle(path: &Path) -> Result<Vec<DiscoveredExternalPlugin>,
                     }
                 }
             }
-        }
-        if let Some(deinit_fn) = (*entry_ptr).deinit {
-            deinit_fn();
         }
         Ok(plugins)
     }
@@ -637,6 +665,7 @@ impl NativePluginGuiView for ClapGuiAndStateHandle {
     }
 
     fn poll_main_thread(&mut self) {
+        crate::plugin_window::pump_win32_messages();
         if self.cb_state.needs_main_thread.swap(false, Ordering::AcqRel)
             && !self.plugin_ptr.is_null()
         {
@@ -698,10 +727,14 @@ pub struct HostedClapInstance {
     param_ids: Vec<(u32, *mut c_void)>,
     last_sent_params: Vec<f32>,
     latency_smp: usize,
+    num_in_ports: u32,
+    num_out_ports: u32,
     in_l: Vec<f32>,
     in_r: Vec<f32>,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
+    aux_scratch_l: Vec<f32>,
+    aux_scratch_r: Vec<f32>,
     events: Vec<AnyClapEvent>,
     steady_time: i64,
     processing_started: bool,
@@ -725,20 +758,7 @@ impl HostedClapInstance {
         initial_state: Option<&[u8]>,
     ) -> Result<LoadedClapBundle, String> {
         unsafe {
-            let lib = Arc::new(Library::new(path).map_err(|e| e.to_string())?);
-            let entry_sym: libloading::Symbol<*const ClapPluginEntry> =
-                lib.get(b"clap_entry\0").map_err(|e| e.to_string())?;
-            let entry_ptr = *entry_sym;
-            if entry_ptr.is_null() {
-                return Err("Null clap_entry".into());
-            }
-            let c_path =
-                CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
-            if let Some(init_fn) = (*entry_ptr).init {
-                if !init_fn(c_path.as_ptr()) {
-                    return Err("CLAP init failed".into());
-                }
-            }
+            let (lib, entry_ptr) = get_or_init_clap_lib(path)?;
             let get_fac = (*entry_ptr).get_factory.ok_or("Missing get_factory")?;
             let fac_ptr = get_fac(b"clap.plugin-factory\0".as_ptr() as *const c_char)
                 as *const ClapPluginFactory;
@@ -813,6 +833,9 @@ impl HostedClapInstance {
         let latency_ext = get_ext
             .map(|f| f(plugin_ptr, b"clap.latency\0".as_ptr() as *const c_char) as *const ClapPluginLatency)
             .unwrap_or(std::ptr::null());
+        let audio_ports_ext = get_ext
+            .map(|f| f(plugin_ptr, b"clap.audio-ports\0".as_ptr() as *const c_char) as *const ClapPluginAudioPorts)
+            .unwrap_or(std::ptr::null());
         let gui_ext = get_ext
             .map(|f| f(plugin_ptr, b"clap.gui\0".as_ptr() as *const c_char) as *const ClapPluginGui)
             .unwrap_or(std::ptr::null());
@@ -885,6 +908,22 @@ impl HostedClapInstance {
             0
         };
 
+        let (num_in_ports, num_out_ports) = if !audio_ports_ext.is_null() {
+            let ins = (*audio_ports_ext)
+                .count
+                .map(|f| f(plugin_ptr, true))
+                .unwrap_or(1)
+                .min(8);
+            let outs = (*audio_ports_ext)
+                .count
+                .map(|f| f(plugin_ptr, false))
+                .unwrap_or(1)
+                .clamp(1, 8);
+            (ins, outs)
+        } else {
+            (1, 1)
+        };
+
         let blk = max_block.max(4096);
         let audio_processor = Self {
             _lib: lib,
@@ -895,10 +934,14 @@ impl HostedClapInstance {
             param_ids,
             last_sent_params,
             latency_smp,
+            num_in_ports,
+            num_out_ports,
             in_l: vec![0.0; blk],
             in_r: vec![0.0; blk],
             out_l: vec![0.0; blk],
             out_r: vec![0.0; blk],
+            aux_scratch_l: vec![0.0; blk],
+            aux_scratch_r: vec![0.0; blk],
             events: Vec::with_capacity(256),
             steady_time: 0,
             processing_started: false,
@@ -1011,21 +1054,29 @@ impl ExternalPluginAdapter for HostedClapInstance {
             }
 
             let mut in_ptrs = [self.in_l.as_mut_ptr(), self.in_r.as_mut_ptr()];
-            let mut out_ptrs = [self.out_l.as_mut_ptr(), self.out_r.as_mut_ptr()];
-            let audio_in = ClapAudioBuffer {
+            let mut out0_ptrs = [self.out_l.as_mut_ptr(), self.out_r.as_mut_ptr()];
+            let mut aux_ptrs = [
+                self.aux_scratch_l.as_mut_ptr(),
+                self.aux_scratch_r.as_mut_ptr(),
+            ];
+
+            let audio_in_ports = [ClapAudioBuffer {
                 data32: in_ptrs.as_mut_ptr(),
                 data64: std::ptr::null_mut(),
                 channel_count: 2,
                 latency: 0,
                 constant_mask: 0,
-            };
-            let mut audio_out = ClapAudioBuffer {
-                data32: out_ptrs.as_mut_ptr(),
+            }; 8];
+
+            let mut audio_out_ports = [ClapAudioBuffer {
+                data32: aux_ptrs.as_mut_ptr(),
                 data64: std::ptr::null_mut(),
                 channel_count: 2,
                 latency: 0,
                 constant_mask: 0,
-            };
+            }; 8];
+            audio_out_ports[0].data32 = out0_ptrs.as_mut_ptr();
+
             let in_ev = ClapInputEvents {
                 ctx: &mut self.events as *mut Vec<AnyClapEvent> as *mut c_void,
                 size: in_events_size,
@@ -1039,10 +1090,14 @@ impl ExternalPluginAdapter for HostedClapInstance {
                 steady_time: self.steady_time,
                 frames_count: frames as u32,
                 transport: std::ptr::null(),
-                audio_inputs: &audio_in,
-                audio_outputs: &mut audio_out,
-                audio_inputs_count: 1,
-                audio_outputs_count: 1,
+                audio_inputs: if self.num_in_ports > 0 {
+                    audio_in_ports.as_ptr()
+                } else {
+                    std::ptr::null()
+                },
+                audio_outputs: audio_out_ports.as_mut_ptr(),
+                audio_inputs_count: self.num_in_ports,
+                audio_outputs_count: self.num_out_ports,
                 in_events: &in_ev,
                 out_events: &out_ev,
             };

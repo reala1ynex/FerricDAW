@@ -7,10 +7,33 @@ use crate::plugin_window::{NativePluginGuiView, PluginQuarantine};
 use ferric_dsp::{ExternalPluginAdapter, MidiEvent};
 use ferric_model::{ExternalPluginFormat, PluginParamDescriptor};
 use libloading::Library;
+use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// Process-lifetime resident `.vst3` DLL cache (matching REAPER/Bitwig):
+/// Calls `InitDll` once per DLL and keeps the module resident until process exit so JUCE/VSTGUI
+/// background threads never deadlock on the Windows Loader Lock during `FreeLibrary`!
+static VST3_RESIDENT_LIBS: OnceLock<Mutex<HashMap<PathBuf, Arc<Library>>>> = OnceLock::new();
+
+unsafe fn get_or_init_vst3_lib(dll_path: &Path) -> Result<Arc<Library>, String> {
+    let cache = VST3_RESIDENT_LIBS.get_or_init(|| Mutex::new(HashMap::new()));
+    let canon = dll_path
+        .canonicalize()
+        .unwrap_or_else(|_| dll_path.to_path_buf());
+    let mut guard = cache.lock().map_err(|_| "VST3 cache poisoned".to_string())?;
+    if let Some(lib) = guard.get(&canon) {
+        return Ok(lib.clone());
+    }
+    let lib = Arc::new(Library::new(&canon).map_err(|e| e.to_string())?);
+    if let Ok(init_dll) = lib.get::<unsafe extern "system" fn() -> bool>(b"InitDll\0") {
+        let _ = init_dll();
+    }
+    guard.insert(canon, lib.clone());
+    Ok(lib)
+}
 
 pub type TResult = i32;
 pub const K_RESULT_OK: TResult = 0;
@@ -59,6 +82,11 @@ pub const IID_IBSTREAM: TUID = steinberg_win_iid(0xC3BF6EA2, 0x30994752, 0x9B6BF
 pub const IID_IPARAMETERCHANGES: TUID = steinberg_win_iid(0xA4779663, 0x0BB64A56, 0xB44384A8, 0x466FEB9D);
 pub const IID_IPARAMVALUEQUEUE: TUID = steinberg_win_iid(0x01263A18, 0xED074F6F, 0x98C9D356, 0x4686F9BA);
 pub const IID_IEVENTLIST: TUID = steinberg_win_iid(0x3A2C4214, 0x346349FE, 0xB2C4F397, 0xB9695A44);
+pub const IID_ICONNECTIONPOINT: TUID = steinberg_win_iid(0x70A4156F, 0x6E6E4026, 0x989148BF, 0xAA60D8D1);
+pub const IID_IMESSAGE: TUID = steinberg_win_iid(0x936F033B, 0xC6C047DB, 0xBB0882F8, 0x13C1E613);
+pub const IID_IATTRIBUTELIST: TUID = steinberg_win_iid(0x1E5F0AEB, 0xCC7F4533, 0xA2544011, 0x38AD5EE4);
+pub const IID_ICOMPONENTHANDLER: TUID = steinberg_win_iid(0x93A0BEA3, 0x0BD045DB, 0x8E890B0C, 0xC1E46AC6);
+pub const IID_IPLUGFRAME: TUID = steinberg_win_iid(0x367FAF01, 0xAFA94693, 0x8D4DA2A0, 0xED0882A3);
 
 // --- Core COM VTables ---
 
@@ -165,6 +193,7 @@ pub(crate) struct ProcessSetup {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub(crate) struct AudioBusBuffers {
     pub num_channels: i32,
     pub silence_flags: u64,
@@ -348,12 +377,398 @@ unsafe extern "system" fn host_app_get_name(
     }
     K_RESULT_OK
 }
-unsafe extern "system" fn host_app_create_instance(
-    _this: *mut c_void,
-    _cid: *const TUID,
-    _iid: *const TUID,
+#[repr(C)]
+pub(crate) struct IConnectionPointVtbl {
+    pub unknown: FUnknownVtbl,
+    pub connect: unsafe extern "system" fn(this: *mut c_void, other: *mut c_void) -> TResult,
+    pub disconnect: unsafe extern "system" fn(this: *mut c_void, other: *mut c_void) -> TResult,
+    pub notify: unsafe extern "system" fn(this: *mut c_void, message: *mut c_void) -> TResult,
+}
+
+// --- `IMessage` + `IAttributeList` + `IComponentHandler` + `IPlugFrame` Host COM Objects ---
+
+#[repr(C)]
+struct IAttributeListVtbl {
+    unknown: FUnknownVtbl,
+    set_int: unsafe extern "system" fn(this: *mut c_void, id: *const c_char, value: i64) -> TResult,
+    get_int:
+        unsafe extern "system" fn(this: *mut c_void, id: *const c_char, value: *mut i64) -> TResult,
+    set_float:
+        unsafe extern "system" fn(this: *mut c_void, id: *const c_char, value: f64) -> TResult,
+    get_float:
+        unsafe extern "system" fn(this: *mut c_void, id: *const c_char, value: *mut f64) -> TResult,
+    set_string:
+        unsafe extern "system" fn(this: *mut c_void, id: *const c_char, s: *const u16) -> TResult,
+    get_string: unsafe extern "system" fn(
+        this: *mut c_void,
+        id: *const c_char,
+        s: *mut u16,
+        size_bytes: u32,
+    ) -> TResult,
+    set_binary: unsafe extern "system" fn(
+        this: *mut c_void,
+        id: *const c_char,
+        data: *const c_void,
+        size_bytes: u32,
+    ) -> TResult,
+    get_binary: unsafe extern "system" fn(
+        this: *mut c_void,
+        id: *const c_char,
+        data: *mut *const c_void,
+        size_bytes: *mut u32,
+    ) -> TResult,
+}
+
+#[repr(C)]
+struct HostAttrList {
+    vtbl: *const IAttributeListVtbl,
+    ints: Vec<(String, i64)>,
+    floats: Vec<(String, f64)>,
+    bins: Vec<(String, Vec<u8>)>,
+}
+
+unsafe extern "system" fn attr_qi(
+    this: *mut c_void,
+    iid: *const TUID,
     obj: *mut *mut c_void,
 ) -> TResult {
+    if !iid.is_null() && (*iid == IID_FUNKNOWN || *iid == IID_IATTRIBUTELIST) {
+        *obj = this;
+        return K_RESULT_OK;
+    }
+    *obj = std::ptr::null_mut();
+    K_NO_INTERFACE
+}
+unsafe fn attr_key(id: *const c_char) -> String {
+    if id.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(id).to_string_lossy().into_owned()
+    }
+}
+unsafe extern "system" fn attr_set_int(
+    this: *mut c_void,
+    id: *const c_char,
+    val: i64,
+) -> TResult {
+    let a = &mut *(this as *mut HostAttrList);
+    let k = attr_key(id);
+    if let Some(e) = a.ints.iter_mut().find(|(x, _)| *x == k) {
+        e.1 = val;
+    } else {
+        a.ints.push((k, val));
+    }
+    K_RESULT_OK
+}
+unsafe extern "system" fn attr_get_int(
+    this: *mut c_void,
+    id: *const c_char,
+    out: *mut i64,
+) -> TResult {
+    let a = &*(this as *const HostAttrList);
+    let k = attr_key(id);
+    if let Some((_, v)) = a.ints.iter().find(|(x, _)| *x == k) {
+        if !out.is_null() {
+            *out = *v;
+        }
+        K_RESULT_OK
+    } else {
+        -1
+    }
+}
+unsafe extern "system" fn attr_set_float(
+    this: *mut c_void,
+    id: *const c_char,
+    val: f64,
+) -> TResult {
+    let a = &mut *(this as *mut HostAttrList);
+    let k = attr_key(id);
+    if let Some(e) = a.floats.iter_mut().find(|(x, _)| *x == k) {
+        e.1 = val;
+    } else {
+        a.floats.push((k, val));
+    }
+    K_RESULT_OK
+}
+unsafe extern "system" fn attr_get_float(
+    this: *mut c_void,
+    id: *const c_char,
+    out: *mut f64,
+) -> TResult {
+    let a = &*(this as *const HostAttrList);
+    let k = attr_key(id);
+    if let Some((_, v)) = a.floats.iter().find(|(x, _)| *x == k) {
+        if !out.is_null() {
+            *out = *v;
+        }
+        K_RESULT_OK
+    } else {
+        -1
+    }
+}
+unsafe extern "system" fn attr_set_str(
+    _t: *mut c_void,
+    _id: *const c_char,
+    _s: *const u16,
+) -> TResult {
+    K_RESULT_OK
+}
+unsafe extern "system" fn attr_get_str(
+    _t: *mut c_void,
+    _id: *const c_char,
+    _s: *mut u16,
+    _sz: u32,
+) -> TResult {
+    -1
+}
+unsafe extern "system" fn attr_set_bin(
+    this: *mut c_void,
+    id: *const c_char,
+    data: *const c_void,
+    sz: u32,
+) -> TResult {
+    let a = &mut *(this as *mut HostAttrList);
+    let k = attr_key(id);
+    let bytes = if !data.is_null() && sz > 0 {
+        std::slice::from_raw_parts(data as *const u8, sz as usize).to_vec()
+    } else {
+        Vec::new()
+    };
+    if let Some(e) = a.bins.iter_mut().find(|(x, _)| *x == k) {
+        e.1 = bytes;
+    } else {
+        a.bins.push((k, bytes));
+    }
+    K_RESULT_OK
+}
+unsafe extern "system" fn attr_get_bin(
+    this: *mut c_void,
+    id: *const c_char,
+    data: *mut *const c_void,
+    sz: *mut u32,
+) -> TResult {
+    let a = &*(this as *const HostAttrList);
+    let k = attr_key(id);
+    if let Some((_, b)) = a.bins.iter().find(|(x, _)| *x == k) {
+        if !data.is_null() {
+            *data = b.as_ptr() as *const c_void;
+        }
+        if !sz.is_null() {
+            *sz = b.len() as u32;
+        }
+        K_RESULT_OK
+    } else {
+        -1
+    }
+}
+
+static ATTR_VTBL: IAttributeListVtbl = IAttributeListVtbl {
+    unknown: FUnknownVtbl {
+        query_interface: attr_qi,
+        add_ref: host_app_ref,
+        release: host_app_ref,
+    },
+    set_int: attr_set_int,
+    get_int: attr_get_int,
+    set_float: attr_set_float,
+    get_float: attr_get_float,
+    set_string: attr_set_str,
+    get_string: attr_get_str,
+    set_binary: attr_set_bin,
+    get_binary: attr_get_bin,
+};
+
+#[repr(C)]
+struct IMessageVtbl {
+    unknown: FUnknownVtbl,
+    get_message_id: unsafe extern "system" fn(this: *mut c_void) -> *const c_char,
+    set_message_id: unsafe extern "system" fn(this: *mut c_void, id: *const c_char),
+    get_attributes: unsafe extern "system" fn(this: *mut c_void) -> *mut c_void,
+}
+
+#[repr(C)]
+struct HostMessage {
+    vtbl: *const IMessageVtbl,
+    refs: AtomicU32,
+    msg_id: std::ffi::CString,
+    attrs: HostAttrList,
+}
+
+unsafe extern "system" fn msg_qi(
+    this: *mut c_void,
+    iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> TResult {
+    if !iid.is_null() && (*iid == IID_FUNKNOWN || *iid == IID_IMESSAGE) {
+        msg_add_ref(this);
+        *obj = this;
+        return K_RESULT_OK;
+    }
+    *obj = std::ptr::null_mut();
+    K_NO_INTERFACE
+}
+unsafe extern "system" fn msg_add_ref(this: *mut c_void) -> u32 {
+    let m = &*(this as *const HostMessage);
+    m.refs.fetch_add(1, Ordering::Relaxed) + 1
+}
+unsafe extern "system" fn msg_release(this: *mut c_void) -> u32 {
+    let m = &*(this as *const HostMessage);
+    let prev = m.refs.fetch_sub(1, Ordering::AcqRel);
+    if prev == 1 {
+        drop(Box::from_raw(this as *mut HostMessage));
+        0
+    } else {
+        prev - 1
+    }
+}
+unsafe extern "system" fn msg_get_id(this: *mut c_void) -> *const c_char {
+    (*(this as *const HostMessage)).msg_id.as_ptr()
+}
+unsafe extern "system" fn msg_set_id(this: *mut c_void, id: *const c_char) {
+    let m = &mut *(this as *mut HostMessage);
+    if !id.is_null() {
+        m.msg_id = CStr::from_ptr(id).to_owned();
+    }
+}
+unsafe extern "system" fn msg_get_attrs(this: *mut c_void) -> *mut c_void {
+    &mut (*(this as *mut HostMessage)).attrs as *mut HostAttrList as *mut c_void
+}
+
+static MSG_VTBL: IMessageVtbl = IMessageVtbl {
+    unknown: FUnknownVtbl {
+        query_interface: msg_qi,
+        add_ref: msg_add_ref,
+        release: msg_release,
+    },
+    get_message_id: msg_get_id,
+    set_message_id: msg_set_id,
+    get_attributes: msg_get_attrs,
+};
+
+#[repr(C)]
+struct IComponentHandlerVtbl {
+    unknown: FUnknownVtbl,
+    begin_edit: unsafe extern "system" fn(this: *mut c_void, id: u32) -> TResult,
+    perform_edit: unsafe extern "system" fn(this: *mut c_void, id: u32, val: f64) -> TResult,
+    end_edit: unsafe extern "system" fn(this: *mut c_void, id: u32) -> TResult,
+    restart_component: unsafe extern "system" fn(this: *mut c_void, flags: i32) -> TResult,
+}
+
+#[repr(C)]
+struct HostComponentHandler {
+    vtbl: *const IComponentHandlerVtbl,
+}
+
+unsafe extern "system" fn ch_qi(
+    this: *mut c_void,
+    iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> TResult {
+    if !iid.is_null() && (*iid == IID_FUNKNOWN || *iid == IID_ICOMPONENTHANDLER) {
+        *obj = this;
+        return K_RESULT_OK;
+    }
+    *obj = std::ptr::null_mut();
+    K_NO_INTERFACE
+}
+unsafe extern "system" fn ch_edit(_t: *mut c_void, _id: u32) -> TResult {
+    K_RESULT_OK
+}
+unsafe extern "system" fn ch_perform(_t: *mut c_void, _id: u32, _v: f64) -> TResult {
+    K_RESULT_OK
+}
+unsafe extern "system" fn ch_restart(_t: *mut c_void, _f: i32) -> TResult {
+    K_RESULT_OK
+}
+
+static COMP_HANDLER_VTBL: IComponentHandlerVtbl = IComponentHandlerVtbl {
+    unknown: FUnknownVtbl {
+        query_interface: ch_qi,
+        add_ref: host_app_ref,
+        release: host_app_ref,
+    },
+    begin_edit: ch_edit,
+    perform_edit: ch_perform,
+    end_edit: ch_edit,
+    restart_component: ch_restart,
+};
+
+static mut GLOBAL_COMP_HANDLER: HostComponentHandler = HostComponentHandler {
+    vtbl: &COMP_HANDLER_VTBL,
+};
+
+#[repr(C)]
+struct IPlugFrameVtbl {
+    unknown: FUnknownVtbl,
+    resize_view:
+        unsafe extern "system" fn(this: *mut c_void, view: *mut c_void, rect: *mut ViewRect) -> TResult,
+}
+
+#[repr(C)]
+struct HostPlugFrame {
+    vtbl: *const IPlugFrameVtbl,
+}
+
+unsafe extern "system" fn pf_qi(
+    this: *mut c_void,
+    iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> TResult {
+    if !iid.is_null() && (*iid == IID_FUNKNOWN || *iid == IID_IPLUGFRAME) {
+        *obj = this;
+        return K_RESULT_OK;
+    }
+    *obj = std::ptr::null_mut();
+    K_NO_INTERFACE
+}
+unsafe extern "system" fn pf_resize(
+    _t: *mut c_void,
+    view: *mut c_void,
+    rect: *mut ViewRect,
+) -> TResult {
+    if !view.is_null() && !rect.is_null() {
+        let vtbl = *(view as *const *const IPlugViewVtbl);
+        let _ = ((*vtbl).on_size)(view, rect);
+    }
+    K_RESULT_OK
+}
+
+static PLUG_FRAME_VTBL: IPlugFrameVtbl = IPlugFrameVtbl {
+    unknown: FUnknownVtbl {
+        query_interface: pf_qi,
+        add_ref: host_app_ref,
+        release: host_app_ref,
+    },
+    resize_view: pf_resize,
+};
+
+static mut GLOBAL_PLUG_FRAME: HostPlugFrame = HostPlugFrame {
+    vtbl: &PLUG_FRAME_VTBL,
+};
+
+unsafe extern "system" fn host_app_create_instance(
+    _this: *mut c_void,
+    cid: *const TUID,
+    iid: *const TUID,
+    obj: *mut *mut c_void,
+) -> TResult {
+    if !obj.is_null()
+        && ((!cid.is_null() && *cid == IID_IMESSAGE) || (!iid.is_null() && *iid == IID_IMESSAGE))
+    {
+        let msg = Box::new(HostMessage {
+            vtbl: &MSG_VTBL,
+            refs: AtomicU32::new(1),
+            msg_id: std::ffi::CString::new("").unwrap(),
+            attrs: HostAttrList {
+                vtbl: &ATTR_VTBL,
+                ints: Vec::new(),
+                floats: Vec::new(),
+                bins: Vec::new(),
+            },
+        });
+        *obj = Box::into_raw(msg) as *mut c_void;
+        return K_RESULT_OK;
+    }
     if !obj.is_null() {
         *obj = std::ptr::null_mut();
     }
@@ -674,7 +1089,8 @@ pub(crate) struct Vst3NoteOffEvent {
 pub(crate) union Vst3EventData {
     pub note_on: Vst3NoteOnEvent,
     pub note_off: Vst3NoteOffEvent,
-    pub pad: [u8; 32],
+    /// Forces 8-byte pointer alignment on 64-bit Windows matching `Steinberg::Vst::DataEvent` (`const uint8* bytes`)!
+    pub align8: [usize; 4],
 }
 
 #[repr(C)]
@@ -857,10 +1273,7 @@ fn collect_vst3_entries(
 
 pub fn inspect_vst3_binary(dll_path: &Path) -> Result<Vec<DiscoveredExternalPlugin>, String> {
     unsafe {
-        let lib = Library::new(dll_path).map_err(|e| e.to_string())?;
-        if let Ok(init_dll) = lib.get::<unsafe extern "system" fn() -> bool>(b"InitDll\0") {
-            let _ = init_dll();
-        }
+        let lib = get_or_init_vst3_lib(dll_path)?;
         let get_factory: libloading::Symbol<unsafe extern "system" fn() -> *mut c_void> =
             lib.get(b"GetPluginFactory\0").map_err(|e| e.to_string())?;
         let fac_obj = get_factory();
@@ -889,7 +1302,6 @@ pub fn inspect_vst3_binary(dll_path: &Path) -> Result<Vec<DiscoveredExternalPlug
             };
             if ((*fac_vtbl).get_class_info)(fac_obj, idx, &mut ci) == K_RESULT_OK {
                 let cat = fixed_cchar_str(&ci.category);
-                // Only expose Audio Module Class entries (skip separate EditController helper classes!)
                 if cat.eq_ignore_ascii_case("Audio Module Class") {
                     let name = fixed_cchar_str(&ci.name);
                     out.push(DiscoveredExternalPlugin {
@@ -914,9 +1326,6 @@ pub fn inspect_vst3_binary(dll_path: &Path) -> Result<Vec<DiscoveredExternalPlug
         }
 
         let _ = ((*fac_vtbl).unknown.release)(fac_obj);
-        if let Ok(exit_dll) = lib.get::<unsafe extern "system" fn() -> bool>(b"ExitDll\0") {
-            let _ = exit_dll();
-        }
         Ok(out)
     }
 }
@@ -959,6 +1368,10 @@ impl NativePluginGuiView for Vst3GuiAndStateHandle {
             let w = (rect.right - rect.left).max(640) as u32;
             let h = (rect.bottom - rect.top).max(420) as u32;
 
+            let _ = ((*view_vtbl).set_frame)(
+                view,
+                std::ptr::addr_of_mut!(GLOBAL_PLUG_FRAME) as *mut c_void,
+            );
             if ((*view_vtbl).attached)(view, hwnd, hwnd_type) != K_RESULT_OK {
                 let _ = ((*view_vtbl).unknown.release)(view);
                 return Err("IPlugView::attached(HWND) failed".into());
@@ -973,6 +1386,7 @@ impl NativePluginGuiView for Vst3GuiAndStateHandle {
             unsafe {
                 let vtbl = *(self.plug_view_ptr as *const *const IPlugViewVtbl);
                 let _ = ((*vtbl).removed)(self.plug_view_ptr);
+                let _ = ((*vtbl).set_frame)(self.plug_view_ptr, std::ptr::null_mut());
                 let _ = ((*vtbl).unknown.release)(self.plug_view_ptr);
             }
             self.plug_view_ptr = std::ptr::null_mut();
@@ -1092,10 +1506,14 @@ pub struct HostedVst3Instance {
     param_ids: Vec<u32>,
     last_sent_params: Vec<f32>,
     latency_smp: usize,
+    num_in_buses: i32,
+    num_out_buses: i32,
     in_l: Vec<f32>,
     in_r: Vec<f32>,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
+    aux_scratch_l: Vec<f32>,
+    aux_scratch_r: Vec<f32>,
     param_changes: Box<HostParamChanges>,
     event_list: Box<HostEventList>,
     processing_started: bool,
@@ -1120,16 +1538,16 @@ impl HostedVst3Instance {
     ) -> Result<LoadedVst3Bundle, String> {
         let dll_path =
             resolve_vst3_binary_path(path).ok_or_else(|| "VST3 binary not found".to_string())?;
-        let cid = decode_tuid_hex(cid_hex).ok_or_else(|| "Invalid 32-char VST3 CID hex".to_string())?;
+        let cid =
+            decode_tuid_hex(cid_hex).ok_or_else(|| "Invalid 32-char VST3 CID hex".to_string())?;
 
         unsafe {
-            let lib = Arc::new(Library::new(&dll_path).map_err(|e| e.to_string())?);
-            if let Ok(init_dll) = lib.get::<unsafe extern "system" fn() -> bool>(b"InitDll\0") {
-                let _ = init_dll();
-            }
-            let get_factory: libloading::Symbol<unsafe extern "system" fn() -> *mut c_void> =
-                lib.get(b"GetPluginFactory\0").map_err(|e| e.to_string())?;
-            let fac_obj = get_factory();
+            let lib = get_or_init_vst3_lib(&dll_path)?;
+            let fac_obj = {
+                let get_factory: libloading::Symbol<unsafe extern "system" fn() -> *mut c_void> =
+                    lib.get(b"GetPluginFactory\0").map_err(|e| e.to_string())?;
+                get_factory()
+            };
             if fac_obj.is_null() {
                 return Err("GetPluginFactory returned null".into());
             }
@@ -1220,6 +1638,66 @@ impl HostedVst3Instance {
             }
         }
 
+        // Connect `IComponent` <-> `IEditController` via `IConnectionPoint` & sync initial state
+        // (Required by JUCE VST3 plugins like Dexed so the EditController links to the AudioProcessor!)
+        if !ctrl_ptr.is_null() {
+            let ctrl_vtbl = *(ctrl_ptr as *const *const IEditControllerVtbl);
+            let _ = ((*ctrl_vtbl).set_component_handler)(
+                ctrl_ptr,
+                std::ptr::addr_of_mut!(GLOBAL_COMP_HANDLER) as *mut c_void,
+            );
+
+            if separate_controller {
+                let mut comp_cp: *mut c_void = std::ptr::null_mut();
+                let mut ctrl_cp: *mut c_void = std::ptr::null_mut();
+                let ok_c = ((*comp_vtbl).base.unknown.query_interface)(
+                    comp_ptr,
+                    &IID_ICONNECTIONPOINT,
+                    &mut comp_cp,
+                ) == K_RESULT_OK
+                    && !comp_cp.is_null();
+                let ok_e = ((*ctrl_vtbl).base.unknown.query_interface)(
+                    ctrl_ptr,
+                    &IID_ICONNECTIONPOINT,
+                    &mut ctrl_cp,
+                ) == K_RESULT_OK
+                    && !ctrl_cp.is_null();
+                if ok_c && ok_e {
+                    let c_cp_vtbl = *(comp_cp as *const *const IConnectionPointVtbl);
+                    let e_cp_vtbl = *(ctrl_cp as *const *const IConnectionPointVtbl);
+                    let _ = ((*c_cp_vtbl).connect)(comp_cp, ctrl_cp);
+                    let _ = ((*e_cp_vtbl).connect)(ctrl_cp, comp_cp);
+                }
+                if !comp_cp.is_null() {
+                    let v = *(comp_cp as *const *const FUnknownVtbl);
+                    let _ = ((*v).release)(comp_cp);
+                }
+                if !ctrl_cp.is_null() {
+                    let v = *(ctrl_cp as *const *const FUnknownVtbl);
+                    let _ = ((*v).release)(ctrl_cp);
+                }
+
+                // Sync initial component state stream into controller per Steinberg VST3 initialization sequence!
+                let mut init_stream = MemoryBStream {
+                    vtbl: &BSTREAM_VTBL,
+                    data: Vec::new(),
+                    cursor: 0,
+                };
+                if ((*comp_vtbl).get_state)(
+                    comp_ptr,
+                    &mut init_stream as *mut MemoryBStream as *mut c_void,
+                ) == K_RESULT_OK
+                    && !init_stream.data.is_empty()
+                {
+                    init_stream.cursor = 0;
+                    let _ = ((*ctrl_vtbl).set_component_state)(
+                        ctrl_ptr,
+                        &mut init_stream as *mut MemoryBStream as *mut c_void,
+                    );
+                }
+            }
+        }
+
         let mut gui_and_state = Vst3GuiAndStateHandle {
             _lib: lib.clone(),
             component_ptr: comp_ptr,
@@ -1263,14 +1741,14 @@ impl HostedVst3Instance {
             }
         }
 
-        // Activate main audio/event buses & configure 32-bit real-time processing!
-        let n_in_audio = ((*comp_vtbl).get_bus_count)(comp_ptr, 0, 0);
-        if n_in_audio > 0 {
-            let _ = ((*comp_vtbl).activate_bus)(comp_ptr, 0, 0, 0, 1);
+        // Activate audio/event buses (supporting multi-output synths up to 8 stereo buses!)
+        let n_in_audio = ((*comp_vtbl).get_bus_count)(comp_ptr, 0, 0).clamp(0, 8);
+        for b in 0..n_in_audio {
+            let _ = ((*comp_vtbl).activate_bus)(comp_ptr, 0, 0, b, 1);
         }
-        let n_out_audio = ((*comp_vtbl).get_bus_count)(comp_ptr, 0, 1);
-        if n_out_audio > 0 {
-            let _ = ((*comp_vtbl).activate_bus)(comp_ptr, 0, 1, 0, 1);
+        let n_out_audio = ((*comp_vtbl).get_bus_count)(comp_ptr, 0, 1).clamp(1, 8);
+        for b in 0..n_out_audio {
+            let _ = ((*comp_vtbl).activate_bus)(comp_ptr, 0, 1, b, 1);
         }
         let n_in_ev = ((*comp_vtbl).get_bus_count)(comp_ptr, 1, 0);
         if n_in_ev > 0 {
@@ -1278,6 +1756,21 @@ impl HostedVst3Instance {
         }
 
         let proc_vtbl = *(proc_ptr as *const *const IAudioProcessorVtbl);
+        // Set explicit Stereo (`SpeakerArr::kStereo = 0x3`) bus arrangements per Steinberg VST3 spec!
+        let mut in_arr = [0x3_u64; 8];
+        let mut out_arr = [0x3_u64; 8];
+        let _ = ((*proc_vtbl).set_bus_arrangements)(
+            proc_ptr,
+            if n_in_audio > 0 {
+                in_arr.as_mut_ptr()
+            } else {
+                std::ptr::null_mut()
+            },
+            n_in_audio,
+            out_arr.as_mut_ptr(),
+            n_out_audio,
+        );
+
         let blk = max_block.max(4096);
         let mut setup = ProcessSetup {
             process_mode: 0,         // kRealtime
@@ -1316,10 +1809,14 @@ impl HostedVst3Instance {
             param_ids,
             last_sent_params,
             latency_smp,
+            num_in_buses: n_in_audio,
+            num_out_buses: n_out_audio,
             in_l: vec![0.0; blk],
             in_r: vec![0.0; blk],
             out_l: vec![0.0; blk],
             out_r: vec![0.0; blk],
+            aux_scratch_l: vec![0.0; blk],
+            aux_scratch_r: vec![0.0; blk],
             param_changes,
             event_list,
             processing_started: false,
@@ -1426,26 +1923,37 @@ impl ExternalPluginAdapter for HostedVst3Instance {
             }
 
             let mut in_ch_ptrs = [self.in_l.as_mut_ptr(), self.in_r.as_mut_ptr()];
-            let mut out_ch_ptrs = [self.out_l.as_mut_ptr(), self.out_r.as_mut_ptr()];
-            let mut in_bus = AudioBusBuffers {
+            let mut out0_ch_ptrs = [self.out_l.as_mut_ptr(), self.out_r.as_mut_ptr()];
+            let mut aux_ch_ptrs = [
+                self.aux_scratch_l.as_mut_ptr(),
+                self.aux_scratch_r.as_mut_ptr(),
+            ];
+
+            let mut in_buses = [AudioBusBuffers {
                 num_channels: 2,
                 silence_flags: 0,
                 channel_buffers32: in_ch_ptrs.as_mut_ptr(),
-            };
-            let mut out_bus = AudioBusBuffers {
+            }; 8];
+
+            let mut out_buses = [AudioBusBuffers {
                 num_channels: 2,
                 silence_flags: 0,
-                channel_buffers32: out_ch_ptrs.as_mut_ptr(),
-            };
+                channel_buffers32: aux_ch_ptrs.as_mut_ptr(),
+            }; 8];
+            out_buses[0].channel_buffers32 = out0_ch_ptrs.as_mut_ptr();
 
             let mut pdata = ProcessData {
                 process_mode: 0,
                 symbolic_sample_size: 0,
                 num_samples: frames as i32,
-                num_inputs: 1,
-                num_outputs: 1,
-                inputs: &mut in_bus,
-                outputs: &mut out_bus,
+                num_inputs: self.num_in_buses,
+                num_outputs: self.num_out_buses,
+                inputs: if self.num_in_buses > 0 {
+                    in_buses.as_mut_ptr()
+                } else {
+                    std::ptr::null_mut()
+                },
+                outputs: out_buses.as_mut_ptr(),
                 input_param_changes: &mut *self.param_changes as *mut HostParamChanges
                     as *mut c_void,
                 output_param_changes: std::ptr::null_mut(),
@@ -1479,6 +1987,38 @@ impl Drop for HostedVst3Instance {
             }
             if !self.controller_ptr.is_null() {
                 let ctrl_vtbl = *(self.controller_ptr as *const *const IEditControllerVtbl);
+                if self.separate_controller && !self.component_ptr.is_null() {
+                    let comp_vtbl = *(self.component_ptr as *const *const IComponentVtbl);
+                    let mut comp_cp: *mut c_void = std::ptr::null_mut();
+                    let mut ctrl_cp: *mut c_void = std::ptr::null_mut();
+                    let ok_c = ((*comp_vtbl).base.unknown.query_interface)(
+                        self.component_ptr,
+                        &IID_ICONNECTIONPOINT,
+                        &mut comp_cp,
+                    ) == K_RESULT_OK
+                        && !comp_cp.is_null();
+                    let ok_e = ((*ctrl_vtbl).base.unknown.query_interface)(
+                        self.controller_ptr,
+                        &IID_ICONNECTIONPOINT,
+                        &mut ctrl_cp,
+                    ) == K_RESULT_OK
+                        && !ctrl_cp.is_null();
+                    if ok_c && ok_e {
+                        let c_v = *(comp_cp as *const *const IConnectionPointVtbl);
+                        let e_v = *(ctrl_cp as *const *const IConnectionPointVtbl);
+                        let _ = ((*c_v).disconnect)(comp_cp, ctrl_cp);
+                        let _ = ((*e_v).disconnect)(ctrl_cp, comp_cp);
+                    }
+                    if !comp_cp.is_null() {
+                        let v = *(comp_cp as *const *const FUnknownVtbl);
+                        let _ = ((*v).release)(comp_cp);
+                    }
+                    if !ctrl_cp.is_null() {
+                        let v = *(ctrl_cp as *const *const FUnknownVtbl);
+                        let _ = ((*v).release)(ctrl_cp);
+                    }
+                }
+                let _ = ((*ctrl_vtbl).set_component_handler)(self.controller_ptr, std::ptr::null_mut());
                 if self.separate_controller {
                     let _ = ((*ctrl_vtbl).base.terminate)(self.controller_ptr);
                 }

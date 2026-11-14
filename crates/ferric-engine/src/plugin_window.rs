@@ -46,18 +46,21 @@ impl FloatingPluginWindow {
     pub fn open_window(&mut self) -> Result<(), String> {
         if self.is_editor_open && !self.hwnd.is_null() {
             focus_hwnd(self.hwnd);
+            pump_win32_messages();
             return Ok(());
         }
         let hwnd = create_native_host_window(&self.title, 820, 540)?;
         match self.view.attach_to_hwnd(hwnd) {
             Ok((w, h)) => {
                 resize_and_show_hwnd(hwnd, w.clamp(280, 2560), h.clamp(180, 1600));
+                pump_win32_messages();
                 self.hwnd = hwnd;
                 self.is_editor_open = true;
                 Ok(())
             }
             Err(err) => {
                 destroy_native_host_window(hwnd);
+                pump_win32_messages();
                 Err(err)
             }
         }
@@ -66,20 +69,24 @@ impl FloatingPluginWindow {
     pub fn close_window(&mut self) {
         if self.is_editor_open {
             self.view.detach();
+            pump_win32_messages();
             self.is_editor_open = false;
         }
         if !self.hwnd.is_null() {
             destroy_native_host_window(self.hwnd);
+            pump_win32_messages();
             self.hwnd = std::ptr::null_mut();
         }
     }
 
     /// Checks if the user clicked the Win32 `X` close button on the floating window!
     pub fn poll(&mut self) {
+        pump_win32_messages();
         self.view.poll_main_thread();
         if self.is_editor_open && !self.hwnd.is_null() && !is_hwnd_visible(self.hwnd) {
             self.view.detach();
             destroy_native_host_window(self.hwnd);
+            pump_win32_messages();
             self.hwnd = std::ptr::null_mut();
             self.is_editor_open = false;
         }
@@ -169,10 +176,11 @@ mod win32_impl {
     use windows_sys::Win32::Graphics::Gdi::{GetStockObject, BLACK_BRUSH};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindowVisible,
-        LoadCursorW, RegisterClassW, SetForegroundWindow, SetWindowPos, ShowWindow, CS_HREDRAW,
-        CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-        WM_CLOSE, WNDCLASSW, WS_CAPTION, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED,
+        AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+        IsWindowVisible, LoadCursorW, PeekMessageW, RegisterClassW, SetForegroundWindow,
+        SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+        IDC_ARROW, MSG, PM_REMOVE, SWP_NOMOVE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WM_CLOSE,
+        WM_QUIT, WNDCLASSW, WS_CAPTION, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_OVERLAPPED,
         WS_POPUPWINDOW, WS_SYSMENU,
     };
 
@@ -303,6 +311,22 @@ mod win32_impl {
             }
         }
     }
+
+    pub fn pump_messages() {
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            let mut guard = 0usize;
+            while guard < 64 && PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0
+            {
+                if msg.message == WM_QUIT {
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+                guard += 1;
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -325,6 +349,10 @@ fn is_hwnd_visible(hwnd: *mut c_void) -> bool {
 fn destroy_native_host_window(hwnd: *mut c_void) {
     win32_impl::destroy(hwnd);
 }
+#[cfg(windows)]
+pub fn pump_win32_messages() {
+    win32_impl::pump_messages();
+}
 
 #[cfg(not(windows))]
 fn create_native_host_window(_title: &str, _w: u32, _h: u32) -> Result<*mut c_void, String> {
@@ -340,3 +368,5 @@ fn is_hwnd_visible(_hwnd: *mut c_void) -> bool {
 }
 #[cfg(not(windows))]
 fn destroy_native_host_window(_hwnd: *mut c_void) {}
+#[cfg(not(windows))]
+pub fn pump_win32_messages() {}
