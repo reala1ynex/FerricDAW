@@ -259,8 +259,49 @@ impl ParamSpec {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum ExternalPluginFormat {
+    #[default]
+    Clap,
+    Vst3,
+}
+
+impl ExternalPluginFormat {
+    pub fn badge(self) -> &'static str {
+        match self {
+            ExternalPluginFormat::Clap => "CLAP",
+            ExternalPluginFormat::Vst3 => "VST3",
+        }
+    }
+}
+
+/// Discovered dynamic parameter descriptor from a hosted `.clap` (`clap.params`) or `.vst3` (`IEditController`) plugin!
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PluginParamDescriptor {
+    pub plugin_param_id: u32,
+    pub name: String,
+    pub module: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
+impl PluginParamDescriptor {
+    pub fn normalize(&self, value: f32) -> f32 {
+        if (self.max - self.min).abs() < f32::EPSILON {
+            0.0
+        } else {
+            ((value - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+        }
+    }
+
+    pub fn denormalize(&self, norm: f32) -> f32 {
+        self.min + norm.clamp(0.0, 1.0) * (self.max - self.min)
+    }
+}
+
 /// Every FX slot has REAPER's signature universal Wet/Dry blend knob + Bypass,
-/// plus External Sidechain Input, Sampler Buffer, and CLAP External Plugin metadata!
+/// plus External Sidechain Input, Sampler Buffer, and Unified CLAP / VST3 Plugin metadata + Patch State!
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FxSlot {
     pub id: FxId,
@@ -277,13 +318,24 @@ pub struct FxSlot {
     pub sampler_buffer: Option<AudioBuffer>,
     #[serde(default)]
     pub sampler_slices: Vec<usize>,
-    /// Hosted `.clap` binary path & plugin descriptor ID when `kind == FxKind::ExternalClap`.
+    /// Hosted `.clap` or `.vst3` binary path, format, and plugin descriptor ID/CID.
+    #[serde(default)]
+    pub plugin_format: ExternalPluginFormat,
     #[serde(default)]
     pub clap_plugin_path: Option<PathBuf>,
     #[serde(default)]
     pub clap_plugin_id: Option<String>,
     #[serde(default)]
     pub clap_plugin_name: Option<String>,
+    /// Real enumerated plugin parameters (`clap.params` / `IEditController`) for Automation, Modulators & MIDI Learn!
+    #[serde(default)]
+    pub dynamic_param_specs: Vec<PluginParamDescriptor>,
+    /// Base64-encoded binary patch state (`clap.state` / `IComponent+IEditController` stream) for Git-clean `.ferric` persistence!
+    #[serde(default)]
+    pub plugin_state_b64: Option<String>,
+    /// Post-plugin trim in dB when hosting an external CLAP/VST3 plugin.
+    #[serde(default)]
+    pub plugin_output_trim_db: f32,
 }
 
 impl FxSlot {
@@ -305,18 +357,33 @@ impl FxSlot {
             sidechain_source: None,
             sampler_buffer: None,
             sampler_slices: Vec::new(),
+            plugin_format: ExternalPluginFormat::Clap,
             clap_plugin_path: None,
             clap_plugin_id: None,
             clap_plugin_name: None,
+            dynamic_param_specs: Vec::new(),
+            plugin_state_b64: None,
+            plugin_output_trim_db: 0.0,
         }
     }
 
     pub fn new_clap(path: PathBuf, plugin_id: String, name: String) -> Self {
+        Self::new_external_plugin(ExternalPluginFormat::Clap, path, plugin_id, name)
+    }
+
+    pub fn new_external_plugin(
+        format: ExternalPluginFormat,
+        path: PathBuf,
+        plugin_id: String,
+        name: String,
+    ) -> Self {
         let mut slot = Self::new(FxKind::ExternalClap);
+        slot.plugin_format = format;
         slot.preset_name = name.clone();
         slot.clap_plugin_path = Some(path);
         slot.clap_plugin_id = Some(plugin_id);
         slot.clap_plugin_name = Some(name);
+        slot.params.clear();
         slot
     }
 
@@ -328,23 +395,132 @@ impl FxSlot {
         slot
     }
 
-    pub fn param(&self, idx: usize) -> f32 {
-        self.params.get(idx).copied().unwrap_or_else(|| {
+    pub fn is_external_plugin(&self) -> bool {
+        self.kind == FxKind::ExternalClap
+    }
+
+    pub fn effective_badge(&self) -> &'static str {
+        if self.is_external_plugin() {
+            self.plugin_format.badge()
+        } else {
+            self.kind.short_badge()
+        }
+    }
+
+    pub fn param_count(&self) -> usize {
+        if !self.dynamic_param_specs.is_empty() {
+            self.dynamic_param_specs.len()
+        } else {
+            self.kind.param_specs().len()
+        }
+    }
+
+    pub fn param_name(&self, idx: usize) -> &str {
+        if !self.dynamic_param_specs.is_empty() {
+            self.dynamic_param_specs
+                .get(idx)
+                .map(|s| s.name.as_str())
+                .unwrap_or("Param")
+        } else {
             self.kind
                 .param_specs()
                 .get(idx)
-                .map(|s| s.default)
+                .map(|s| s.name)
+                .unwrap_or("Param")
+        }
+    }
+
+    pub fn param_bounds(&self, idx: usize) -> Option<(f32, f32, f32, &'static str)> {
+        if !self.dynamic_param_specs.is_empty() {
+            self.dynamic_param_specs
+                .get(idx)
+                .map(|s| (s.min, s.max, s.default, ""))
+        } else {
+            self.kind
+                .param_specs()
+                .get(idx)
+                .map(|s| (s.min, s.max, s.default, s.unit))
+        }
+    }
+
+    pub fn normalize_param(&self, idx: usize, value: f32) -> f32 {
+        if !self.dynamic_param_specs.is_empty() {
+            self.dynamic_param_specs
+                .get(idx)
+                .map(|s| s.normalize(value))
                 .unwrap_or(0.0)
+        } else {
+            self.kind
+                .param_specs()
+                .get(idx)
+                .map(|s| s.normalize(value))
+                .unwrap_or(0.0)
+        }
+    }
+
+    pub fn denormalize_param(&self, idx: usize, norm: f32) -> f32 {
+        if !self.dynamic_param_specs.is_empty() {
+            self.dynamic_param_specs
+                .get(idx)
+                .map(|s| s.denormalize(norm))
+                .unwrap_or(norm)
+        } else {
+            self.kind
+                .param_specs()
+                .get(idx)
+                .map(|s| s.denormalize(norm))
+                .unwrap_or(norm)
+        }
+    }
+
+    pub fn apply_discovered_params(&mut self, specs: Vec<PluginParamDescriptor>) {
+        if self.params.len() != specs.len() {
+            self.params = specs.iter().map(|s| s.default).collect();
+        }
+        self.dynamic_param_specs = specs;
+    }
+
+    pub fn encode_plugin_state(&mut self, bytes: &[u8]) {
+        use base64::Engine;
+        if bytes.is_empty() {
+            self.plugin_state_b64 = None;
+        } else {
+            self.plugin_state_b64 =
+                Some(base64::engine::general_purpose::STANDARD.encode(bytes));
+        }
+    }
+
+    pub fn decode_plugin_state(&self) -> Option<Vec<u8>> {
+        use base64::Engine;
+        let s = self.plugin_state_b64.as_deref()?;
+        base64::engine::general_purpose::STANDARD.decode(s).ok()
+    }
+
+    pub fn param(&self, idx: usize) -> f32 {
+        self.params.get(idx).copied().unwrap_or_else(|| {
+            if !self.dynamic_param_specs.is_empty() {
+                self.dynamic_param_specs
+                    .get(idx)
+                    .map(|s| s.default)
+                    .unwrap_or(0.0)
+            } else {
+                self.kind
+                    .param_specs()
+                    .get(idx)
+                    .map(|s| s.default)
+                    .unwrap_or(0.0)
+            }
         })
     }
 
     pub fn set_param(&mut self, idx: usize, val: f32) {
-        let specs = self.kind.param_specs();
-        if self.params.len() < specs.len() {
-            self.params.resize_with(specs.len(), || 0.0);
+        let count = self.param_count();
+        let bounds = self.param_bounds(idx);
+        if self.params.len() < count {
+            self.params.resize_with(count, || 0.0);
         }
-        if let (Some(slot), Some(spec)) = (self.params.get_mut(idx), specs.get(idx)) {
-            *slot = val.clamp(spec.min, spec.max);
+        if let (Some(slot), Some((min, max, _, _))) = (self.params.get_mut(idx), bounds) {
+            *slot = val.clamp(min, max);
         }
     }
 }

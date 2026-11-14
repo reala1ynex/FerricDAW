@@ -9,8 +9,8 @@ pub use clip::{
     MidiNote, SessionSlot, StretchMarker, Take, TakeContent, TakeId, TimeStretchMode, TimelineClip,
 };
 pub use fx::{
-    FactoryPreset, FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget, ModulatorId,
-    ModulatorKind, ModulatorSlot, ParamSpec, FACTORY_PRESETS,
+    ExternalPluginFormat, FactoryPreset, FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget,
+    ModulatorId, ModulatorKind, ModulatorSlot, ParamSpec, PluginParamDescriptor, FACTORY_PRESETS,
 };
 pub use project::{
     build_demo_project, synthesize_browser_sample, HistoryManager, MasterBus, MidiLearnMapping,

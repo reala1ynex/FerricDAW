@@ -177,6 +177,8 @@ impl FerricDawApp {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
+            self.engine
+                .harvest_plugin_states_into_project(&mut self.project);
             if save_project_bundle(&mut self.project, &path).is_ok() {
                 self.dirty_since_autosave = false;
                 self.last_autosave_inst = std::time::Instant::now();
@@ -688,6 +690,8 @@ impl FerricDawApp {
                 .save_file()
         });
         if let Some(p) = path {
+            self.engine
+                .harvest_plugin_states_into_project(&mut self.project);
             match save_project_bundle(&mut self.project, &p) {
                 Ok(()) => {
                     self.project_path = Some(p.clone());
@@ -1404,20 +1408,27 @@ impl FerricDawApp {
                         need_sync = true;
                     }
                 }
-                BrowserAction::LoadClapPlugin(plug) => {
+                BrowserAction::LoadExternalPlugin(plug) => {
                     if let Some(tid) = self.selected_track {
-                        self.snapshot_before("Insert CLAP Plugin");
+                        self.snapshot_before("Insert External Plugin");
+                        let fmt_badge = plug.format.badge();
                         if let Some(trk) = self.project.find_track_mut(tid) {
-                            trk.fx_chain.push(FxSlot::new_clap(
+                            trk.fx_chain.push(FxSlot::new_external_plugin(
+                                plug.format,
                                 plug.bundle_path,
                                 plug.id,
                                 plug.name.clone(),
                             ));
                         }
-                        self.status_banner = format!("Inserted CLAP plugin '{}'", plug.name);
+                        self.status_banner =
+                            format!("✓ Inserted {} plugin '{}'", fmt_badge, plug.name);
                         self.bottom_tab = BottomTab::FxAndModulators;
                         need_sync = true;
                     }
+                }
+                BrowserAction::ClearPluginQuarantine => {
+                    self.engine.quarantine.clear_all();
+                    self.status_banner = "Cleared crashed plugin quarantine list.".into();
                 }
                 BrowserAction::ImportMidiFile(p) => {
                     self.import_smf_midi_dialog(Some(p));
@@ -1479,6 +1490,12 @@ impl FerricDawApp {
 impl eframe::App for FerricDawApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         self.engine.poll_ui(&mut self.capture_inbox);
+        if self
+            .engine
+            .apply_discovered_plugin_params(&mut self.project)
+        {
+            self.sync_engine();
+        }
         self.handle_captured_takes();
         self.handle_midi_learn_poll();
         self.handle_shortcuts_and_musical_typing(ctx);
@@ -1687,11 +1704,24 @@ impl eframe::App for FerricDawApp {
                             );
                         }
                         BottomTab::FxAndModulators => {
+                            let open_editor_ids: Vec<uuid::Uuid> = self
+                                .project
+                                .tracks
+                                .iter()
+                                .flat_map(|t| t.fx_chain.iter())
+                                .chain(self.project.master.fx_chain.iter())
+                                .filter(|f| {
+                                    f.is_external_plugin()
+                                        && self.engine.is_plugin_editor_open(f.id)
+                                })
+                                .map(|f| f.id)
+                                .collect();
                             render_fx_and_modulators_panel(
                                 ui,
                                 &mut self.project,
                                 self.selected_track,
                                 &mut self.inspect_master_fx,
+                                &open_editor_ids,
                                 &telem,
                                 &mut dock_actions,
                             );
@@ -1759,6 +1789,23 @@ impl eframe::App for FerricDawApp {
                             DockAction::ReloadSamplerFx(fx_slot) => {
                                 self.engine.force_reload_sampler(&fx_slot);
                                 need_sync = true;
+                            }
+                            DockAction::ToggleExternalPluginEditor(fx_id) => {
+                                if self.engine.is_plugin_editor_open(fx_id) {
+                                    self.engine.close_plugin_editor(fx_id);
+                                    self.status_banner = "Closed floating plugin editor.".into();
+                                } else {
+                                    match self.engine.open_plugin_editor(fx_id) {
+                                        Ok(()) => {
+                                            self.status_banner =
+                                                "🗔 Opened native Win32 HWND floating plugin editor!"
+                                                    .into();
+                                        }
+                                        Err(err) => {
+                                            self.status_banner = format!("Plugin GUI: {}", err);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

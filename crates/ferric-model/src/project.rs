@@ -480,9 +480,8 @@ impl Project {
             }
             AutomationTarget::FxParam { fx_id, param_index } => {
                 if let Some(fx) = trk.fx_chain.iter_mut().find(|f| f.id == fx_id) {
-                    if let Some(spec) = fx.kind.param_specs().get(param_index) {
-                        fx.set_param(param_index, spec.denormalize(norm));
-                    }
+                    let denorm = fx.denormalize_param(param_index, norm);
+                    fx.set_param(param_index, denorm);
                 }
             }
         }

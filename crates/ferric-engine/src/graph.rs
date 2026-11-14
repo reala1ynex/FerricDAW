@@ -465,16 +465,16 @@ impl AudioGraphCore {
                 // 5. Pre-FX Sends
                 self.dispatch_sends(project, track, t_idx, frames, SendTap::PreFx, audible);
 
-                // 6. Track FX Chain (with Bezier Parameter Automation + Modulators + External Sidechain!)
+                // 6. Track FX Chain (with Bezier Parameter Automation + Modulators + External Sidechain + CLAP/VST3 Dynamic Params!)
                 for fx in &track.fx_chain {
                     if !fx.enabled {
                         continue;
                     }
-                    let specs = fx.kind.param_specs();
+                    let p_count = fx.param_count();
                     self.param_scratch.clear();
-                    for (p_idx, spec) in specs.iter().enumerate() {
+                    for p_idx in 0..p_count {
                         let base_val = fx.param(p_idx);
-                        let mut norm = spec.normalize(base_val);
+                        let mut norm = fx.normalize_param(p_idx, base_val);
 
                         // Apply curved Bezier Parameter Automation if Read/Touch/Latch is active!
                         if self.is_playing
@@ -512,7 +512,7 @@ impl AudioGraphCore {
                                 }
                             }
                         }
-                        self.param_scratch.push(spec.denormalize(norm));
+                        self.param_scratch.push(fx.denormalize_param(p_idx, norm));
                     }
 
                     let mut wet = fx.wet_mix;
@@ -550,6 +550,15 @@ impl AudioGraphCore {
                             self.clip_midi_expr,
                             sc_slices,
                         );
+                        if fx.is_external_plugin() && fx.plugin_output_trim_db.abs() > 0.01 {
+                            let trim = db_to_lin(fx.plugin_output_trim_db);
+                            for s in &mut self.bus_l[t_idx][..frames] {
+                                *s *= trim;
+                            }
+                            for s in &mut self.bus_r[t_idx][..frames] {
+                                *s *= trim;
+                            }
+                        }
                         max_gr_db = max_gr_db.max(inst.gain_reduction_db());
                         if let Some(vp) = inst.vocal_pitch_telemetry() {
                             if vp.active {

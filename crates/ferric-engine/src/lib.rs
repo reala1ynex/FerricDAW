@@ -1,11 +1,18 @@
 pub mod clap_host;
 pub mod graph;
+pub mod plugin_window;
+pub mod vst3_host;
 pub mod wav_io;
 
 pub use clap_host::{
-    inspect_clap_bundle, scan_clap_plugins, DiscoveredClapPlugin, HostedClapInstance,
+    inspect_clap_bundle, scan_clap_plugins, DiscoveredClapPlugin, DiscoveredExternalPlugin,
+    HostedClapInstance, LoadedClapBundle,
 };
 pub use graph::{AudioGraphCore, TrackMeter, MAX_ENGINE_TRACKS};
+pub use plugin_window::{FloatingPluginWindow, NativePluginGuiView, PluginQuarantine};
+pub use vst3_host::{
+    inspect_vst3_binary, scan_vst3_plugins, HostedVst3Instance, LoadedVst3Bundle,
+};
 pub use wav_io::{
     import_audio_file, import_wav_file, load_project_bundle, render_all_stems_offline,
     render_master_offline, render_track_freeze_buffer, save_project_bundle, write_wav_file,
@@ -17,11 +24,26 @@ use ferric_dsp::{
     db_to_lin, lin_to_db, FxRuntimeInstance, MasterMeterSnapshot, MidiEvent, ModulatorRuntime,
     TunerReading, VocalPitchTelemetry,
 };
-use ferric_model::{AudioBuffer, FxKind, InputSource, MidiNote, Project, TrackId};
+use ferric_model::{
+    AudioBuffer, ExternalPluginFormat, FxId, FxKind, InputSource, MidiNote,
+    PluginParamDescriptor, Project, TrackId,
+};
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rtrb::{Consumer, Producer, RingBuffer};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Scans BOTH standard/custom `.clap` AND `.vst3` plugin directories using crash-quarantine protection!
+pub fn scan_all_external_plugins(
+    extra_dirs: &[PathBuf],
+    quarantine: &mut PluginQuarantine,
+) -> Vec<DiscoveredExternalPlugin> {
+    let mut all = scan_clap_plugins(extra_dirs, quarantine);
+    all.extend(scan_vst3_plugins(extra_dirs, quarantine));
+    all.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    all
+}
 
 const RETRO_SECONDS: usize = 20;
 const RETRO_MIDI_CAP: usize = 2048;
@@ -238,6 +260,9 @@ pub struct EngineHandle {
     shared_midi_tx: Arc<Mutex<Producer<HwMidiPacket>>>,
     known_fx_ids: Vec<ferric_model::FxId>,
     known_mod_ids: Vec<ferric_model::ModulatorId>,
+    plugin_windows: Vec<FloatingPluginWindow>,
+    newly_discovered_params: Vec<(FxId, Vec<PluginParamDescriptor>)>,
+    pub quarantine: PluginQuarantine,
     pub latest_telemetry: EngineTelemetry,
     _output_stream: Option<cpal::Stream>,
     _input_stream: Option<cpal::Stream>,
@@ -290,9 +315,10 @@ impl EngineHandle {
         let mut core = AudioGraphCore::new(sample_rate as f32, max_block);
         core.sync_processors_from_project(initial_project);
 
+        // Pre- populate已知 built-in FX IDs; external plugins will be loaded cleanly on first `sync_project`!
         let mut known_fx_ids = Vec::new();
         let mut known_mod_ids = Vec::new();
-        collect_ids(initial_project, &mut known_fx_ids, &mut known_mod_ids);
+        collect_builtin_ids(initial_project, &mut known_fx_ids, &mut known_mod_ids);
 
         let retro_frames = sample_rate as usize * RETRO_SECONDS;
         let mut rt = RtCallbackState {
@@ -406,6 +432,9 @@ impl EngineHandle {
             shared_midi_tx,
             known_fx_ids,
             known_mod_ids,
+            plugin_windows: Vec::new(),
+            newly_discovered_params: Vec::new(),
+            quarantine: PluginQuarantine::load_default(),
             latest_telemetry,
             _output_stream: output_stream,
             _input_stream: input_stream,
@@ -635,25 +664,10 @@ impl EngineHandle {
     }
 
     fn register_if_new(&mut self, fx: &ferric_model::FxSlot, sr: f32) {
-        // Also re-register SamplePlayer when its buffer changes!
         if !self.known_fx_ids.contains(&fx.id) {
             self.known_fx_ids.push(fx.id);
             let inst = if fx.kind == FxKind::ExternalClap {
-                if let (Some(path), Some(pid)) = (&fx.clap_plugin_path, &fx.clap_plugin_id) {
-                    match HostedClapInstance::load(path, pid, sr as f64, 4096) {
-                        Ok(hosted) => FxRuntimeInstance::new_external_clap(
-                            fx.id,
-                            Box::new(hosted),
-                            4096,
-                        ),
-                        Err(e) => {
-                            log::warn!("Failed to load CLAP {}: {}", pid, e);
-                            FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096)
-                        }
-                    }
-                } else {
-                    FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096)
-                }
+                self.load_external_plugin_instance(fx, sr)
             } else {
                 let mut i = FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
                 if fx.kind == FxKind::SamplePlayer {
@@ -665,6 +679,165 @@ impl EngineHandle {
         }
     }
 
+    fn load_external_plugin_instance(
+        &mut self,
+        fx: &ferric_model::FxSlot,
+        sr: f32,
+    ) -> FxRuntimeInstance {
+        let Some(ref path) = fx.clap_plugin_path else {
+            return FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
+        };
+        let Some(ref pid) = fx.clap_plugin_id else {
+            return FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
+        };
+        if self.quarantine.is_quarantined(path) {
+            log::warn!("Skipping quarantined plugin: {}", path.display());
+            return FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
+        }
+
+        let initial_bytes = fx.decode_plugin_state();
+        let title = fx
+            .clap_plugin_name
+            .clone()
+            .unwrap_or_else(|| format!("FerricDAW — {}", pid));
+
+        self.quarantine.mark_suspect(path);
+        match fx.plugin_format {
+            ExternalPluginFormat::Clap => {
+                match HostedClapInstance::load_full(
+                    path,
+                    pid,
+                    sr as f64,
+                    4096,
+                    initial_bytes.as_deref(),
+                ) {
+                    Ok(bundle) => {
+                        self.quarantine.unmark_clean(path);
+                        if !bundle.discovered_params.is_empty() {
+                            self.newly_discovered_params
+                                .push((fx.id, bundle.discovered_params));
+                        }
+                        self.plugin_windows.retain(|w| w.fx_id != fx.id);
+                        self.plugin_windows.push(FloatingPluginWindow::new_headless(
+                            fx.id,
+                            format!("{} [CLAP]", title),
+                            Box::new(bundle.gui_and_state),
+                        ));
+                        FxRuntimeInstance::new_external_clap(
+                            fx.id,
+                            Box::new(bundle.audio_processor),
+                            4096,
+                        )
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load CLAP {}: {}", pid, e);
+                        FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096)
+                    }
+                }
+            }
+            ExternalPluginFormat::Vst3 => {
+                match HostedVst3Instance::load_full(
+                    path,
+                    pid,
+                    sr as f64,
+                    4096,
+                    initial_bytes.as_deref(),
+                ) {
+                    Ok(bundle) => {
+                        self.quarantine.unmark_clean(path);
+                        if !bundle.discovered_params.is_empty() {
+                            self.newly_discovered_params
+                                .push((fx.id, bundle.discovered_params));
+                        }
+                        self.plugin_windows.retain(|w| w.fx_id != fx.id);
+                        self.plugin_windows.push(FloatingPluginWindow::new_headless(
+                            fx.id,
+                            format!("{} [VST3]", title),
+                            Box::new(bundle.gui_and_state),
+                        ));
+                        FxRuntimeInstance::new_external_clap(
+                            fx.id,
+                            Box::new(bundle.audio_processor),
+                            4096,
+                        )
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to load VST3 {}: {}", pid, e);
+                        FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096)
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn open_plugin_editor(&mut self, fx_id: FxId) -> Result<(), String> {
+        let Some(win) = self.plugin_windows.iter_mut().find(|w| w.fx_id == fx_id) else {
+            return Err("Plugin instance is not loaded yet".into());
+        };
+        win.open_window()
+    }
+
+    pub fn close_plugin_editor(&mut self, fx_id: FxId) {
+        if let Some(win) = self.plugin_windows.iter_mut().find(|w| w.fx_id == fx_id) {
+            win.close_window();
+        }
+    }
+
+    pub fn is_plugin_editor_open(&self, fx_id: FxId) -> bool {
+        self.plugin_windows
+            .iter()
+            .find(|w| w.fx_id == fx_id)
+            .map(|w| w.is_editor_open)
+            .unwrap_or(false)
+    }
+
+    /// Snapshots live binary patch states (`clap.state` / `IBStream`) from all hosted plugins into `project`!
+    pub fn harvest_plugin_states_into_project(&mut self, project: &mut Project) {
+        for win in &mut self.plugin_windows {
+            if let Some(bytes) = win.view.save_state_bytes() {
+                for trk in &mut project.tracks {
+                    if let Some(fx) = trk.fx_chain.iter_mut().find(|f| f.id == win.fx_id) {
+                        fx.encode_plugin_state(&bytes);
+                    }
+                }
+                if let Some(fx) = project
+                    .master
+                    .fx_chain
+                    .iter_mut()
+                    .find(|f| f.id == win.fx_id)
+                {
+                    fx.encode_plugin_state(&bytes);
+                }
+            }
+        }
+    }
+
+    /// Applies any newly discovered `clap.params` / `IEditController` parameter lists onto `project`!
+    pub fn apply_discovered_plugin_params(&mut self, project: &mut Project) -> bool {
+        if self.newly_discovered_params.is_empty() {
+            return false;
+        }
+        let batch: Vec<_> = self.newly_discovered_params.drain(..).collect();
+        let mut changed = false;
+        for (fx_id, specs) in batch {
+            for trk in &mut project.tracks {
+                if let Some(fx) = trk.fx_chain.iter_mut().find(|f| f.id == fx_id) {
+                    if fx.dynamic_param_specs.is_empty() {
+                        fx.apply_discovered_params(specs.clone());
+                        changed = true;
+                    }
+                }
+            }
+            if let Some(fx) = project.master.fx_chain.iter_mut().find(|f| f.id == fx_id) {
+                if fx.dynamic_param_specs.is_empty() {
+                    fx.apply_discovered_params(specs.clone());
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     pub fn force_reload_sampler(&mut self, fx: &ferric_model::FxSlot) {
         let mut inst =
             FxRuntimeInstance::new(fx.id, FxKind::SamplePlayer, self.sample_rate as f32, 4096);
@@ -673,6 +846,9 @@ impl EngineHandle {
     }
 
     pub fn poll_ui(&mut self, out_captures: &mut Vec<CapturedTakeEvent>) {
+        for win in &mut self.plugin_windows {
+            win.poll();
+        }
         while let Ok(old_proj) = self.garbage_rx.pop() {
             drop(old_proj);
         }
@@ -1296,18 +1472,22 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
     }
 }
 
-fn collect_ids(
+fn collect_builtin_ids(
     project: &Project,
     fx_ids: &mut Vec<ferric_model::FxId>,
     mod_ids: &mut Vec<ferric_model::ModulatorId>,
 ) {
     for t in &project.tracks {
         for fx in &t.fx_chain {
-            fx_ids.push(fx.id);
+            if !fx.is_external_plugin() {
+                fx_ids.push(fx.id);
+            }
         }
         for c in &t.clips {
             for fx in &c.clip_fx {
-                fx_ids.push(fx.id);
+                if !fx.is_external_plugin() {
+                    fx_ids.push(fx.id);
+                }
             }
         }
         for m in &t.modulators {
@@ -1315,7 +1495,9 @@ fn collect_ids(
         }
     }
     for fx in &project.master.fx_chain {
-        fx_ids.push(fx.id);
+        if !fx.is_external_plugin() {
+            fx_ids.push(fx.id);
+        }
     }
 }
 
@@ -1382,5 +1564,615 @@ mod tests {
             _ => panic!("expected audio take"),
         }
         let _ = std::fs::remove_dir_all(&bundle_dir);
+    }
+
+    #[test]
+    fn synthetic_clap_plugin_params_state_latency_and_audio_host_end_to_end() {
+        use crate::clap_host::*;
+        use crate::plugin_window::NativePluginGuiView;
+        use ferric_dsp::ExternalPluginAdapter;
+        use std::ffi::{c_char, c_void, CStr};
+
+        struct SynthClapData {
+            gain: f64,
+        }
+
+        unsafe extern "C" fn p_init(_p: *const ClapPlugin) -> bool {
+            true
+        }
+        unsafe extern "C" fn p_destroy(p: *const ClapPlugin) {
+            if !(*p).plugin_data.is_null() {
+                drop(Box::from_raw((*p).plugin_data as *mut SynthClapData));
+            }
+            drop(Box::from_raw(p as *mut ClapPlugin));
+        }
+        unsafe extern "C" fn p_activate(
+            _p: *const ClapPlugin,
+            _sr: f64,
+            _min: u32,
+            _max: u32,
+        ) -> bool {
+            true
+        }
+        unsafe extern "C" fn p_noop(_p: *const ClapPlugin) {}
+        unsafe extern "C" fn p_start(_p: *const ClapPlugin) -> bool {
+            true
+        }
+
+        unsafe extern "C" fn p_params_count(_p: *const ClapPlugin) -> u32 {
+            1
+        }
+        unsafe extern "C" fn p_params_info(
+            _p: *const ClapPlugin,
+            idx: u32,
+            info: *mut ClapParamInfo,
+        ) -> bool {
+            if idx != 0 {
+                return false;
+            }
+            (*info).id = 42;
+            let nm = b"Drive Gain\0";
+            for (i, &b) in nm.iter().enumerate() {
+                (*info).name[i] = b as c_char;
+            }
+            (*info).min_value = 0.0;
+            (*info).max_value = 4.0;
+            (*info).default_value = 1.5;
+            true
+        }
+        unsafe extern "C" fn p_params_val(
+            p: *const ClapPlugin,
+            id: u32,
+            out: *mut f64,
+        ) -> bool {
+            if id != 42 {
+                return false;
+            }
+            let d = &*((*p).plugin_data as *const SynthClapData);
+            *out = d.gain;
+            true
+        }
+
+        static PARAMS_EXT: ClapPluginParams = ClapPluginParams {
+            count: Some(p_params_count),
+            get_info: Some(p_params_info),
+            get_value: Some(p_params_val),
+            value_to_text: None,
+            text_to_value: None,
+            flush: None,
+        };
+
+        unsafe extern "C" fn p_state_save(
+            p: *const ClapPlugin,
+            stream: *const ClapOStream,
+        ) -> bool {
+            let d = &*((*p).plugin_data as *const SynthClapData);
+            let bytes = d.gain.to_le_bytes();
+            ((*stream).write)(stream, bytes.as_ptr() as *const c_void, 8) == 8
+        }
+        unsafe extern "C" fn p_state_load(
+            p: *const ClapPlugin,
+            stream: *const ClapIStream,
+        ) -> bool {
+            let d = &mut *((*p).plugin_data as *mut SynthClapData);
+            let mut bytes = [0u8; 8];
+            if ((*stream).read)(stream, bytes.as_mut_ptr() as *mut c_void, 8) == 8 {
+                d.gain = f64::from_le_bytes(bytes);
+                true
+            } else {
+                false
+            }
+        }
+        static STATE_EXT: ClapPluginState = ClapPluginState {
+            save: Some(p_state_save),
+            load: Some(p_state_load),
+        };
+
+        unsafe extern "C" fn p_lat_get(_p: *const ClapPlugin) -> u32 {
+            128
+        }
+        static LAT_EXT: ClapPluginLatency = ClapPluginLatency {
+            get: Some(p_lat_get),
+        };
+
+        unsafe extern "C" fn p_get_ext(
+            _p: *const ClapPlugin,
+            id: *const c_char,
+        ) -> *const c_void {
+            let s = CStr::from_ptr(id).to_bytes();
+            if s == b"clap.params" {
+                &PARAMS_EXT as *const ClapPluginParams as *const c_void
+            } else if s == b"clap.state" {
+                &STATE_EXT as *const ClapPluginState as *const c_void
+            } else if s == b"clap.latency" {
+                &LAT_EXT as *const ClapPluginLatency as *const c_void
+            } else {
+                std::ptr::null()
+            }
+        }
+
+        unsafe extern "C" fn p_process(p: *const ClapPlugin, proc_ptr: *const ClapProcess) -> i32 {
+            let d = &mut *((*p).plugin_data as *mut SynthClapData);
+            let pr = &*proc_ptr;
+            let in_ev = &*pr.in_events;
+            let n_ev = (in_ev.size)(in_ev);
+            for i in 0..n_ev {
+                let hdr = (in_ev.get)(in_ev, i);
+                if !hdr.is_null() && (*hdr).type_ == CLAP_EVENT_PARAM_VALUE {
+                    let pev = &*(hdr as *const ClapEventParamValue);
+                    if pev.param_id == 42 {
+                        d.gain = pev.value;
+                    }
+                }
+            }
+            let in_b = &*pr.audio_inputs;
+            let out_b = &mut *pr.audio_outputs;
+            let in_l = std::slice::from_raw_parts(*in_b.data32, pr.frames_count as usize);
+            let out_l = std::slice::from_raw_parts_mut(*out_b.data32, pr.frames_count as usize);
+            for f in 0..(pr.frames_count as usize) {
+                out_l[f] = in_l[f] * (d.gain as f32);
+            }
+            1
+        }
+
+        unsafe extern "C" fn fac_create(
+            _f: *const ClapPluginFactory,
+            _h: *const ClapHost,
+            _id: *const c_char,
+        ) -> *const ClapPlugin {
+            let data = Box::into_raw(Box::new(SynthClapData { gain: 1.5 })) as *mut c_void;
+            Box::into_raw(Box::new(ClapPlugin {
+                desc: std::ptr::null(),
+                plugin_data: data,
+                init: Some(p_init),
+                destroy: Some(p_destroy),
+                activate: Some(p_activate),
+                deactivate: Some(p_noop),
+                start_processing: Some(p_start),
+                stop_processing: Some(p_noop),
+                reset: Some(p_noop),
+                process: Some(p_process),
+                get_extension: Some(p_get_ext),
+                on_main_thread: Some(p_noop),
+            }))
+        }
+
+        static FACTORY: ClapPluginFactory = ClapPluginFactory {
+            get_plugin_count: None,
+            get_plugin_descriptor: None,
+            create_plugin: Some(fac_create),
+        };
+
+        let mut bundle = unsafe {
+            HostedClapInstance::instantiate_from_factory(
+                None,
+                &FACTORY,
+                "ferric.test.clap",
+                48_000.0,
+                512,
+                None,
+            )
+            .expect("CLAP instantiate")
+        };
+
+        assert_eq!(bundle.discovered_params.len(), 1);
+        assert_eq!(bundle.discovered_params[0].name, "Drive Gain");
+        assert_eq!(bundle.audio_processor.latency_samples(), 128);
+
+        // Process with modulated parameter = 3.0x gain!
+        let mut l = vec![0.25_f32; 64];
+        let mut r = vec![0.25_f32; 64];
+        bundle.audio_processor.process(&mut l, &mut r, &[3.0], 120.0, &[]);
+        assert!((l[0] - 0.75).abs() < 1e-4);
+
+        // Save binary `clap.state` and verify round-trip restore into a brand new instance!
+        let saved_state = bundle
+            .gui_and_state
+            .save_state_bytes()
+            .expect("save clap.state");
+        let restored = unsafe {
+            HostedClapInstance::instantiate_from_factory(
+                None,
+                &FACTORY,
+                "ferric.test.clap",
+                48_000.0,
+                512,
+                Some(&saved_state),
+            )
+            .expect("restore CLAP")
+        };
+        assert!((restored.discovered_params[0].default - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn synthetic_vst3_com_plugin_params_state_latency_and_audio_host_end_to_end() {
+        use crate::plugin_window::NativePluginGuiView;
+        use crate::vst3_host::*;
+        use ferric_dsp::ExternalPluginAdapter;
+        use std::ffi::c_void;
+
+        #[repr(C)]
+        struct SynthVst3Component {
+            comp_vtbl: *const IComponentVtbl,
+            proc_vtbl: *const IAudioProcessorVtbl,
+            ctrl_vtbl: *const IEditControllerVtbl,
+            gain_norm: f64,
+        }
+
+        unsafe extern "system" fn comp_qi(
+            this: *mut c_void,
+            iid: *const TUID,
+            obj: *mut *mut c_void,
+        ) -> TResult {
+            let c = this as *mut SynthVst3Component;
+            if *iid == IID_ICOMPONENT || *iid == IID_FUNKNOWN {
+                *obj = c as *mut c_void;
+                K_RESULT_OK
+            } else if *iid == IID_IAUDIOPROCESSOR {
+                *obj = &mut (*c).proc_vtbl as *mut *const IAudioProcessorVtbl as *mut c_void;
+                K_RESULT_OK
+            } else if *iid == IID_IEDITCONTROLLER {
+                *obj = &mut (*c).ctrl_vtbl as *mut *const IEditControllerVtbl as *mut c_void;
+                K_RESULT_OK
+            } else {
+                *obj = std::ptr::null_mut();
+                K_NO_INTERFACE
+            }
+        }
+        unsafe extern "system" fn dummy_ref(_this: *mut c_void) -> u32 {
+            1
+        }
+        unsafe extern "system" fn comp_init(_this: *mut c_void, _ctx: *mut c_void) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_term(_this: *mut c_void) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_get_cid(_this: *mut c_void, _cid: *mut TUID) -> TResult {
+            -1
+        }
+        unsafe extern "system" fn comp_i32(_this: *mut c_void, _m: i32) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_bus_cnt(_this: *mut c_void, mt: i32, _dir: i32) -> i32 {
+            if mt == 0 { 1 } else { 0 }
+        }
+        unsafe extern "system" fn comp_bus_info(
+            _this: *mut c_void,
+            _mt: i32,
+            _dir: i32,
+            _idx: i32,
+            _b: *mut BusInfo,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_route(
+            _this: *mut c_void,
+            _i: *mut c_void,
+            _o: *mut c_void,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_act_bus(
+            _this: *mut c_void,
+            _mt: i32,
+            _d: i32,
+            _i: i32,
+            _s: u8,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_active(_this: *mut c_void, _s: u8) -> TResult {
+            K_RESULT_OK
+        }
+
+        // IBStream helpers inside synthetic VST3
+        #[repr(C)]
+        struct BStreamCaller {
+            _unk: FUnknownVtbl,
+            read: unsafe extern "system" fn(*mut c_void, *mut c_void, i32, *mut i32) -> TResult,
+            write: unsafe extern "system" fn(*mut c_void, *mut c_void, i32, *mut i32) -> TResult,
+        }
+
+        unsafe extern "system" fn comp_set_state(
+            this: *mut c_void,
+            stream: *mut c_void,
+        ) -> TResult {
+            let c = &mut *(this as *mut SynthVst3Component);
+            let vtbl = *(stream as *const *const BStreamCaller);
+            let mut bytes = [0u8; 8];
+            let mut rd = 0i32;
+            let _ = ((*vtbl).read)(stream, bytes.as_mut_ptr() as *mut c_void, 8, &mut rd);
+            if rd == 8 {
+                c.gain_norm = f64::from_le_bytes(bytes);
+            }
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn comp_get_state(
+            this: *mut c_void,
+            stream: *mut c_void,
+        ) -> TResult {
+            let c = &*(this as *const SynthVst3Component);
+            let vtbl = *(stream as *const *const BStreamCaller);
+            let mut bytes = c.gain_norm.to_le_bytes();
+            let mut wr = 0i32;
+            let _ = ((*vtbl).write)(stream, bytes.as_mut_ptr() as *mut c_void, 8, &mut wr);
+            K_RESULT_OK
+        }
+
+        // Offset from `proc_vtbl` field back to `SynthVst3Component` base (= 1 pointer!)
+        unsafe fn from_proc(this: *mut c_void) -> *mut SynthVst3Component {
+            (this as *mut usize).sub(1) as *mut SynthVst3Component
+        }
+        // Offset from `ctrl_vtbl` field back to `SynthVst3Component` base (= 2 pointers!)
+        unsafe fn from_ctrl(this: *mut c_void) -> *mut SynthVst3Component {
+            (this as *mut usize).sub(2) as *mut SynthVst3Component
+        }
+
+        unsafe extern "system" fn proc_arr(
+            _t: *mut c_void,
+            _i: *mut u64,
+            _ni: i32,
+            _o: *mut u64,
+            _no: i32,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn proc_get_arr(
+            _t: *mut c_void,
+            _d: i32,
+            _i: i32,
+            _a: *mut u64,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn proc_lat(_t: *mut c_void) -> u32 {
+            64
+        }
+        unsafe extern "system" fn proc_setup(
+            _t: *mut c_void,
+            _s: *mut ProcessSetup,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn proc_run(this: *mut c_void, data: *mut ProcessData) -> TResult {
+            let comp = &mut *from_proc(this);
+            let d = &mut *data;
+
+            // Read incoming parameter changes via COM `IParameterChanges`!
+            if !d.input_param_changes.is_null() {
+                #[repr(C)]
+                struct PcRead {
+                    _u: FUnknownVtbl,
+                    cnt: unsafe extern "system" fn(*mut c_void) -> i32,
+                    get: unsafe extern "system" fn(*mut c_void, i32) -> *mut c_void,
+                }
+                #[repr(C)]
+                struct PvqRead {
+                    _u: FUnknownVtbl,
+                    id: unsafe extern "system" fn(*mut c_void) -> u32,
+                    cnt: unsafe extern "system" fn(*mut c_void) -> i32,
+                    pt: unsafe extern "system" fn(*mut c_void, i32, *mut i32, *mut f64) -> TResult,
+                }
+                let pc_v = *(d.input_param_changes as *const *const PcRead);
+                let n = ((*pc_v).cnt)(d.input_param_changes);
+                for i in 0..n {
+                    let q = ((*pc_v).get)(d.input_param_changes, i);
+                    if !q.is_null() {
+                        let q_v = *(q as *const *const PvqRead);
+                        if ((*q_v).id)(q) == 7 {
+                            let mut off = 0;
+                            let mut val = 0.0;
+                            let _ = ((*q_v).pt)(q, 0, &mut off, &mut val);
+                            comp.gain_norm = val;
+                        }
+                    }
+                }
+            }
+
+            let in_bus = &*d.inputs;
+            let out_bus = &mut *d.outputs;
+            let n = d.num_samples as usize;
+            let in_l = std::slice::from_raw_parts(*in_bus.channel_buffers32, n);
+            let out_l = std::slice::from_raw_parts_mut(*out_bus.channel_buffers32, n);
+            for i in 0..n {
+                out_l[i] = in_l[i] * (comp.gain_norm as f32 * 2.0);
+            }
+            K_RESULT_OK
+        }
+
+        unsafe extern "system" fn ctrl_pcount(_t: *mut c_void) -> i32 {
+            1
+        }
+        unsafe extern "system" fn ctrl_pinfo(
+            _t: *mut c_void,
+            _idx: i32,
+            info: *mut ParameterInfo,
+        ) -> TResult {
+            (*info).id = 7;
+            for (i, ch) in "VST3 Mix".encode_utf16().enumerate() {
+                (*info).title[i] = ch;
+            }
+            (*info).default_normalized_value = 0.5;
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn ctrl_get_norm(this: *mut c_void, _id: u32) -> f64 {
+            (*from_ctrl(this)).gain_norm
+        }
+        unsafe extern "system" fn ctrl_set_norm(this: *mut c_void, _id: u32, v: f64) -> TResult {
+            (*from_ctrl(this)).gain_norm = v;
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn ctrl_str(
+            _t: *mut c_void,
+            _id: u32,
+            _v: f64,
+            _s: *mut [u16; 128],
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn ctrl_val(
+            _t: *mut c_void,
+            _id: u32,
+            _s: *const u16,
+            _v: *mut f64,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn ctrl_map(_t: *mut c_void, _id: u32, v: f64) -> f64 {
+            v
+        }
+        unsafe extern "system" fn ctrl_view(_t: *mut c_void, _n: *const i8) -> *mut c_void {
+            std::ptr::null_mut()
+        }
+
+        static COMP_VTBL: IComponentVtbl = IComponentVtbl {
+            base: IPluginBaseVtbl {
+                unknown: FUnknownVtbl {
+                    query_interface: comp_qi,
+                    add_ref: dummy_ref,
+                    release: dummy_ref,
+                },
+                initialize: comp_init,
+                terminate: comp_term,
+            },
+            get_controller_class_id: comp_get_cid,
+            set_io_mode: comp_i32,
+            get_bus_count: comp_bus_cnt,
+            get_bus_info: comp_bus_info,
+            get_routing_info: comp_route,
+            activate_bus: comp_act_bus,
+            set_active: comp_active,
+            set_state: comp_set_state,
+            get_state: comp_get_state,
+        };
+
+        static PROC_VTBL: IAudioProcessorVtbl = IAudioProcessorVtbl {
+            unknown: FUnknownVtbl {
+                query_interface: comp_qi,
+                add_ref: dummy_ref,
+                release: dummy_ref,
+            },
+            set_bus_arrangements: proc_arr,
+            get_bus_arrangement: proc_get_arr,
+            can_process_sample_size: comp_i32,
+            get_latency_samples: proc_lat,
+            setup_processing: proc_setup,
+            set_processing: comp_active,
+            process: proc_run,
+            get_tail_samples: proc_lat,
+        };
+
+        static CTRL_VTBL: IEditControllerVtbl = IEditControllerVtbl {
+            base: IPluginBaseVtbl {
+                unknown: FUnknownVtbl {
+                    query_interface: comp_qi,
+                    add_ref: dummy_ref,
+                    release: dummy_ref,
+                },
+                initialize: comp_init,
+                terminate: comp_term,
+            },
+            set_component_state: comp_init,
+            set_state: comp_init,
+            get_state: comp_init,
+            get_parameter_count: ctrl_pcount,
+            get_parameter_info: ctrl_pinfo,
+            get_param_string_by_value: ctrl_str,
+            get_param_value_by_string: ctrl_val,
+            normalized_param_to_plain: ctrl_map,
+            plain_param_to_normalized: ctrl_map,
+            get_param_normalized: ctrl_get_norm,
+            set_param_normalized: ctrl_set_norm,
+            set_component_handler: comp_init,
+            create_view: ctrl_view,
+        };
+
+        unsafe extern "system" fn fac_info(_t: *mut c_void, _i: *mut PFactoryInfo) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn fac_cnt(_t: *mut c_void) -> i32 {
+            1
+        }
+        unsafe extern "system" fn fac_cinfo(
+            _t: *mut c_void,
+            _idx: i32,
+            _i: *mut PClassInfo,
+        ) -> TResult {
+            K_RESULT_OK
+        }
+        unsafe extern "system" fn fac_create_inst(
+            _t: *mut c_void,
+            _cid: *const TUID,
+            _iid: *const TUID,
+            obj: *mut *mut c_void,
+        ) -> TResult {
+            let inst = Box::into_raw(Box::new(SynthVst3Component {
+                comp_vtbl: &COMP_VTBL,
+                proc_vtbl: &PROC_VTBL,
+                ctrl_vtbl: &CTRL_VTBL,
+                gain_norm: 0.5,
+            }));
+            *obj = inst as *mut c_void;
+            K_RESULT_OK
+        }
+
+        #[repr(C)]
+        struct SynthFactory {
+            vtbl: *const IPluginFactoryVtbl,
+        }
+        static FAC_VTBL: IPluginFactoryVtbl = IPluginFactoryVtbl {
+            unknown: FUnknownVtbl {
+                query_interface: comp_qi,
+                add_ref: dummy_ref,
+                release: dummy_ref,
+            },
+            get_factory_info: fac_info,
+            count_classes: fac_cnt,
+            get_class_info: fac_cinfo,
+            create_instance: fac_create_inst,
+        };
+        let mut fac = SynthFactory { vtbl: &FAC_VTBL };
+        let cid = [1u8; 16];
+
+        let mut bundle = unsafe {
+            HostedVst3Instance::instantiate_from_factory(
+                None,
+                &mut fac as *mut SynthFactory as *mut c_void,
+                &cid,
+                48_000.0,
+                512,
+                None,
+            )
+            .expect("VST3 instantiate")
+        };
+
+        assert_eq!(bundle.discovered_params.len(), 1);
+        assert_eq!(bundle.discovered_params[0].name, "VST3 Mix");
+        assert_eq!(bundle.audio_processor.latency_samples(), 64);
+
+        // Process with VST3 normalized parameter = 0.75 (-> 1.5x gain)
+        let mut l = vec![0.4_f32; 64];
+        let mut r = vec![0.4_f32; 64];
+        bundle.audio_processor.process(&mut l, &mut r, &[0.75], 120.0, &[]);
+        assert!((l[0] - 0.60).abs() < 1e-4);
+
+        // Save binary VST3 IBStream state and verify round-trip restore!
+        let saved = bundle
+            .gui_and_state
+            .save_state_bytes()
+            .expect("save VST3 IBStream");
+        let restored = unsafe {
+            HostedVst3Instance::instantiate_from_factory(
+                None,
+                &mut fac as *mut SynthFactory as *mut c_void,
+                &cid,
+                48_000.0,
+                512,
+                Some(&saved),
+            )
+            .expect("restore VST3")
+        };
+        assert!((restored.discovered_params[0].default - 0.75).abs() < 1e-4);
     }
 }

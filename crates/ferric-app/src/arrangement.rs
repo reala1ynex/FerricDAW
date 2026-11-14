@@ -1367,10 +1367,16 @@ impl ArrangementState {
         actions: &mut Vec<ArrangementAction>,
     ) {
         let auto_col = Color32::from_rgb(198, 126, 246);
-        let fx_meta: Vec<(uuid::Uuid, ferric_model::FxKind)> = project.tracks[t_idx]
+        let fx_meta: Vec<(uuid::Uuid, String, Vec<String>)> = project.tracks[t_idx]
             .fx_chain
             .iter()
-            .map(|f| (f.id, f.kind))
+            .map(|f| {
+                let b = f.effective_badge().to_string();
+                let names = (0..f.param_count())
+                    .map(|pi| f.param_name(pi).to_string())
+                    .collect();
+                (f.id, b, names)
+            })
             .collect();
 
         let mut y_cursor = origin.y;
@@ -1396,11 +1402,11 @@ impl ArrangementState {
                 ferric_model::AutomationTarget::FxWet { .. } => "Auto: FX Wet".to_string(),
                 ferric_model::AutomationTarget::FxParam { fx_id, param_index } => fx_meta
                     .iter()
-                    .find(|(id, _)| *id == fx_id)
-                    .and_then(|(_, k)| {
-                        k.param_specs()
+                    .find(|(id, _, _)| *id == fx_id)
+                    .and_then(|(_, b, names)| {
+                        names
                             .get(param_index)
-                            .map(|sp| format!("Auto: {} → {}", k.short_badge(), sp.name))
+                            .map(|nm| format!("Auto: {} → {}", b, nm))
                     })
                     .unwrap_or_else(|| "Auto: FX Param".into()),
             };

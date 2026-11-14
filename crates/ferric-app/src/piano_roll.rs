@@ -25,6 +25,7 @@ pub enum DockAction {
         label: String,
     },
     ReloadSamplerFx(FxSlot),
+    ToggleExternalPluginEditor(ferric_model::FxId),
 }
 
 pub struct PianoRollState {
@@ -894,6 +895,7 @@ pub fn render_fx_and_modulators_panel(
     project: &mut Project,
     selected_track: Option<TrackId>,
     inspect_master: &mut bool,
+    open_editor_ids: &[Uuid],
     telem: &EngineTelemetry,
     actions: &mut Vec<DockAction>,
 ) {
@@ -1040,6 +1042,7 @@ pub fn render_fx_and_modulators_panel(
                         None,
                         &all_tracks,
                         &mut project.master.fx_chain,
+                        open_editor_ids,
                         ACCENT_TEAL,
                         telem,
                         actions,
@@ -1050,8 +1053,17 @@ pub fn render_fx_and_modulators_panel(
                     };
                     let t_col = track_color32(trk.color);
 
-                    let fx_snapshot: Vec<(Uuid, FxKind)> =
-                        trk.fx_chain.iter().map(|f| (f.id, f.kind)).collect();
+                    let fx_snapshot: Vec<(Uuid, String, Vec<String>)> = trk
+                        .fx_chain
+                        .iter()
+                        .map(|f| {
+                            let badge = f.effective_badge().to_string();
+                            let names = (0..f.param_count())
+                                .map(|pi| f.param_name(pi).to_string())
+                                .collect();
+                            (f.id, badge, names)
+                        })
+                        .collect();
                     let mut remove_mod = None;
                     for (m_idx, m) in trk.modulators.iter_mut().enumerate() {
                         if render_modulator_card(ui, m, &fx_snapshot, actions) {
@@ -1068,6 +1080,7 @@ pub fn render_fx_and_modulators_panel(
                         Some(tid),
                         &all_tracks,
                         &mut trk.fx_chain,
+                        open_editor_ids,
                         t_col,
                         telem,
                         actions,
@@ -1077,11 +1090,13 @@ pub fn render_fx_and_modulators_panel(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_fx_slot_cards(
     ui: &mut Ui,
     owner_track: Option<TrackId>,
     all_tracks: &[(TrackId, String)],
     chain: &mut Vec<FxSlot>,
+    open_editor_ids: &[Uuid],
     accent: Color32,
     telem: &EngineTelemetry,
     actions: &mut Vec<DockAction>,
@@ -1115,12 +1130,44 @@ fn render_fx_slot_cards(
                             .clap_plugin_name
                             .as_deref()
                             .unwrap_or_else(|| fx.kind.display_name());
+                        if fx.is_external_plugin() {
+                            ui.label(
+                                egui::RichText::new(format!("[{}]", fx.plugin_format.badge()))
+                                    .size(10.0)
+                                    .monospace()
+                                    .color(ACCENT_AMBER),
+                            );
+                        }
                         ui.label(
                             egui::RichText::new(title)
                                 .size(11.5)
                                 .strong()
                                 .color(TEXT_MAIN),
                         );
+                        if fx.is_external_plugin() {
+                            let is_open = open_editor_ids.contains(&fx.id);
+                            let gui_lbl = if is_open { "🗕 Close UI" } else { "🗔 Open UI" };
+                            if pill_toggle(ui, gui_lbl, is_open, ACCENT_TEAL)
+                                .on_hover_text(
+                                    "Open/Close Floating Native Win32 HWND Graphical Plugin Editor!",
+                                )
+                                .clicked()
+                            {
+                                actions.push(DockAction::ToggleExternalPluginEditor(fx.id));
+                            }
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut fx.plugin_output_trim_db)
+                                        .range(-24.0..=18.0)
+                                        .speed(0.15)
+                                        .prefix("Trim ")
+                                        .suffix(" dB"),
+                                )
+                                .changed()
+                            {
+                                actions.push(DockAction::ProjectMutated("Adjust Plugin Trim"));
+                            }
+                        }
                         if !fx.kind.is_instrument() {
                             if ui
                                 .add(
@@ -1229,24 +1276,32 @@ fn render_fx_slot_cards(
                         _ => {}
                     }
 
-                    let specs = fx.kind.param_specs();
-                    if fx.params.len() < specs.len() {
-                        fx.params.resize_with(specs.len(), || 0.0);
+                    // Render either Built-In Param Specs OR Dynamically Enumerated CLAP/VST3 Plugin Knobs!
+                    let total_params = fx.param_count().min(24);
+                    if fx.params.len() < fx.param_count() {
+                        let c = fx.param_count();
+                        fx.params.resize_with(c, || 0.0);
                     }
-                    for chunk_start in (0..specs.len()).step_by(6) {
+                    let badge_str = fx.effective_badge();
+                    for chunk_start in (0..total_params).step_by(6) {
                         ui.horizontal(|ui| {
-                            let end = (chunk_start + 6).min(specs.len());
+                            let end = (chunk_start + 6).min(total_params);
                             for p_i in chunk_start..end {
-                                let sp = specs[p_i];
+                                let Some((min_v, max_v, def_v, unit_str)) = fx.param_bounds(p_i)
+                                else {
+                                    continue;
+                                };
+                                let p_name = fx.param_name(p_i).to_string();
+                                let short_lbl: String = p_name.chars().take(12).collect();
                                 ui.vertical(|ui| {
                                     if studio_knob(
                                         ui,
-                                        sp.name,
+                                        &short_lbl,
                                         &mut fx.params[p_i],
-                                        sp.min,
-                                        sp.max,
-                                        sp.default,
-                                        sp.unit,
+                                        min_v,
+                                        max_v,
+                                        def_v,
+                                        unit_str,
                                         30.0,
                                         accent,
                                     ) {
@@ -1260,9 +1315,10 @@ fn render_fx_slot_cards(
                                                 )
                                                 .min_size(Vec2::new(34.0, 13.0)),
                                             )
-                                            .on_hover_text(
-                                                "1-Click MIDI CC Learn (or Show Automation Lane)",
-                                            )
+                                            .on_hover_text(format!(
+                                                "{} — 1-Click MIDI CC Learn + Show Bezier Automation Lane",
+                                                p_name
+                                            ))
                                             .clicked()
                                         {
                                             actions.push(DockAction::ArmMidiLearn {
@@ -1271,17 +1327,23 @@ fn render_fx_slot_cards(
                                                     fx_id: fx.id,
                                                     param_index: p_i,
                                                 },
-                                                label: format!(
-                                                    "{} → {}",
-                                                    fx.kind.short_badge(),
-                                                    sp.name
-                                                ),
+                                                label: format!("{} → {}", badge_str, p_name),
                                             });
                                         }
                                     }
                                 });
                             }
                         });
+                    }
+                    if fx.param_count() > 24 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "+ {} additional plugin parameters available inModulators & native GUI",
+                                fx.param_count() - 24
+                            ))
+                            .size(9.5)
+                            .color(TEXT_DIM),
+                        );
                     }
                 });
             });
@@ -1300,7 +1362,7 @@ fn render_fx_slot_cards(
 fn render_modulator_card(
     ui: &mut Ui,
     m: &mut ModulatorSlot,
-    fx_list: &[(Uuid, FxKind)],
+    fx_list: &[(Uuid, String, Vec<String>)],
     actions: &mut Vec<DockAction>,
 ) -> bool {
     let mut remove = false;
@@ -1409,17 +1471,14 @@ fn render_modulator_card(
                         actions.push(DockAction::ProjectMutated("Assign Mod Target"));
                         ui.close_menu();
                     }
-                    for &(fx_id, kind) in fx_list {
+                    for (fx_id, badge, p_names) in fx_list {
                         ui.separator();
-                        ui.label(egui::RichText::new(kind.short_badge()).strong());
-                        for (pi, sp) in kind.param_specs().iter().enumerate() {
-                            if ui
-                                .button(format!("{} → {}", kind.short_badge(), sp.name))
-                                .clicked()
-                            {
+                        ui.label(egui::RichText::new(badge).strong());
+                        for (pi, p_name) in p_names.iter().enumerate() {
+                            if ui.button(format!("{} → {}", badge, p_name)).clicked() {
                                 m.routings.push(ModRouting {
                                     target: ModTarget::FxParam {
-                                        fx_id,
+                                        fx_id: *fx_id,
                                         param_index: pi,
                                     },
                                     depth: 0.30,
@@ -1440,11 +1499,9 @@ fn render_modulator_card(
                             ModTarget::FxWet { .. } => "FX Wet".to_string(),
                             ModTarget::FxParam { fx_id, param_index } => fx_list
                                 .iter()
-                                .find(|(id, _)| *id == fx_id)
-                                .and_then(|(_, k)| {
-                                    k.param_specs()
-                                        .get(param_index)
-                                        .map(|s| format!("{}:{}", k.short_badge(), s.name))
+                                .find(|(id, _, _)| *id == fx_id)
+                                .and_then(|(_, b, names)| {
+                                    names.get(param_index).map(|n| format!("{}:{}", b, n))
                                 })
                                 .unwrap_or_else(|| "Param".into()),
                         };

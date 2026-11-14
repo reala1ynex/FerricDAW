@@ -382,12 +382,7 @@ impl Track {
                 .fx_chain
                 .iter()
                 .find(|f| f.id == fx_id)
-                .and_then(|f| {
-                    f.kind
-                        .param_specs()
-                        .get(param_index)
-                        .map(|sp| sp.normalize(f.param(param_index)))
-                })
+                .map(|f| f.normalize_param(param_index, f.param(param_index)))
                 .unwrap_or(0.5),
         };
         lane.points

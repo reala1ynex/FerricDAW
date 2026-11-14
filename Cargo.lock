@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-app"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "egui",
@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-dsp"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
  "ferric-model",
  "rustfft",
@@ -1150,8 +1150,9 @@ dependencies = [
 
 [[package]]
 name = "ferric-engine"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
+ "base64",
  "cpal",
  "ferric-dsp",
  "ferric-model",
@@ -1163,12 +1164,14 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.21",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "ferric-model"
-version = "0.2.0"
+version = "0.5.0"
 dependencies = [
+ "base64",
  "midly",
  "ron",
  "serde",

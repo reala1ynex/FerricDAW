@@ -4,12 +4,12 @@ use crate::theme::{
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_engine::{
-    import_audio_file, list_audio_input_devices, list_audio_output_devices, scan_clap_plugins,
-    DiscoveredClapPlugin, EngineTelemetry,
+    import_audio_file, list_audio_input_devices, list_audio_output_devices,
+    scan_all_external_plugins, DiscoveredExternalPlugin, EngineTelemetry, PluginQuarantine,
 };
 use ferric_model::{
-    synthesize_browser_sample, AudioBuffer, FactoryPreset, FxKind, MusicalScale, Project, TrackId,
-    FACTORY_PRESETS, NOTE_PITCH_CLASSES,
+    synthesize_browser_sample, AudioBuffer, ExternalPluginFormat, FactoryPreset, FxKind,
+    MusicalScale, Project, TrackId, FACTORY_PRESETS, NOTE_PITCH_CLASSES,
 };
 use std::path::PathBuf;
 use std::time::Instant;
@@ -19,7 +19,8 @@ pub enum BrowserAction {
     DropSampleOnTrack { name: String, buffer: AudioBuffer },
     LoadIntoSampler { name: String, buffer: AudioBuffer },
     ApplyPreset(FactoryPreset),
-    LoadClapPlugin(DiscoveredClapPlugin),
+    LoadExternalPlugin(DiscoveredExternalPlugin),
+    ClearPluginQuarantine,
     ImportMidiFile(PathBuf),
     SetupAkaiAndDs10Rig,
     RescanMidi,
@@ -47,9 +48,13 @@ pub struct StudioBrowserState {
     pub visible: bool,
     pub tab: BrowserTab,
     pub search: String,
+    pub plugin_search: String,
+    pub plugin_format_filter: Option<ExternalPluginFormat>,
+    pub custom_plugin_dirs: Vec<PathBuf>,
     pub user_folders: Vec<PathBuf>,
     pub scanned_files: Vec<PathBuf>,
-    pub clap_plugins: Vec<DiscoveredClapPlugin>,
+    pub external_plugins: Vec<DiscoveredExternalPlugin>,
+    pub quarantine_count: usize,
     pub audio_outputs: Vec<String>,
     pub audio_inputs: Vec<String>,
     pub selected_out: Option<String>,
@@ -59,13 +64,20 @@ pub struct StudioBrowserState {
 
 impl Default for StudioBrowserState {
     fn default() -> Self {
+        let mut q = PluginQuarantine::load_default();
+        let plugins = scan_all_external_plugins(&[], &mut q);
+        let q_count = q.count();
         let mut s = Self {
             visible: true,
             tab: BrowserTab::HardwareRig,
             search: String::new(),
+            plugin_search: String::new(),
+            plugin_format_filter: None,
+            custom_plugin_dirs: Vec::new(),
             user_folders: Vec::new(),
             scanned_files: Vec::new(),
-            clap_plugins: scan_clap_plugins(&[]),
+            external_plugins: plugins,
+            quarantine_count: q_count,
             audio_outputs: list_audio_output_devices(),
             audio_inputs: list_audio_input_devices(),
             selected_out: None,
@@ -139,7 +151,7 @@ impl StudioBrowserState {
             }
             if pill_toggle(
                 ui,
-                "🎛 FX / CLAP",
+                "🎛 CLAP / VST3",
                 self.tab == BrowserTab::PresetsAndClap,
                 ACCENT_AMBER,
             )
@@ -548,11 +560,13 @@ impl StudioBrowserState {
             });
     }
 
-    fn render_presets_and_clap_tab(
-        &mut self,
-        ui: &mut Ui,
-        actions: &mut Vec<BrowserAction>,
-    ) {
+    pub fn rescan_plugins(&mut self) {
+        let mut q = PluginQuarantine::load_default();
+        self.external_plugins = scan_all_external_plugins(&self.custom_plugin_dirs, &mut q);
+        self.quarantine_count = q.count();
+    }
+
+    fn render_presets_and_clap_tab(&mut self, ui: &mut Ui, actions: &mut Vec<BrowserAction>) {
         egui::ScrollArea::vertical()
             .id_salt("presets_clap_scroll")
             .show(ui, |ui| {
@@ -582,41 +596,131 @@ impl StudioBrowserState {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "External CLAP Plugins ({})",
-                            self.clap_plugins.len()
+                            "CLAP & VST3 Plugins ({})",
+                            self.external_plugins.len()
                         ))
                         .size(11.0)
                         .strong()
                         .color(ACCENT_AMBER),
                     );
                     if ui
-                        .small_button("+ Scan .clap Dir")
-                        .on_hover_text("Scan a custom folder for open-standard .clap plugins")
+                        .small_button("⟳ Scan")
+                        .on_hover_text(
+                            "Rescan standard CommonProgramFiles\\CLAP and CommonProgramFiles\\VST3 directories",
+                        )
+                        .clicked()
+                    {
+                        self.rescan_plugins();
+                    }
+                    if ui
+                        .small_button("+ Dir")
+                        .on_hover_text("Add & scan a custom .clap or .vst3 plugin directory")
                         .clicked()
                     {
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            self.clap_plugins = scan_clap_plugins(&[dir]);
+                            if !self.custom_plugin_dirs.contains(&dir) {
+                                self.custom_plugin_dirs.push(dir);
+                            }
+                            self.rescan_plugins();
                         }
                     }
                 });
 
-                if self.clap_plugins.is_empty() {
+                // Search + Format Filter Pills (All / CLAP / VST3)
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.plugin_search)
+                            .hint_text("Search Vital, Surge, FabFilter...")
+                            .desired_width(120.0),
+                    );
+                    if pill_toggle(ui, "All", self.plugin_format_filter.is_none(), ACCENT_TEAL)
+                        .clicked()
+                    {
+                        self.plugin_format_filter = None;
+                    }
+                    if pill_toggle(
+                        ui,
+                        "CLAP",
+                        self.plugin_format_filter == Some(ExternalPluginFormat::Clap),
+                        ACCENT_FERRIC,
+                    )
+                    .clicked()
+                    {
+                        self.plugin_format_filter = Some(ExternalPluginFormat::Clap);
+                    }
+                    if pill_toggle(
+                        ui,
+                        "VST3",
+                        self.plugin_format_filter == Some(ExternalPluginFormat::Vst3),
+                        ACCENT_AMBER,
+                    )
+                    .clicked()
+                    {
+                        self.plugin_format_filter = Some(ExternalPluginFormat::Vst3);
+                    }
+                });
+
+                if self.quarantine_count > 0 {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "🛡 {} crashed plugin(s) quarantined",
+                                self.quarantine_count
+                            ))
+                            .size(9.5)
+                            .color(ACCENT_AMBER),
+                        );
+                        if ui.small_button("Reset").clicked() {
+                            actions.push(BrowserAction::ClearPluginQuarantine);
+                            self.rescan_plugins();
+                        }
+                    });
+                }
+
+                let pq = self.plugin_search.trim().to_lowercase();
+                let filtered: Vec<&DiscoveredExternalPlugin> = self
+                    .external_plugins
+                    .iter()
+                    .filter(|p| {
+                        self.plugin_format_filter
+                            .map(|f| p.format == f)
+                            .unwrap_or(true)
+                            && (pq.is_empty()
+                                || p.name.to_lowercase().contains(&pq)
+                                || p.vendor.to_lowercase().contains(&pq))
+                    })
+                    .collect();
+
+                if filtered.is_empty() {
                     ui.label(
                         egui::RichText::new(
-                            "No .clap bundles found in CommonProgramFiles\\CLAP yet. Install Surge XT, Vital, Dexed, or Odin2 (.clap) & click Scan!",
+                            "No matching .clap or .vst3 plugins found. Install any Windows CLAP or VST3 synth/effect & click '⟳ Scan' or '+ Dir'!",
                         )
                         .size(10.0)
                         .color(TEXT_DIM),
                     );
                 } else {
-                    for plug in &self.clap_plugins {
+                    for plug in filtered {
                         ui.horizontal(|ui| {
                             if ui.small_button("+ Insert").clicked() {
-                                actions.push(BrowserAction::LoadClapPlugin(plug.clone()));
+                                actions.push(BrowserAction::LoadExternalPlugin(plug.clone()));
                             }
+                            let badge_col = match plug.format {
+                                ExternalPluginFormat::Clap => ACCENT_FERRIC,
+                                ExternalPluginFormat::Vst3 => ACCENT_AMBER,
+                            };
                             ui.label(
-                                egui::RichText::new(format!("{} ({})", plug.name, plug.vendor))
-                                    .size(10.5),
+                                egui::RichText::new(format!("[{}]", plug.format.badge()))
+                                    .size(9.5)
+                                    .monospace()
+                                    .color(badge_col),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{} — {}", plug.name, plug.vendor))
+                                        .size(10.5),
+                                )
+                                .truncate(),
                             );
                         });
                     }
