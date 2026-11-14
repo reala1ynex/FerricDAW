@@ -1,5 +1,9 @@
+use crate::flac_enc::write_flac_stereo_file;
 use crate::graph::AudioGraphCore;
-use ferric_dsp::LoudnessAndSpectrumAnalyzer;
+use ferric_dsp::{
+    master_normalize_and_limit_true_peak, measure_integrated_lufs, measure_true_peak_dbtp,
+    LoudnessAndSpectrumAnalyzer, TpdfDither,
+};
 use ferric_model::{AudioBuffer, Project, TrackId};
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use std::fs::File;
@@ -42,11 +46,66 @@ impl BitDepth {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportFormat {
+    Wav,
+    Flac,
+}
+
+impl ExportFormat {
+    pub const ALL: &'static [ExportFormat] = &[ExportFormat::Wav, ExportFormat::Flac];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ExportFormat::Wav => "WAV (Uncompressed PCM / Float)",
+            ExportFormat::Flac => "FLAC (Lossless Compressed + MD5)",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Wav => "wav",
+            ExportFormat::Flac => "flac",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MasteringOptions {
+    pub format: ExportFormat,
+    pub sample_rate: u32,
+    pub bit_depth: BitDepth,
+    pub start_beat: f64,
+    pub end_beat: f64,
+    /// When `Some(target_lufs)` (e.g. `-14.0` for Spotify/YouTube/Apple or `-9.0` for Club),
+    /// normalizes integrated BS.1770-4 loudness and applies 2.5 ms lookahead True-Peak brickwall limiting!
+    pub normalize_target_lufs: Option<f32>,
+    pub true_peak_ceiling_dbtp: f32,
+    pub tpdf_dither: bool,
+}
+
+impl Default for MasteringOptions {
+    fn default() -> Self {
+        Self {
+            format: ExportFormat::Wav,
+            sample_rate: 48_000,
+            bit_depth: BitDepth::Pcm24,
+            start_beat: 0.0,
+            end_beat: 16.0,
+            normalize_target_lufs: Some(-14.0),
+            true_peak_ceiling_dbtp: -1.0,
+            tpdf_dither: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BounceReport {
     pub output_files: Vec<PathBuf>,
     pub duration_secs: f64,
     pub peak_db: f32,
+    pub true_peak_dbtp: f32,
+    pub integrated_lufs: f32,
     pub short_term_lufs: f32,
 }
 
@@ -199,6 +258,17 @@ pub fn write_wav_file(
     left: &[f32],
     right: &[f32],
 ) -> Result<(), WavIoError> {
+    write_wav_file_dithered(path, sample_rate, bit_depth, false, left, right)
+}
+
+pub fn write_wav_file_dithered(
+    path: &Path,
+    sample_rate: u32,
+    bit_depth: BitDepth,
+    tpdf_dither: bool,
+    left: &[f32],
+    right: &[f32],
+) -> Result<(), WavIoError> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -227,20 +297,20 @@ pub fn write_wav_file(
 
     let mut writer = WavWriter::create(path, spec)?;
     let frames = left.len().min(right.len());
+    let mut dither = TpdfDither::default();
     match bit_depth {
         BitDepth::Pcm16 => {
             for i in 0..frames {
-                let l = (left[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-                let r = (right[i].clamp(-1.0, 1.0) * 32767.0) as i16;
+                let l = dither.quantize_sample(left[i], 16, tpdf_dither) as i16;
+                let r = dither.quantize_sample(right[i], 16, tpdf_dither) as i16;
                 writer.write_sample(l)?;
                 writer.write_sample(r)?;
             }
         }
         BitDepth::Pcm24 => {
-            let scale = 8_388_607.0_f32;
             for i in 0..frames {
-                let l = (left[i].clamp(-1.0, 1.0) * scale) as i32;
-                let r = (right[i].clamp(-1.0, 1.0) * scale) as i32;
+                let l = dither.quantize_sample(left[i], 24, tpdf_dither);
+                let r = dither.quantize_sample(right[i], 24, tpdf_dither);
                 writer.write_sample(l)?;
                 writer.write_sample(r)?;
             }
@@ -254,6 +324,39 @@ pub fn write_wav_file(
     }
     writer.finalize()?;
     Ok(())
+}
+
+pub fn write_exported_audio_file(
+    path: &Path,
+    opts: &MasteringOptions,
+    left: &[f32],
+    right: &[f32],
+) -> Result<(), WavIoError> {
+    match opts.format {
+        ExportFormat::Wav => write_wav_file_dithered(
+            path,
+            opts.sample_rate,
+            opts.bit_depth,
+            opts.tpdf_dither && opts.bit_depth != BitDepth::Float32,
+            left,
+            right,
+        ),
+        ExportFormat::Flac => {
+            let bps = match opts.bit_depth {
+                BitDepth::Pcm16 => 16,
+                BitDepth::Pcm24 | BitDepth::Float32 => 24,
+            };
+            write_flac_stereo_file(
+                path,
+                opts.sample_rate,
+                bps,
+                opts.tpdf_dither,
+                left,
+                right,
+            )?;
+            Ok(())
+        }
+    }
 }
 
 /// 1-Click Reversible Track Freeze: Renders a track's pre-fader Instrument + FX output
@@ -334,28 +437,50 @@ pub fn render_master_offline(
     start_beat: f64,
     end_beat: f64,
 ) -> Result<BounceReport, WavIoError> {
+    let opts = MasteringOptions {
+        format: ExportFormat::Wav,
+        sample_rate,
+        bit_depth,
+        start_beat,
+        end_beat,
+        normalize_target_lufs: None,
+        true_peak_ceiling_dbtp: -0.2,
+        tpdf_dither: bit_depth != BitDepth::Float32,
+    };
+    render_master_with_options(project, output_path, &opts)
+}
+
+pub fn render_master_with_options(
+    project: &Project,
+    output_path: &Path,
+    opts: &MasteringOptions,
+) -> Result<BounceReport, WavIoError> {
     let mut render_proj = project.clone();
     render_proj.loop_enabled = false;
     render_proj.metronome_enabled = false;
+    // If mastering LUFS normalization is active, bypass the实时 soft clipper during capture
+    // so the offline 2.5 ms lookahead True-Peak limiter handles ceiling cleanly!
+    if opts.normalize_target_lufs.is_some() {
+        render_proj.master.safety_limiter = false;
+    }
 
-    let dur_beats = (end_beat - start_beat).max(1.0);
+    let dur_beats = (opts.end_beat - opts.start_beat).max(1.0);
     let dur_secs = render_proj.beats_to_seconds(dur_beats) + 0.75;
-    let total_frames = (dur_secs * sample_rate as f64).ceil() as usize;
+    let total_frames = (dur_secs * opts.sample_rate as f64).ceil() as usize;
 
     let block_size = 512usize;
-    let mut core = AudioGraphCore::new(sample_rate as f32, block_size);
+    let mut core = AudioGraphCore::new(opts.sample_rate as f32, block_size);
     core.sync_processors_from_project(&render_proj);
-    core.playhead_beat = start_beat;
+    core.playhead_beat = opts.start_beat;
     core.is_playing = true;
 
-    let mut analyzer = LoudnessAndSpectrumAnalyzer::new(sample_rate as f32);
+    let mut analyzer = LoudnessAndSpectrumAnalyzer::new(opts.sample_rate as f32);
     let mut out_l = Vec::with_capacity(total_frames);
     let mut out_r = Vec::with_capacity(total_frames);
     let mut blk_l = vec![0.0_f32; block_size];
     let mut blk_r = vec![0.0_f32; block_size];
     let zero_in = vec![0.0_f32; block_size];
 
-    let mut max_peak_db = -96.0_f32;
     let mut last_st_lufs = -70.0_f32;
     let mut rendered = 0usize;
 
@@ -372,18 +497,43 @@ pub fn render_master_offline(
             &mut blk_r[..n],
         );
         let snap = analyzer.analyze_block(&blk_l[..n], &blk_r[..n]);
-        max_peak_db = max_peak_db.max(snap.peak_l_db).max(snap.peak_r_db);
         last_st_lufs = snap.short_term_lufs;
         out_l.extend_from_slice(&blk_l[..n]);
         out_r.extend_from_slice(&blk_r[..n]);
         rendered += n;
     }
 
-    write_wav_file(output_path, sample_rate, bit_depth, &out_l, &out_r)?;
+    // Apply Mastering BS.1770-4 Integrated Loudness Normalization + True-Peak Lookahead Ceiling!
+    let (integrated_lufs, true_peak_dbtp) = if opts.normalize_target_lufs.is_some()
+        || opts.true_peak_ceiling_dbtp < -0.05
+    {
+        master_normalize_and_limit_true_peak(
+            opts.sample_rate,
+            &mut out_l,
+            &mut out_r,
+            opts.normalize_target_lufs,
+            opts.true_peak_ceiling_dbtp,
+        )
+    } else {
+        (
+            measure_integrated_lufs(opts.sample_rate, &out_l, &out_r),
+            measure_true_peak_dbtp(&out_l, &out_r),
+        )
+    };
+
+    let sample_peak = out_l
+        .iter()
+        .chain(out_r.iter())
+        .fold(0.0_f32, |a, &s| a.max(s.abs()));
+    let peak_db = ferric_dsp::lin_to_db(sample_peak);
+
+    write_exported_audio_file(output_path, opts, &out_l, &out_r)?;
     Ok(BounceReport {
         output_files: vec![output_path.to_path_buf()],
         duration_secs: dur_secs,
-        peak_db: max_peak_db,
+        peak_db,
+        true_peak_dbtp,
+        integrated_lufs,
         short_term_lufs: last_st_lufs,
     })
 }
@@ -396,11 +546,36 @@ pub fn render_all_stems_offline(
     start_beat: f64,
     end_beat: f64,
 ) -> Result<BounceReport, WavIoError> {
+    let opts = MasteringOptions {
+        format: ExportFormat::Wav,
+        sample_rate,
+        bit_depth,
+        start_beat,
+        end_beat,
+        normalize_target_lufs: None,
+        true_peak_ceiling_dbtp: -0.1,
+        tpdf_dither: bit_depth != BitDepth::Float32,
+    };
+    render_all_stems_with_options(project, output_dir, &opts)
+}
+
+pub fn render_all_stems_with_options(
+    project: &Project,
+    output_dir: &Path,
+    opts: &MasteringOptions,
+) -> Result<BounceReport, WavIoError> {
     std::fs::create_dir_all(output_dir)?;
     let mut files = Vec::new();
     let mut max_peak_db = -96.0_f32;
+    let mut max_tp_dbtp = -96.0_f32;
+    let mut last_int_lufs = -70.0_f32;
     let mut last_lufs = -70.0_f32;
     let mut dur_secs = 0.0;
+
+    // Note: Stems should preserve relative mix balance unless user explicitly normalized stems;
+    // keep True-Peak protection & TPDF dithering + chosen WAV/FLAC container!
+    let mut stem_opts = *opts;
+    stem_opts.normalize_target_lufs = None;
 
     let track_ids: Vec<(TrackId, String)> = project
         .tracks
@@ -424,10 +599,16 @@ pub fn render_all_stems_offline(
                 }
             })
             .collect();
-        let path = output_dir.join(format!("{:02}_{}.wav", idx + 1, safe_name));
-        let rep =
-            render_master_offline(&solo_proj, &path, sample_rate, bit_depth, start_beat, end_beat)?;
+        let path = output_dir.join(format!(
+            "{:02}_{}.{}",
+            idx + 1,
+            safe_name,
+            stem_opts.format.extension()
+        ));
+        let rep = render_master_with_options(&solo_proj, &path, &stem_opts)?;
         max_peak_db = max_peak_db.max(rep.peak_db);
+        max_tp_dbtp = max_tp_dbtp.max(rep.true_peak_dbtp);
+        last_int_lufs = rep.integrated_lufs;
         last_lufs = rep.short_term_lufs;
         dur_secs = rep.duration_secs;
         files.extend(rep.output_files);
@@ -437,6 +618,8 @@ pub fn render_all_stems_offline(
         output_files: files,
         duration_secs: dur_secs,
         peak_db: max_peak_db,
+        true_peak_dbtp: max_tp_dbtp,
+        integrated_lufs: last_int_lufs,
         short_term_lufs: last_lufs,
     })
 }

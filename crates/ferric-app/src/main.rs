@@ -12,9 +12,10 @@ use browser::{BrowserAction, KaossPadState, StudioBrowserState, TapTempoTracker}
 use eframe::egui;
 use egui::{Color32, Context, Key, Stroke};
 use ferric_engine::{
-    audio_buffer_from_capture, import_audio_file, load_project_bundle, render_all_stems_offline,
-    render_master_offline, render_track_freeze_buffer, save_project_bundle, BitDepth, BounceReport,
-    CapturedTakeEvent, EngineCommand, EngineHandle,
+    audio_buffer_from_capture, import_audio_file, load_project_bundle,
+    render_all_stems_with_options, render_master_with_options, render_track_freeze_buffer,
+    save_project_bundle, BitDepth, BounceReport, CapturedTakeEvent, EngineCommand, EngineHandle,
+    ExportFormat, MasteringOptions,
 };
 use ferric_model::{
     build_demo_project, import_smf_file, AutomationTarget, ClipId, FxKind, FxSlot, HistoryManager,
@@ -43,10 +44,15 @@ enum BottomTab {
 struct BounceModalState {
     open: bool,
     export_stems: bool,
+    format: ExportFormat,
     sample_rate: u32,
     bit_depth: BitDepth,
     start_beat: f64,
     end_beat: f64,
+    enable_lufs_norm: bool,
+    target_lufs: f32,
+    true_peak_ceiling_dbtp: f32,
+    tpdf_dither: bool,
     last_report: Option<Result<BounceReport, String>>,
 }
 
@@ -113,14 +119,19 @@ impl FerricDawApp {
             bounce_modal: BounceModalState {
                 open: false,
                 export_stems: false,
+                format: ExportFormat::Wav,
                 sample_rate: engine.sample_rate,
                 bit_depth: BitDepth::Pcm24,
                 start_beat: 0.0,
                 end_beat: project.project_end_beat(),
+                enable_lufs_norm: true,
+                target_lufs: -14.0,
+                true_peak_ceiling_dbtp: -1.0,
+                tpdf_dither: true,
                 last_report: None,
             },
             status_banner: format!(
-                "v0.2 Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
+                "v0.6 Mastering Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
                 engine.audio_device_name, engine.sample_rate, engine.audio_input_name, lpk_badge
             ),
             project,
@@ -1211,18 +1222,18 @@ impl FerricDawApp {
             return;
         }
         let mut keep_open = true;
-        egui::Window::new("💿 Offline Bounce & Stem Export")
+        egui::Window::new("💿 Mastering Bounce & Lossless FLAC / WAV Stem Export")
             .open(&mut keep_open)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([430.0, 260.0])
+            .fixed_size([495.0, 360.0])
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
-                        "Faster-than-realtime deterministic render with WSOLA Warp, Bezier Automation, Sidechains, PDC & Swipe-Comp crossfades.",
+                        "Deterministic mastering render with ITU-R BS.1770-4 Integrated LUFS Normalization, 4x Oversampled True-Peak Limiter & TPDF Dither.",
                     )
-                    .size(11.0)
+                    .size(10.5)
                     .color(TEXT_DIM),
                 );
                 ui.separator();
@@ -1231,13 +1242,20 @@ impl FerricDawApp {
                     ui.radio_value(
                         &mut self.bounce_modal.export_stems,
                         false,
-                        "Stereo Master Mix (.wav)",
+                        "Stereo Master Mix",
                     );
                     ui.radio_value(
                         &mut self.bounce_modal.export_stems,
                         true,
                         "All Individual Track Stems (Folder)",
                     );
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Container Format:");
+                    for &fmt in ExportFormat::ALL {
+                        ui.selectable_value(&mut self.bounce_modal.format, fmt, fmt.label());
+                    }
                 });
 
                 ui.horizontal(|ui| {
@@ -1249,14 +1267,18 @@ impl FerricDawApp {
                             format!("{} Hz", sr),
                         );
                     }
-                });
-
-                ui.horizontal(|ui| {
+                    ui.separator();
                     ui.label("Bit Depth:");
                     egui::ComboBox::from_id_salt("bounce_bit_depth")
                         .selected_text(self.bounce_modal.bit_depth.label())
+                        .width(145.0)
                         .show_ui(ui, |ui| {
                             for &bd in BitDepth::ALL {
+                                if self.bounce_modal.format == ExportFormat::Flac
+                                    && bd == BitDepth::Float32
+                                {
+                                    continue; // FLAC supports lossless 16-bit & 24-bit integer PCM
+                                }
                                 ui.selectable_value(
                                     &mut self.bounce_modal.bit_depth,
                                     bd,
@@ -1264,6 +1286,67 @@ impl FerricDawApp {
                                 );
                             }
                         });
+                });
+
+                if self.bounce_modal.format == ExportFormat::Flac
+                    && self.bounce_modal.bit_depth == BitDepth::Float32
+                {
+                    self.bounce_modal.bit_depth = BitDepth::Pcm24;
+                }
+
+                ui.separator();
+                ui.label(
+                    egui::RichText::new("🎚 Mastering Loudness, True-Peak Ceiling & Dither")
+                        .size(11.5)
+                        .strong()
+                        .color(ACCENT_FERRIC),
+                );
+
+                ui.horizontal(|ui| {
+                    ui.checkbox(
+                        &mut self.bounce_modal.enable_lufs_norm,
+                        "Normalize Integrated Loudness:",
+                    );
+                    ui.add_enabled(
+                        self.bounce_modal.enable_lufs_norm,
+                        egui::DragValue::new(&mut self.bounce_modal.target_lufs)
+                            .range(-28.0..=-5.0)
+                            .speed(0.1)
+                            .suffix(" LUFS"),
+                    );
+                    if ui
+                        .small_button("-14 Stream")
+                        .on_hover_text("Spotify / Apple Music / YouTube Standard (-14.0 LUFS, -1.0 dBTP)")
+                        .clicked()
+                    {
+                        self.bounce_modal.enable_lufs_norm = true;
+                        self.bounce_modal.target_lufs = -14.0;
+                        self.bounce_modal.true_peak_ceiling_dbtp = -1.0;
+                    }
+                    if ui
+                        .small_button("-9 Club")
+                        .on_hover_text("Loud Electronic / Club Master (-9.0 LUFS, -0.5 dBTP)")
+                        .clicked()
+                    {
+                        self.bounce_modal.enable_lufs_norm = true;
+                        self.bounce_modal.target_lufs = -9.0;
+                        self.bounce_modal.true_peak_ceiling_dbtp = -0.5;
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("True-Peak Ceiling:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.bounce_modal.true_peak_ceiling_dbtp)
+                            .range(-6.0..=0.0)
+                            .speed(0.05)
+                            .suffix(" dBTP"),
+                    );
+                    ui.separator();
+                    ui.checkbox(
+                        &mut self.bounce_modal.tpdf_dither,
+                        "Triangular TPDF Dither (16/24-bit)",
+                    );
                 });
 
                 ui.horizontal(|ui| {
@@ -1280,13 +1363,30 @@ impl FerricDawApp {
                     );
                 });
 
-                ui.add_space(8.0);
+                let opts = MasteringOptions {
+                    format: self.bounce_modal.format,
+                    sample_rate: self.bounce_modal.sample_rate,
+                    bit_depth: self.bounce_modal.bit_depth,
+                    start_beat: self.bounce_modal.start_beat,
+                    end_beat: self.bounce_modal.end_beat,
+                    normalize_target_lufs: self
+                        .bounce_modal
+                        .enable_lufs_norm
+                        .then_some(self.bounce_modal.target_lufs),
+                    true_peak_ceiling_dbtp: self.bounce_modal.true_peak_ceiling_dbtp,
+                    tpdf_dither: self.bounce_modal.tpdf_dither,
+                };
+
+                ui.add_space(6.0);
                 if ui
                     .add(
                         egui::Button::new(
-                            egui::RichText::new("⚡ Render Offline Now")
-                                .strong()
-                                .color(Color32::BLACK),
+                            egui::RichText::new(format!(
+                                "⚡ Render Master / Stems (.{})",
+                                opts.format.extension().to_uppercase()
+                            ))
+                            .strong()
+                            .color(Color32::BLACK),
                         )
                         .fill(ACCENT_TEAL),
                     )
@@ -1298,34 +1398,23 @@ impl FerricDawApp {
                             .pick_folder()
                         {
                             self.bounce_modal.last_report = Some(
-                                render_all_stems_offline(
-                                    &self.project,
-                                    &dir,
-                                    self.bounce_modal.sample_rate,
-                                    self.bounce_modal.bit_depth,
-                                    self.bounce_modal.start_beat,
-                                    self.bounce_modal.end_beat,
-                                )
-                                .map_err(|e| e.to_string()),
+                                render_all_stems_with_options(&self.project, &dir, &opts)
+                                    .map_err(|e| e.to_string()),
                             );
                         }
-                    } else if let Some(file) = rfd::FileDialog::new()
-                        .set_title("Export Master WAV")
-                        .add_filter("WAV Audio", &["wav"])
-                        .set_file_name("master_mix.wav")
-                        .save_file()
-                    {
-                        self.bounce_modal.last_report = Some(
-                            render_master_offline(
-                                &self.project,
-                                &file,
-                                self.bounce_modal.sample_rate,
-                                self.bounce_modal.bit_depth,
-                                self.bounce_modal.start_beat,
-                                self.bounce_modal.end_beat,
-                            )
-                            .map_err(|e| e.to_string()),
-                        );
+                    } else {
+                        let ext = opts.format.extension();
+                        if let Some(file) = rfd::FileDialog::new()
+                            .set_title("Export Master Audio")
+                            .add_filter(ext.to_uppercase(), &[ext])
+                            .set_file_name(format!("master_mix.{}", ext))
+                            .save_file()
+                        {
+                            self.bounce_modal.last_report = Some(
+                                render_master_with_options(&self.project, &file, &opts)
+                                    .map_err(|e| e.to_string()),
+                            );
+                        }
                     }
                 }
 
@@ -1335,11 +1424,11 @@ impl FerricDawApp {
                         Ok(rep) => {
                             ui.label(
                                 egui::RichText::new(format!(
-                                    "✓ Exported {} file(s) ({:.1}s) • Peak {:+.1} dB • {:.1} LUFS",
+                                    "✓ Exported {} file(s) ({:.1}s) • Integrated: {:.1} LUFS • True Peak: {:+.2} dBTP",
                                     rep.output_files.len(),
                                     rep.duration_secs,
-                                    rep.peak_db,
-                                    rep.short_term_lufs
+                                    rep.integrated_lufs,
+                                    rep.true_peak_dbtp
                                 ))
                                 .color(ACCENT_TEAL),
                             );
@@ -1447,19 +1536,42 @@ impl FerricDawApp {
                         )
                     };
                 }
-                BrowserAction::SwitchAudioDevices { output, input } => {
-                    self.engine = EngineHandle::start_with_devices(
+                BrowserAction::SwitchAudioDevices {
+                    output,
+                    input,
+                    buffer_size,
+                    recording_offset_samples,
+                } => {
+                    self.engine = EngineHandle::start_with_config(
                         &self.project,
                         output.as_deref(),
                         input.as_deref(),
+                        buffer_size,
+                        recording_offset_samples,
                     );
                     self.status_banner = format!(
-                        "Switched Audio • Out: {} • In: {}",
-                        self.engine.audio_device_name, self.engine.audio_input_name
+                        "Audio Configured • Out: {} • In: {} • Buf: {:?}",
+                        self.engine.audio_device_name,
+                        self.engine.audio_input_name,
+                        buffer_size
                     );
                 }
                 BrowserAction::SetInputGainDb(db) => {
                     self.engine.set_input_gain_db(db);
+                }
+                BrowserAction::SetRecordingOffsetSamples(smp) => {
+                    self.engine.set_recording_offset_samples(smp);
+                    let ms = (smp as f32 * 1000.0) / (self.engine.sample_rate.max(8_000) as f32);
+                    self.status_banner = format!(
+                        "Recording Latency Compensation set to {} samples ({:.2} ms)",
+                        smp, ms
+                    );
+                }
+                BrowserAction::TriggerLoopbackPing => {
+                    self.engine.trigger_loopback_ping();
+                    self.status_banner =
+                        "📡 Sent 2.5ms Loopback Calibration Ping — listening on Line/Mic Input..."
+                            .into();
                 }
                 BrowserAction::LockDetectedBpm(bpm) => {
                     self.snapshot_before("Lock Line-In BPM");

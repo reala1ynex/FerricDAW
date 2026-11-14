@@ -14,7 +14,9 @@ pub use effects::{
 };
 pub use instruments::{DrumKitProcessor, MidiEvent, PolySynthProcessor};
 pub use metering::{
-    db_to_lin, lin_to_db, LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, SPECTRUM_BANDS,
+    db_to_lin, lin_to_db, master_normalize_and_limit_true_peak, measure_integrated_lufs,
+    measure_true_peak_dbtp, LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, TpdfDither,
+    SPECTRUM_BANDS,
 };
 pub use sampler::SamplePlayerProcessor;
 pub use tempo_arp::{ArpRuntime, MidiExpression, OnsetBpmDetector};

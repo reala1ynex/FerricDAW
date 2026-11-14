@@ -27,8 +27,12 @@ pub enum BrowserAction {
     SwitchAudioDevices {
         output: Option<String>,
         input: Option<String>,
+        buffer_size: Option<u32>,
+        recording_offset_samples: u32,
     },
     SetInputGainDb(f32),
+    SetRecordingOffsetSamples(u32),
+    TriggerLoopbackPing,
     LockDetectedBpm(f64),
     KaossNote {
         note: u8,
@@ -59,6 +63,8 @@ pub struct StudioBrowserState {
     pub audio_inputs: Vec<String>,
     pub selected_out: Option<String>,
     pub selected_in: Option<String>,
+    pub selected_buffer_size: Option<u32>,
+    pub recording_offset_samples: u32,
     pub input_gain_db: f32,
 }
 
@@ -91,6 +97,8 @@ impl Default for StudioBrowserState {
             audio_inputs: list_audio_input_devices(),
             selected_out: None,
             selected_in: None,
+            selected_buffer_size: None,
+            recording_offset_samples: 0,
             input_gain_db: 0.0,
         };
         if let Ok(profile) = std::env::var("USERPROFILE") {
@@ -353,6 +361,8 @@ impl StudioBrowserState {
                                         actions.push(BrowserAction::SwitchAudioDevices {
                                             output: self.selected_out.clone(),
                                             input: self.selected_in.clone(),
+                                            buffer_size: self.selected_buffer_size,
+                                            recording_offset_samples: self.recording_offset_samples,
                                         });
                                     }
                                 }
@@ -378,10 +388,108 @@ impl StudioBrowserState {
                                         actions.push(BrowserAction::SwitchAudioDevices {
                                             output: self.selected_out.clone(),
                                             input: self.selected_in.clone(),
+                                            buffer_size: self.selected_buffer_size,
+                                            recording_offset_samples: self.recording_offset_samples,
                                         });
                                     }
                                 }
                             });
+
+                        // Low-Latency Hardware Buffer Size Selector!
+                        let buf_ms = (telem.buffer_size_frames as f32 * 1000.0)
+                            / (telem.sample_rate.max(8_000) as f32);
+                        let buf_lbl = match self.selected_buffer_size {
+                            None => format!(
+                                "Buffer: Auto ({} smp / {:.1} ms)",
+                                telem.buffer_size_frames, buf_ms
+                            ),
+                            Some(n) => format!(
+                                "Buffer: {} smp ({:.1} ms)",
+                                n,
+                                (n as f32 * 1000.0) / (telem.sample_rate.max(8_000) as f32)
+                            ),
+                        };
+                        egui::ComboBox::from_id_salt("hw_buf_size_picker")
+                            .selected_text(buf_lbl)
+                            .width(210.0)
+                            .show_ui(ui, |ui| {
+                                for (opt, label) in [
+                                    (None, "Driver Default (Auto)"),
+                                    (Some(64), "64 samples (~1.3 ms Ultra-Low)"),
+                                    (Some(128), "128 samples (~2.7 ms Live Tracking)"),
+                                    (Some(256), "256 samples (~5.3 ms Balanced)"),
+                                    (Some(512), "512 samples (~10.7 ms Mixing)"),
+                                    (Some(1024), "1024 samples (~21.3 ms Heavy Mastering)"),
+                                ] {
+                                    if ui
+                                        .selectable_label(self.selected_buffer_size == opt, label)
+                                        .clicked()
+                                    {
+                                        self.selected_buffer_size = opt;
+                                        actions.push(BrowserAction::SwitchAudioDevices {
+                                            output: self.selected_out.clone(),
+                                            input: self.selected_in.clone(),
+                                            buffer_size: self.selected_buffer_size,
+                                            recording_offset_samples: self.recording_offset_samples,
+                                        });
+                                    }
+                                }
+                            });
+
+                        // Round-Trip Latency Offset & 1-Click Loopback Ping Calibrator!
+                        ui.horizontal(|ui| {
+                            let off_ms = (self.recording_offset_samples as f32 * 1000.0)
+                                / (telem.sample_rate.max(8_000) as f32);
+                            ui.label(
+                                egui::RichText::new(format!("Rec Offset ({:.1}ms):", off_ms))
+                                    .size(10.0)
+                                    .color(TEXT_DIM),
+                            );
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut self.recording_offset_samples)
+                                        .range(0..=24_000)
+                                        .speed(8.0)
+                                        .suffix(" smp"),
+                                )
+                                .on_hover_text(
+                                    "Automatically trims round-trip ADC+DAC latency from recorded overdubs so DS-10 & guitars align sample-tight!",
+                                )
+                                .changed()
+                            {
+                                actions.push(BrowserAction::SetRecordingOffsetSamples(
+                                    self.recording_offset_samples,
+                                ));
+                            }
+                        });
+
+                        ui.horizontal(|ui| {
+                            let ping_lbl = if telem.ping_in_progress {
+                                "📡 Listening..."
+                            } else {
+                                "📡 Loopback Ping"
+                            };
+                            if ui
+                                .small_button(ping_lbl)
+                                .on_hover_text(
+                                    "Connect Headphone/Line-Out -> Line-In (or hold mic near speaker) & click to measure exact round-trip hardware latency!",
+                                )
+                                .clicked()
+                            {
+                                actions.push(BrowserAction::TriggerLoopbackPing);
+                            }
+                            if let Some(meas) = telem.measured_loopback_samples {
+                                let m_ms =
+                                    (meas as f32 * 1000.0) / (telem.sample_rate.max(8_000) as f32);
+                                if ui
+                                    .small_button(format!("Apply {} smp ({:.1}ms)", meas, m_ms))
+                                    .clicked()
+                                {
+                                    self.recording_offset_samples = meas;
+                                    actions.push(BrowserAction::SetRecordingOffsetSamples(meas));
+                                }
+                            }
+                        });
 
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Line-In Gain:").size(10.5));

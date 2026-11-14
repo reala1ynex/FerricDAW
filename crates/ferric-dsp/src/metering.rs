@@ -227,3 +227,243 @@ pub fn db_to_lin(db: f32) -> f32 {
         10.0_f32.powf(db / 20.0)
     }
 }
+
+/// Computes exact ITU-R BS.1770-4 / EBU R128 Gated Integrated Loudness (LUFS) across a full stereo buffer!
+/// Uses 400 ms gating blocks with 75% overlap (100 ms step), `-70.0 LUFS` absolute gate, and `-10.0 LU` relative gate.
+pub fn measure_integrated_lufs(sample_rate: u32, left: &[f32], right: &[f32]) -> f32 {
+    let frames = left.len().min(right.len());
+    if frames == 0 || sample_rate == 0 {
+        return -70.0;
+    }
+    let sr = sample_rate.max(8_000) as f32;
+    let mut k_shelf = StereoBiquad::default();
+    let mut k_rlb = StereoBiquad::default();
+    k_shelf.set_high_shelf(sr, 1681.97, 4.0);
+    k_rlb.set_highpass(sr, 38.13, 0.5);
+
+    let step = (sample_rate as usize / 10).max(1); // 100 ms sub-blocks
+    let mut sub_energies: Vec<f64> = Vec::with_capacity(frames / step + 1);
+    let mut cur_sum = 0.0_f64;
+    let mut cur_cnt = 0usize;
+
+    for i in 0..frames {
+        let (kl, kr) = k_shelf.process_stereo(left[i], right[i]);
+        let (kl, kr) = k_rlb.process_stereo(kl, kr);
+        cur_sum += (kl as f64) * (kl as f64) + (kr as f64) * (kr as f64);
+        cur_cnt += 1;
+        if cur_cnt == step {
+            sub_energies.push(cur_sum / step as f64);
+            cur_sum = 0.0;
+            cur_cnt = 0;
+        }
+    }
+    if cur_cnt > step / 2 && sub_energies.is_empty() {
+        sub_energies.push(cur_sum / cur_cnt as f64);
+    }
+    if sub_energies.is_empty() {
+        return -70.0;
+    }
+
+    // Build 400 ms gating blocks (average of 4 consecutive 100 ms sub-blocks)
+    let mut block_energies: Vec<f64> = Vec::new();
+    if sub_energies.len() < 4 {
+        let avg = sub_energies.iter().sum::<f64>() / sub_energies.len() as f64;
+        block_energies.push(avg);
+    } else {
+        for win in sub_energies.windows(4) {
+            block_energies.push((win[0] + win[1] + win[2] + win[3]) * 0.25);
+        }
+    }
+
+    // Stage 1: Absolute threshold gate at -70.0 LUFS => z_abs = 10^((-70 + 0.691) / 10)
+    let z_abs = 10.0_f64.powf((-70.0 + 0.691) / 10.0);
+    let above_abs: Vec<f64> = block_energies
+        .into_iter()
+        .filter(|&z| z > z_abs)
+        .collect();
+    if above_abs.is_empty() {
+        return -70.0;
+    }
+
+    let mean_abs = above_abs.iter().sum::<f64>() / above_abs.len() as f64;
+    let gamma_abs_lufs = -0.691 + 10.0 * mean_abs.log10();
+
+    // Stage 2: Relative threshold gate at (gamma_abs_lufs - 10.0 LU)
+    let z_rel = 10.0_f64.powf((gamma_abs_lufs - 10.0 + 0.691) / 10.0);
+    let above_rel: Vec<f64> = above_abs.into_iter().filter(|&z| z > z_rel).collect();
+    if above_rel.is_empty() {
+        return gamma_abs_lufs as f32;
+    }
+
+    let mean_rel = above_rel.iter().sum::<f64>() / above_rel.len() as f64;
+    (-0.691 + 10.0 * mean_rel.log10()).clamp(-70.0, 12.0) as f32
+}
+
+/// Evaluates 4x Hermite/Catmull-Rom inter-sample True Peak (dBTP) across a stereo buffer!
+pub fn measure_true_peak_dbtp(left: &[f32], right: &[f32]) -> f32 {
+    let max_tp = measure_true_peak_linear(left).max(measure_true_peak_linear(right));
+    lin_to_db(max_tp)
+}
+
+pub fn measure_true_peak_linear(samples: &[f32]) -> f32 {
+    let n = samples.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let mut peak = 0.0_f32;
+    for &s in samples {
+        peak = peak.max(s.abs());
+    }
+    if n < 4 {
+        return peak;
+    }
+    for i in 1..(n - 2) {
+        let y0 = samples[i - 1];
+        let y1 = samples[i];
+        let y2 = samples[i + 1];
+        let y3 = samples[i + 2];
+        // Check 4x oversampled phases t = 0.25, 0.50, 0.75 via Catmull-Rom cubic interpolation
+        for &t in &[0.25_f32, 0.50, 0.75] {
+            let c0 = y1;
+            let c1 = 0.5 * (y2 - y0);
+            let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+            let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+            let interp = ((c3 * t + c2) * t + c1) * t + c0;
+            peak = peak.max(interp.abs());
+        }
+    }
+    peak
+}
+
+/// Applies transparent Mastering Loudness Normalization (`target_lufs`) followed by a
+/// 2.5 ms Lookahead True-Peak Brickwall Ceiling Limiter (`ceiling_dbtp`, e.g. `-1.0 dBTP` for Spotify/Apple/YouTube)!
+pub fn master_normalize_and_limit_true_peak(
+    sample_rate: u32,
+    left: &mut [f32],
+    right: &mut [f32],
+    target_lufs: Option<f32>,
+    ceiling_dbtp: f32,
+) -> (f32, f32) {
+    let frames = left.len().min(right.len());
+    if frames == 0 {
+        return (-70.0, -96.0);
+    }
+
+    // 1. Apply BS.1770-4 Integrated LUFS Gain Adjustment if enabled
+    if let Some(tgt_lufs) = target_lufs {
+        let current_lufs = measure_integrated_lufs(sample_rate, &left[..frames], &right[..frames]);
+        if current_lufs > -65.0 {
+            // Cap max upward gain boost at +24 dB so near-silent tails aren't over-amplified
+            let delta_db = (tgt_lufs - current_lufs).clamp(-30.0, 24.0);
+            let gain = db_to_lin(delta_db);
+            for i in 0..frames {
+                left[i] *= gain;
+                right[i] *= gain;
+            }
+        }
+    }
+
+    // 2. 2.5 ms Lookahead Smooth Gain-Envelope Brickwall True-Peak Limiter
+    let ceiling_lin = db_to_lin(ceiling_dbtp.clamp(-18.0, 0.0)).max(0.05);
+    // Slight safety margin (0.985) absorbs inter-sample Catmull-Rom overshoot cleanly
+    let safe_ceiling = ceiling_lin * 0.985;
+    let lookahead = ((0.0025 * sample_rate as f32).round() as usize).clamp(16, 512);
+    let release_coeff = (-1.0 / (0.085 * sample_rate.max(8_000) as f32)).exp();
+
+    // Compute instantaneous required attenuation per sample
+    let mut inst_peak = vec![0.0_f32; frames];
+    for i in 0..frames {
+        let p = left[i].abs().max(right[i].abs());
+        inst_peak[i] = p;
+    }
+    // Incorporate 4x inter-sample peaks into detector
+    if frames >= 4 {
+        for i in 1..(frames - 2) {
+            for ch in [&left[..frames], &right[..frames]] {
+                let (y0, y1, y2, y3) = (ch[i - 1], ch[i], ch[i + 1], ch[i + 2]);
+                let mid = -0.0625 * y0 + 0.5625 * y1 + 0.5625 * y2 - 0.0625 * y3; // t = 0.5
+                inst_peak[i] = inst_peak[i].max(mid.abs());
+            }
+        }
+    }
+
+    let mut gain_env = 1.0_f32;
+    let atk_step_inv = 1.0 / lookahead as f32;
+
+    for i in 0..frames {
+        let win_end = (i + lookahead).min(frames);
+        let mut future_max = inst_peak[i];
+        // Scan short lookahead window
+        for &pk in &inst_peak[i..win_end] {
+            if pk > future_max {
+                future_max = pk;
+            }
+        }
+        let target_gain = if future_max > safe_ceiling {
+            safe_ceiling / future_max
+        } else {
+            1.0
+        };
+
+        if target_gain < gain_env {
+            let max_drop = (gain_env - target_gain) * atk_step_inv.max(0.18);
+            gain_env = (gain_env - max_drop).max(target_gain);
+        } else {
+            gain_env = target_gain + (gain_env - target_gain) * release_coeff;
+        }
+        // Guarantee strict sample ceiling
+        let cur_pk = inst_peak[i] * gain_env;
+        if cur_pk > safe_ceiling {
+            gain_env *= safe_ceiling / cur_pk;
+        }
+
+        left[i] *= gain_env;
+        right[i] *= gain_env;
+    }
+
+    let final_lufs = measure_integrated_lufs(sample_rate, &left[..frames], &right[..frames]);
+    let final_dbtp = measure_true_peak_dbtp(&left[..frames], &right[..frames]);
+    (final_lufs, final_dbtp)
+}
+
+/// Studio TPDF (Triangular Probability Density Function) Dither Generator for 16-bit & 24-bit integer export!
+/// Eliminates quantization distortion on quiet reverb tails with zero tonal coloration.
+#[derive(Debug, Clone)]
+pub struct TpdfDither {
+    rng: u64,
+}
+
+impl Default for TpdfDither {
+    fn default() -> Self {
+        Self {
+            rng: 0x853C_49E6_748F_EA9B,
+        }
+    }
+}
+
+impl TpdfDither {
+    #[inline]
+    fn next_uniform(&mut self) -> f32 {
+        // Xorshift64* fast PRNG -> [-0.5, +0.5]
+        self.rng ^= self.rng >> 12;
+        self.rng ^= self.rng << 25;
+        self.rng ^= self.rng >> 27;
+        let v = self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D);
+        ((v >> 40) as f32 / ((1u32 << 24) as f32)) - 0.5
+    }
+
+    /// Quantizes `sample` (`-1.0 ..= +1.0`) to signed `bits`-bit integer (`16` or `24`) with optional 1-LSB TPDF dither!
+    #[inline]
+    pub fn quantize_sample(&mut self, sample: f32, bits: u8, enable_dither: bool) -> i32 {
+        let max_pos = ((1i64 << (bits - 1)) - 1) as f32;
+        let min_neg = -(1i64 << (bits - 1)) as f32;
+        let scaled = sample.clamp(-1.0, 1.0) * max_pos;
+        let dither = if enable_dither {
+            // Sum of two independent uniform [-0.5, +0.5] RVs = [-1.0, +1.0] triangular PDF!
+            self.next_uniform() + self.next_uniform()
+        } else {
+            0.0
+        };
+        (scaled + dither).round().clamp(min_neg, max_pos) as i32
+    }
+}

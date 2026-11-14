@@ -1,4 +1,5 @@
 pub mod clap_host;
+pub mod flac_enc;
 pub mod graph;
 pub mod plugin_window;
 pub mod vst3_host;
@@ -8,6 +9,7 @@ pub use clap_host::{
     inspect_clap_bundle, scan_clap_plugins, DiscoveredClapPlugin, DiscoveredExternalPlugin,
     HostedClapInstance, LoadedClapBundle,
 };
+pub use flac_enc::write_flac_stereo_file;
 pub use graph::{AudioGraphCore, TrackMeter, MAX_ENGINE_TRACKS};
 pub use plugin_window::{FloatingPluginWindow, NativePluginGuiView, PluginQuarantine};
 pub use vst3_host::{
@@ -15,8 +17,9 @@ pub use vst3_host::{
 };
 pub use wav_io::{
     import_audio_file, import_wav_file, load_project_bundle, render_all_stems_offline,
-    render_master_offline, render_track_freeze_buffer, save_project_bundle, write_wav_file,
-    BitDepth, BounceReport, WavIoError,
+    render_all_stems_with_options, render_master_offline, render_master_with_options,
+    render_track_freeze_buffer, save_project_bundle, write_exported_audio_file, write_wav_file,
+    write_wav_file_dithered, BitDepth, BounceReport, ExportFormat, MasteringOptions, WavIoError,
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -80,6 +83,8 @@ pub enum EngineCommand {
     SetRecord(bool),
     SeekBeat(f64),
     SetInputGainDb(f32),
+    SetRecordingOffsetSamples(u32),
+    TriggerLoopbackLatencyPing,
     SyncProject(Box<Project>),
     RegisterFx(Box<FxRuntimeInstance>),
     RegisterMod(Box<ModulatorRuntime>),
@@ -104,9 +109,12 @@ pub struct EngineTelemetry {
     pub playhead_beat: f64,
     pub count_in_beats_remaining: f32,
     pub sample_rate: u32,
+    pub buffer_size_frames: u32,
     pub cpu_load_percent: f32,
     pub input_peak_db: f32,
     pub detected_input_bpm: Option<f32>,
+    pub measured_loopback_samples: Option<u32>,
+    pub ping_in_progress: bool,
     pub total_pdc_samples: u32,
     pub sustain_down: bool,
     pub last_midi_note: Option<u8>,
@@ -127,9 +135,12 @@ impl Default for EngineTelemetry {
             playhead_beat: 0.0,
             count_in_beats_remaining: 0.0,
             sample_rate: 48_000,
+            buffer_size_frames: 256,
             cpu_load_percent: 0.0,
             input_peak_db: -96.0,
             detected_input_bpm: None,
+            measured_loopback_samples: None,
+            ping_in_progress: false,
             total_pdc_samples: 0,
             sustain_down: false,
             last_midi_note: None,
@@ -196,6 +207,9 @@ struct RtCallbackState {
     rec_resample_track: Option<TrackId>,
     rec_resample_l: Vec<f32>,
     rec_resample_r: Vec<f32>,
+    recording_offset_samples: usize,
+    ping_state: LoopbackPingDetector,
+    actual_buffer_frames: u32,
     last_midi_note: Option<u8>,
     last_midi_cc: Option<(u8, u8, u8)>,
     samples_since_telem: usize,
@@ -247,8 +261,59 @@ pub fn list_audio_output_devices() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Zero-allocation Acoustic / Cable Loopback Round-Trip Latency Ping Detector!
+/// Emits a sharp 2.5 ms dual-frequency chirp impulse on Output L/R and measures exact samples until arrival on Input L/R!
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoopbackPingDetector {
+    pub active: bool,
+    pub emit_samples_left: u32,
+    pub elapsed_samples: u32,
+    pub timeout_samples: u32,
+    pub baseline_peak: f32,
+    pub measured_samples: Option<u32>,
+}
+
+impl LoopbackPingDetector {
+    pub fn trigger(&mut self, sample_rate: u32, current_noise_floor: f32) {
+        self.active = true;
+        self.emit_samples_left = (sample_rate / 400).max(48); // ~2.5ms crisp impulse burst
+        self.elapsed_samples = 0;
+        self.timeout_samples = sample_rate / 2; // 500ms max window
+        self.baseline_peak = current_noise_floor.max(0.015);
+    }
+
+    #[inline]
+    pub fn step(&mut self, in_sample_abs: f32, sample_rate: f32) -> f32 {
+        if !self.active {
+            return 0.0;
+        }
+        let out_sig = if self.emit_samples_left > 0 {
+            let phase = (self.elapsed_samples as f32 * 2400.0 / sample_rate) * std::f32::consts::TAU;
+            self.emit_samples_left -= 1;
+            phase.sin() * 0.75
+        } else {
+            0.0
+        };
+
+        // Ignore first 8 samples of electrical crosstalk, then detect arrival >= 3.5x baseline!
+        if self.elapsed_samples > 8 && in_sample_abs > (self.baseline_peak * 3.5).max(0.06) {
+            self.measured_samples = Some(self.elapsed_samples);
+            self.active = false;
+            return 0.0;
+        }
+
+        self.elapsed_samples += 1;
+        if self.elapsed_samples >= self.timeout_samples {
+            self.active = false;
+        }
+        out_sig
+    }
+}
+
 pub struct EngineHandle {
     pub sample_rate: u32,
+    pub requested_buffer_size: Option<u32>,
+    pub recording_offset_samples: u32,
     pub audio_device_name: String,
     pub audio_input_name: String,
     pub midi_port_names: Vec<String>,
@@ -271,13 +336,23 @@ pub struct EngineHandle {
 
 impl EngineHandle {
     pub fn start(initial_project: &Project) -> Self {
-        Self::start_with_devices(initial_project, None, None)
+        Self::start_with_config(initial_project, None, None, None, 0)
     }
 
     pub fn start_with_devices(
         initial_project: &Project,
         preferred_out: Option<&str>,
         preferred_in: Option<&str>,
+    ) -> Self {
+        Self::start_with_config(initial_project, preferred_out, preferred_in, None, 0)
+    }
+
+    pub fn start_with_config(
+        initial_project: &Project,
+        preferred_out: Option<&str>,
+        preferred_in: Option<&str>,
+        preferred_buffer_size: Option<u32>,
+        recording_offset_samples: u32,
     ) -> Self {
         let host = cpal::default_host();
         let out_device = preferred_out
@@ -308,8 +383,13 @@ impl EngineHandle {
         let shared_midi_tx = Arc::new(Mutex::new(hw_midi_tx));
         let (midi_conns, midi_port_names) = Self::connect_all_hardware_midi(shared_midi_tx.clone());
 
-        let (input_stream, audio_input_name) =
-            Self::start_hardware_audio_input(&host, preferred_in, sample_rate, hw_audio_tx);
+        let (input_stream, audio_input_name) = Self::start_hardware_audio_input(
+            &host,
+            preferred_in,
+            sample_rate,
+            preferred_buffer_size,
+            hw_audio_tx,
+        );
 
         let max_block = 4096usize;
         let mut core = AudioGraphCore::new(sample_rate as f32, max_block);
@@ -360,6 +440,9 @@ impl EngineHandle {
             rec_resample_track: None,
             rec_resample_l: Vec::with_capacity(sample_rate as usize * 180),
             rec_resample_r: Vec::with_capacity(sample_rate as usize * 180),
+            recording_offset_samples: recording_offset_samples as usize,
+            ping_state: LoopbackPingDetector::default(),
+            actual_buffer_frames: preferred_buffer_size.unwrap_or(256),
             last_midi_note: None,
             last_midi_cc: None,
             samples_since_telem: 0,
@@ -368,7 +451,14 @@ impl EngineHandle {
 
         let output_stream = if let (Some(dev), Some(supported_cfg)) = (out_device, out_config_opt) {
             let channels = supported_cfg.channels() as usize;
-            let stream_cfg: cpal::StreamConfig = supported_cfg.clone().into();
+            let mut stream_cfg: cpal::StreamConfig = supported_cfg.clone().into();
+            if let Some(req_buf) = preferred_buffer_size {
+                let clamped = match supported_cfg.buffer_size() {
+                    cpal::SupportedBufferSize::Range { min, max } => req_buf.clamp(*min, *max),
+                    cpal::SupportedBufferSize::Unknown => req_buf,
+                };
+                stream_cfg.buffer_size = cpal::BufferSize::Fixed(clamped);
+            }
             let err_fn = |err| log::warn!("Audio output stream error: {}", err);
 
             let stream_res = match supported_cfg.sample_format() {
@@ -421,6 +511,8 @@ impl EngineHandle {
 
         Self {
             sample_rate,
+            requested_buffer_size: preferred_buffer_size,
+            recording_offset_samples,
             audio_device_name: device_name,
             audio_input_name,
             midi_port_names,
@@ -538,6 +630,7 @@ impl EngineHandle {
         host: &cpal::Host,
         preferred_in: Option<&str>,
         target_sr: u32,
+        preferred_buffer_size: Option<u32>,
         mut hw_audio_tx: Producer<(f32, f32)>,
     ) -> (Option<cpal::Stream>, String) {
         let dev_opt = preferred_in
@@ -559,7 +652,15 @@ impl EngineHandle {
         let in_sr = cfg.sample_rate().0.max(8_000);
         let channels = cfg.channels().max(1) as usize;
         let fmt = cfg.sample_format();
-        let stream_cfg: cpal::StreamConfig = cfg.into();
+        let buf_range = cfg.buffer_size().clone();
+        let mut stream_cfg: cpal::StreamConfig = cfg.into();
+        if let Some(req_buf) = preferred_buffer_size {
+            let clamped = match buf_range {
+                cpal::SupportedBufferSize::Range { min, max } => req_buf.clamp(min, max),
+                cpal::SupportedBufferSize::Unknown => req_buf,
+            };
+            stream_cfg.buffer_size = cpal::BufferSize::Fixed(clamped);
+        }
         let step = in_sr as f64 / target_sr.max(8_000) as f64;
         let mut frac_acc = 0.0_f64;
         let mut prev_lr = (0.0_f32, 0.0_f32);
@@ -634,6 +735,17 @@ impl EngineHandle {
     pub fn set_input_gain_db(&mut self, db: f32) {
         self.input_gain_db = db.clamp(-24.0, 24.0);
         let _ = self.cmd_tx.push(EngineCommand::SetInputGainDb(self.input_gain_db));
+    }
+
+    pub fn set_recording_offset_samples(&mut self, samples: u32) {
+        self.recording_offset_samples = samples.min(48_000);
+        let _ = self
+            .cmd_tx
+            .push(EngineCommand::SetRecordingOffsetSamples(self.recording_offset_samples));
+    }
+
+    pub fn trigger_loopback_ping(&mut self) {
+        let _ = self.cmd_tx.push(EngineCommand::TriggerLoopbackLatencyPing);
     }
 
     pub fn sync_project(&mut self, project: &Project) {
@@ -935,6 +1047,12 @@ impl RtCallbackState {
                 EngineCommand::SetInputGainDb(db) => {
                     self.core.input_gain_lin = db_to_lin(db);
                 }
+                EngineCommand::SetRecordingOffsetSamples(samples) => {
+                    self.recording_offset_samples = samples as usize;
+                }
+                EngineCommand::TriggerLoopbackLatencyPing => {
+                    self.ping_state.trigger(self.core.sample_rate as u32, 0.02);
+                }
                 EngineCommand::SyncProject(new_proj) => {
                     let old = std::mem::replace(&mut self.project, new_proj);
                     let _ = self.garbage_tx.push(old);
@@ -1035,6 +1153,7 @@ impl RtCallbackState {
             }
         }
 
+        self.actual_buffer_frames = total_frames as u32;
         let mut offset_frame = 0usize;
         let mut max_in_peak = 0.0_f32;
 
@@ -1141,10 +1260,12 @@ impl RtCallbackState {
             }
 
             for i in 0..chunk {
+                let in_abs = self.in_l[i].abs().max(self.in_r[i].abs()) * self.core.input_gain_lin;
+                let ping_sig = self.ping_state.step(in_abs, self.core.sample_rate);
                 let base = (offset_frame + i) * out_channels;
-                output[base] = self.out_l[i];
+                output[base] = self.out_l[i] + ping_sig;
                 if out_channels > 1 {
-                    output[base + 1] = self.out_r[i];
+                    output[base + 1] = self.out_r[i] + ping_sig;
                 }
                 for ch in 2..out_channels {
                     output[base + ch] = 0.0;
@@ -1175,9 +1296,12 @@ impl RtCallbackState {
                 playhead_beat: self.core.playhead_beat,
                 count_in_beats_remaining: self.core.count_in_beats_remaining as f32,
                 sample_rate: self.core.sample_rate as u32,
+                buffer_size_frames: self.actual_buffer_frames,
                 cpu_load_percent: self.smoothed_cpu,
                 input_peak_db: lin_to_db(max_in_peak),
                 detected_input_bpm: self.core.input_bpm_detector.detected_bpm,
+                measured_loopback_samples: self.ping_state.measured_samples,
+                ping_in_progress: self.ping_state.active,
                 total_pdc_samples: self.core.total_pdc_samples as u32,
                 sustain_down: self.core.sustain_pedal_down,
                 last_midi_note: self.last_midi_note,
@@ -1269,8 +1393,12 @@ impl RtCallbackState {
             .map(|t| t.id);
 
         if self.has_hw_audio_signal && audio_target.is_some() && self.rec_audio_l.len() > 2048 {
-            let left = self.rec_audio_l.clone();
-            let right = self.rec_audio_r.clone();
+            // Trim leading round-trip hardware latency (`recording_offset_samples`) so overdubs lock sample-tight to the grid!
+            let trim = self
+                .recording_offset_samples
+                .min(self.rec_audio_l.len().saturating_sub(1024));
+            let left = self.rec_audio_l[trim..].to_vec();
+            let right = self.rec_audio_r[trim..].to_vec();
             let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveAudio {
                 target_track: audio_target,
                 start_beat: self.record_start_beat,
@@ -2174,5 +2302,101 @@ mod tests {
             .expect("restore VST3")
         };
         assert!((restored.discovered_params[0].default - 0.75).abs() < 1e-4);
+    }
+
+    #[test]
+    fn lossless_flac_encoder_bit_exact_symphonia_roundtrip_16bit_and_24bit() {
+        let sr = 48_000_u32;
+        let frames = 10_000usize; // Multi-frame test (4096 + 4096 + 1808 trailing block!)
+        let mut orig_l = Vec::with_capacity(frames);
+        let mut orig_r = Vec::with_capacity(frames);
+
+        for i in 0..frames {
+            let t = i as f32 / sr as f32;
+            // Stereo correlated + side signal so both Independent and Mid-Side FLAC coding are exercised!
+            let mid = (t * 440.0 * std::f32::consts::TAU).sin() * 0.65;
+            let side = (t * 110.0 * std::f32::consts::TAU).cos() * 0.12;
+            // Quantize input exactly to 16-bit grid so we can assert BIT-EXACT 0-error lossless roundtrip!
+            let ql = (((mid + side) * 32767.0).round() as i16) as f32 / 32768.0;
+            let qr = (((mid - side) * 32767.0).round() as i16) as f32 / 32768.0;
+            orig_l.push(ql);
+            orig_r.push(qr);
+        }
+
+        let flac16_path = std::env::temp_dir().join("ferric_m6_lossless_16.flac");
+        write_flac_stereo_file(&flac16_path, sr, 16, false, &orig_l, &orig_r)
+            .expect("write 16-bit FLAC");
+        let decoded16 = import_audio_file(&flac16_path, sr).expect("Symphonia decode 16-bit FLAC");
+        assert_eq!(decoded16.len_frames(), frames);
+        for i in 0..frames {
+            // 16-bit quantizer maps 32767 vs Symphonia f32 32768 denominator within 1 LSB (3.5e-5)
+            assert!(
+                (decoded16.left[i] - orig_l[i]).abs() < 4e-5,
+                "16-bit FLAC mismatch at frame {}: got {} expected {}",
+                i,
+                decoded16.left[i],
+                orig_l[i]
+            );
+            assert!((decoded16.right[i] - orig_r[i]).abs() < 4e-5);
+        }
+        let _ = std::fs::remove_file(&flac16_path);
+
+        // Also verify 24-bit Lossless FLAC + TPDF Dither + -14.0 LUFS Mastering Normalization!
+        let proj = build_demo_project(sr);
+        let flac24_master = std::env::temp_dir().join("ferric_m6_master_14lufs.flac");
+        let opts = MasteringOptions {
+            format: ExportFormat::Flac,
+            sample_rate: sr,
+            bit_depth: BitDepth::Pcm24,
+            start_beat: 0.0,
+            end_beat: 8.0,
+            normalize_target_lufs: Some(-14.0),
+            true_peak_ceiling_dbtp: -1.0,
+            tpdf_dither: true,
+        };
+        let report =
+            render_master_with_options(&proj, &flac24_master, &opts).expect("master -14 LUFS FLAC");
+        assert!(
+            (report.integrated_lufs - (-14.0)).abs() <= 0.35,
+            "Expected integrated loudness near -14.0 LUFS, got {:.2} LUFS",
+            report.integrated_lufs
+        );
+        assert!(
+            report.true_peak_dbtp <= -0.90,
+            "Expected True Peak <= -0.90 dBTP (target -1.0 dBTP), got {:.2} dBTP",
+            report.true_peak_dbtp
+        );
+        let redecoded =
+            import_audio_file(&flac24_master, sr).expect("Symphonia decode 24-bit Master FLAC");
+        assert!(redecoded.len_frames() > sr as usize * 3);
+        let _ = std::fs::remove_file(&flac24_master);
+    }
+
+    #[test]
+    fn loopback_ping_detector_measures_exact_roundtrip_latency() {
+        let sr = 48_000_u32;
+        let simulated_hw_latency = 312_u32; // e.g. 6.50 ms round-trip ADC+DAC cable delay
+        let mut ping = LoopbackPingDetector::default();
+        ping.trigger(sr, 0.005);
+
+        let mut wire_delay = vec![0.0_f32; simulated_hw_latency as usize];
+        let mut pos = 0usize;
+        for _ in 0..2000 {
+            let delayed_in = wire_delay[pos];
+            let emitted_out = ping.step(delayed_in.abs(), sr as f32);
+            wire_delay[pos] = emitted_out;
+            pos = (pos + 1) % wire_delay.len();
+            if !ping.active {
+                break;
+            }
+        }
+        let measured = ping.measured_samples.expect("should detect loopback ping");
+        // Within 1-2 samples of impulse rise-time above threshold!
+        assert!(
+            measured >= simulated_hw_latency && measured <= simulated_hw_latency + 4,
+            "Expected ~{} samples, measured {}",
+            simulated_hw_latency,
+            measured
+        );
     }
 }
