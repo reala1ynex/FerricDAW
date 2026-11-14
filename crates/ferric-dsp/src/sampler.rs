@@ -150,14 +150,34 @@ impl SamplePlayerProcessor {
         params: &[f32],
         midi_events: &[MidiEvent],
     ) {
+        self.process_with_expression(
+            left,
+            right,
+            params,
+            midi_events,
+            crate::tempo_arp::MidiExpression::default(),
+        );
+    }
+
+    pub fn process_with_expression(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        midi_events: &[MidiEvent],
+        expr: crate::tempo_arp::MidiExpression,
+    ) {
         let root_key = params.first().copied().unwrap_or(60.0);
         let slice_mode = params.get(1).copied().unwrap_or(0.0) >= 0.5;
         let start_trim = params.get(2).copied().unwrap_or(0.0);
-        let cutoff = params.get(3).copied().unwrap_or(14000.0);
+        let base_cutoff = params.get(3).copied().unwrap_or(14000.0);
+        let cutoff = base_cutoff * 2.0_f32.powf(expr.brightness_offset * 1.8);
         let res = params.get(4).copied().unwrap_or(0.18);
         let attack_ms = params.get(5).copied().unwrap_or(2.0);
         let release_ms = params.get(6).copied().unwrap_or(240.0);
-        let out_gain = 10.0_f32.powf(params.get(7).copied().unwrap_or(0.0) / 20.0);
+        let out_gain = 10.0_f32.powf(params.get(7).copied().unwrap_or(0.0) / 20.0)
+            * expr.expression.clamp(0.0, 1.5);
+        let bend_mult = 2.0_f64.powf(expr.pitch_bend_semitones as f64 / 12.0);
 
         let atk_step = 1.0 / (attack_ms * 0.001 * self.sample_rate).max(1.0);
         let rel_coeff = (-1.0 / (release_ms * 0.001 * self.sample_rate).max(1.0)).exp();
@@ -211,7 +231,7 @@ impl SamplePlayerProcessor {
                 }
 
                 let (raw_l, raw_r) = active_buf.sample_interpolated(v.pos_frames);
-                v.pos_frames += v.rate;
+                v.pos_frames += v.rate * bend_mult;
 
                 // Cytomic ZDF SVF per voice
                 let v3_l = raw_l - v.ic2_l;

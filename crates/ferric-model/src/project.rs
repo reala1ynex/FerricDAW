@@ -575,6 +575,27 @@ impl Project {
         Some(id)
     }
 
+    /// Deletes a clip, optionally ripple-shifting all later clips on the track left by `clip.length_beats`!
+    pub fn delete_clip(&mut self, track_id: TrackId, clip_id: ClipId, ripple: bool) -> bool {
+        let Some(track) = self.find_track_mut(track_id) else {
+            return false;
+        };
+        let Some(pos) = track.clips.iter().position(|c| c.id == clip_id) else {
+            return false;
+        };
+        let removed = track.clips.remove(pos);
+        if ripple {
+            let cut_start = removed.start_beat;
+            let shift = removed.length_beats;
+            for c in &mut track.clips {
+                if c.start_beat >= cut_start + shift - 1e-4 {
+                    c.start_beat = (c.start_beat - shift).max(0.0);
+                }
+            }
+        }
+        true
+    }
+
     pub fn print_scene_to_timeline(&mut self, scene_idx: usize, at_beat: f64) {
         let Some(scene) = self.scenes.get(scene_idx).cloned() else {
             return;

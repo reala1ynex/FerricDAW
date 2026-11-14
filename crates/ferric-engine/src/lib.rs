@@ -7,8 +7,9 @@ pub use clap_host::{
 };
 pub use graph::{AudioGraphCore, TrackMeter, MAX_ENGINE_TRACKS};
 pub use wav_io::{
-    import_audio_file, import_wav_file, render_all_stems_offline, render_master_offline,
-    render_track_freeze_buffer, write_wav_file, BitDepth, BounceReport, WavIoError,
+    import_audio_file, import_wav_file, load_project_bundle, render_all_stems_offline,
+    render_master_offline, render_track_freeze_buffer, save_project_bundle, write_wav_file,
+    BitDepth, BounceReport, WavIoError,
 };
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -36,6 +37,9 @@ enum HwMidiPacket {
         channel: u8,
         cc: u8,
         value: u8,
+    },
+    PitchBend {
+        semitones: f32,
     },
 }
 
@@ -76,9 +80,11 @@ pub struct EngineTelemetry {
     pub is_playing: bool,
     pub is_recording: bool,
     pub playhead_beat: f64,
+    pub count_in_beats_remaining: f32,
     pub sample_rate: u32,
     pub cpu_load_percent: f32,
     pub input_peak_db: f32,
+    pub detected_input_bpm: Option<f32>,
     pub total_pdc_samples: u32,
     pub sustain_down: bool,
     pub last_midi_note: Option<u8>,
@@ -97,9 +103,11 @@ impl Default for EngineTelemetry {
             is_playing: false,
             is_recording: false,
             playhead_beat: 0.0,
+            count_in_beats_remaining: 0.0,
             sample_rate: 48_000,
             cpu_load_percent: 0.0,
             input_peak_db: -96.0,
+            detected_input_bpm: None,
             total_pdc_samples: 0,
             sustain_down: false,
             last_midi_note: None,
@@ -462,6 +470,10 @@ impl EngineHandle {
                                 cc: d1,
                                 value: d2,
                             })
+                        } else if status == 0xE0 {
+                            let raw14 = ((d2 as i32) << 7) | (d1 as i32);
+                            let semi = ((raw14 - 8192) as f32 / 8192.0) * 2.0;
+                            Some(HwMidiPacket::PitchBend { semitones: semi })
                         } else {
                             None
                         };
@@ -679,9 +691,18 @@ impl RtCallbackState {
         while let Ok(cmd) = self.cmd_rx.pop() {
             match cmd {
                 EngineCommand::Play => {
+                    if !self.core.is_playing && self.is_recording && self.project.count_in_bars > 0
+                    {
+                        self.core.count_in_beats_remaining = (self.project.count_in_bars as f64)
+                            * self.project.time_signature.beats_per_bar();
+                    }
                     self.core.is_playing = true;
                     if self.is_recording {
-                        self.record_start_beat = self.core.playhead_beat;
+                        self.record_start_beat = if self.project.punch_in_enabled {
+                            self.project.punch_start_beat.max(self.core.playhead_beat)
+                        } else {
+                            self.core.playhead_beat
+                        };
                         self.rec_midi.clear();
                         self.rec_audio_l.clear();
                         self.rec_audio_r.clear();
@@ -692,6 +713,7 @@ impl RtCallbackState {
                         self.flush_live_recording();
                     }
                     self.core.is_playing = false;
+                    self.core.count_in_beats_remaining = 0.0;
                     self.core.all_notes_off();
                 }
                 EngineCommand::SetRecord(rec) => {
@@ -700,7 +722,15 @@ impl RtCallbackState {
                     }
                     self.is_recording = rec;
                     if rec {
-                        self.record_start_beat = self.core.playhead_beat;
+                        if !self.core.is_playing && self.project.count_in_bars > 0 {
+                            self.core.count_in_beats_remaining = (self.project.count_in_bars as f64)
+                                * self.project.time_signature.beats_per_bar();
+                        }
+                        self.record_start_beat = if self.project.punch_in_enabled {
+                            self.project.punch_start_beat.max(self.core.playhead_beat)
+                        } else {
+                            self.core.playhead_beat
+                        };
                         self.rec_midi.clear();
                         self.rec_audio_l.clear();
                         self.rec_audio_r.clear();
@@ -790,6 +820,13 @@ impl RtCallbackState {
                         self.live_midi_block
                             .extend_from_slice(&self.sustain_release_scratch);
                     } else {
+                        let norm = (value as f32 / 127.0).clamp(0.0, 1.0);
+                        match cc {
+                            1 => self.core.live_mod_wheel = norm,
+                            11 => self.core.live_expression = norm,
+                            74 => self.core.live_brightness = (norm - 0.5) * 2.0,
+                            _ => {}
+                        }
                         self.last_midi_cc = Some((channel, cc, value));
                         let _ = self.project.apply_midi_cc(
                             channel,
@@ -799,6 +836,9 @@ impl RtCallbackState {
                             self.core.is_playing,
                         );
                     }
+                }
+                HwMidiPacket::PitchBend { semitones } => {
+                    self.core.live_pitch_bend_semi = semitones;
                 }
             }
         }
@@ -823,8 +863,7 @@ impl RtCallbackState {
                 self.retro_audio_r[self.retro_audio_pos] = ir * self.core.input_gain_lin;
                 self.retro_audio_pos = (self.retro_audio_pos + 1) % retro_cap;
 
-                if self.is_recording
-                    && self.core.is_playing
+                if self.is_actively_recording_now()
                     && self.rec_audio_l.len() < self.rec_audio_l.capacity()
                 {
                     self.rec_audio_l.push(il * self.core.input_gain_lin);
@@ -867,12 +906,25 @@ impl RtCallbackState {
                 }
             }
 
+            // Auto-Punch-Out commit when crossing punch_end_beat!
             if self.is_recording
+                && self.core.is_playing
+                && self.project.punch_in_enabled
+                && prev_beat < self.project.punch_end_beat
+                && self.core.playhead_beat >= self.project.punch_end_beat
+            {
+                self.flush_live_recording_at(self.project.punch_end_beat);
+                self.is_recording = false;
+            } else if self.is_recording
                 && self.core.is_playing
                 && self.core.playhead_beat < prev_beat - 0.5
             {
                 self.flush_live_recording_at(self.project.loop_end_beat);
-                self.record_start_beat = self.project.loop_start_beat;
+                self.record_start_beat = if self.project.punch_in_enabled {
+                    self.project.punch_start_beat
+                } else {
+                    self.project.loop_start_beat
+                };
             }
 
             for i in 0..chunk {
@@ -908,9 +960,11 @@ impl RtCallbackState {
                 is_playing: self.core.is_playing,
                 is_recording: self.is_recording,
                 playhead_beat: self.core.playhead_beat,
+                count_in_beats_remaining: self.core.count_in_beats_remaining as f32,
                 sample_rate: self.core.sample_rate as u32,
                 cpu_load_percent: self.smoothed_cpu,
                 input_peak_db: lin_to_db(max_in_peak),
+                detected_input_bpm: self.core.input_bpm_detector.detected_bpm,
                 total_pdc_samples: self.core.total_pdc_samples as u32,
                 sustain_down: self.core.sustain_pedal_down,
                 last_midi_note: self.last_midi_note,
@@ -922,6 +976,20 @@ impl RtCallbackState {
                 track_meter_count: self.core.track_meter_count,
                 retro_midi_events_buffered: self.retro_midi_len,
             });
+        }
+    }
+
+    #[inline]
+    fn is_actively_recording_now(&self) -> bool {
+        if !self.is_recording || !self.core.is_playing || self.core.count_in_beats_remaining > 1e-5
+        {
+            return false;
+        }
+        if self.project.punch_in_enabled {
+            let b = self.core.playhead_beat;
+            b >= self.project.punch_start_beat && b <= self.project.punch_end_beat
+        } else {
+            true
         }
     }
 
@@ -937,10 +1005,7 @@ impl RtCallbackState {
         self.retro_midi_pos = (self.retro_midi_pos + 1) % RETRO_MIDI_CAP;
         self.retro_midi_len = (self.retro_midi_len + 1).min(RETRO_MIDI_CAP);
 
-        if self.is_recording
-            && self.core.is_playing
-            && self.rec_midi.len() < self.rec_midi.capacity()
-        {
+        if self.is_actively_recording_now() && self.rec_midi.len() < self.rec_midi.capacity() {
             self.rec_midi.push(ev);
         }
     }
@@ -1187,5 +1252,43 @@ mod tests {
         let frozen_buf =
             render_track_freeze_buffer(&proj, synth_tid, 48_000).expect("freeze buffer");
         assert!(frozen_buf.len_frames() > 48_000);
+    }
+
+    #[test]
+    fn session_bundle_persists_and_reloads_long_recorded_audio() {
+        let mut proj = Project::new_empty("Long Recording Persistence Test");
+        let tid = proj.add_track("DS-10 Line-In");
+        // 12 seconds @ 48 kHz = 576,000 samples (exceeds 10-second inline limit!)
+        let frames = 48_000 * 12;
+        let left = vec![0.25_f32; frames];
+        let right = vec![-0.25_f32; frames];
+        let long_buf = AudioBuffer::from_stereo(48_000, left, right, None);
+        proj.find_track_mut(tid)
+            .unwrap()
+            .clips
+            .push(ferric_model::TimelineClip::new_audio(
+                "12s DS-10 Jam",
+                0.0,
+                24.0,
+                long_buf,
+            ));
+
+        let bundle_dir = std::env::temp_dir().join("ferric_bundle_test_dir");
+        let _ = std::fs::remove_dir_all(&bundle_dir);
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+        let proj_file = bundle_dir.join("ds10_jam.ferric");
+
+        save_project_bundle(&mut proj, &proj_file).expect("save bundle");
+        assert!(bundle_dir.join("ds10_jam_Audio").is_dir());
+
+        let reloaded = load_project_bundle(&proj_file, 48_000).expect("load bundle");
+        let take = &reloaded.tracks[0].clips[0].takes[0];
+        match &take.content {
+            ferric_model::TakeContent::Audio { buffer } => {
+                assert_eq!(buffer.len_frames(), frames);
+            }
+            _ => panic!("expected audio take"),
+        }
+        let _ = std::fs::remove_dir_all(&bundle_dir);
     }
 }

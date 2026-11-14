@@ -220,6 +220,56 @@ pub const STUDIO_TRACK_COLORS: &[[u8; 3]] = &[
     [92, 176, 232],  // Sky Bus
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ArpMode {
+    #[default]
+    Up,
+    Down,
+    UpDown,
+    ChordGate,
+}
+
+impl ArpMode {
+    pub const ALL: &'static [ArpMode] = &[
+        ArpMode::Up,
+        ArpMode::Down,
+        ArpMode::UpDown,
+        ArpMode::ChordGate,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ArpMode::Up => "Up",
+            ArpMode::Down => "Down",
+            ArpMode::UpDown => "Up/Down",
+            ArpMode::ChordGate => "Chord Gate",
+        }
+    }
+}
+
+/// Built-in Tempo-Synced MIDI Arpeggiator / Note-Repeat per Track (pairs great with Akai LPK25!).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackArpeggiator {
+    pub enabled: bool,
+    pub mode: ArpMode,
+    /// Step division in beats (`0.25` = 1/16, `0.333` = 1/8T, `0.5` = 1/8, `1.0` = 1/4).
+    pub rate_beats: f32,
+    pub octaves: u8,
+    pub gate: f32,
+}
+
+impl Default for TrackArpeggiator {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: ArpMode::Up,
+            rate_beats: 0.25,
+            octaves: 2,
+            gate: 0.72,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
@@ -237,6 +287,8 @@ pub struct Track {
     pub input_monitoring: bool,
     pub phase_invert: bool,
     pub input_source: InputSource,
+    #[serde(default)]
+    pub arpeggiator: TrackArpeggiator,
     pub fx_chain: Vec<FxSlot>,
     pub modulators: Vec<ModulatorSlot>,
     pub sends: Vec<TrackSend>,
@@ -275,6 +327,7 @@ impl Track {
             input_monitoring: true,
             phase_invert: false,
             input_source: InputSource::AudioAndMidi { stereo_pair: 0 },
+            arpeggiator: TrackArpeggiator::default(),
             fx_chain: Vec::new(),
             modulators: Vec::new(),
             sends: Vec::new(),

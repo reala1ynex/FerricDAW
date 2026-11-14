@@ -45,6 +45,7 @@ pub struct ArrangementState {
     pub pixels_per_beat: f32,
     pub scroll_beat: f64,
     pub tool: EditTool,
+    pub ripple_edit: bool,
     pub show_session_launcher: bool,
     drag_clip: Option<(TrackId, ClipId, DragKind, f64)>,
 }
@@ -61,6 +62,7 @@ impl Default for ArrangementState {
             pixels_per_beat: 42.0,
             scroll_beat: 0.0,
             tool: EditTool::SmartPointer,
+            ripple_edit: false,
             show_session_launcher: true,
             drag_clip: None,
         }
@@ -103,16 +105,31 @@ impl ArrangementState {
             ui.label(egui::RichText::new("Snap:").size(11.0).color(TEXT_DIM));
             egui::ComboBox::from_id_salt("snap_grid_combo")
                 .selected_text(project.snap_grid.label())
-                .width(100.0)
+                .width(96.0)
                 .show_ui(ui, |ui| {
                     for &g in SnapGrid::ALL {
                         ui.selectable_value(&mut project.snap_grid, g, g.label());
                     }
                 });
 
+            if pill_toggle(ui, "⛓ Ripple", self.ripple_edit, ACCENT_AMBER)
+                .on_hover_text("Ripple Edit Mode: Deleting clips shifts later clips on the track left automatically!")
+                .clicked()
+            {
+                self.ripple_edit = !self.ripple_edit;
+            }
+
             ui.separator();
+            ui.spacing_mut().slider_width = 76.0;
             ui.label(egui::RichText::new("Zoom:").size(11.0).color(TEXT_DIM));
-            ui.add(egui::Slider::new(&mut self.pixels_per_beat, 16.0..=140.0).show_value(false));
+            ui.add(egui::Slider::new(&mut self.pixels_per_beat, 14.0..=140.0).show_value(false));
+
+            let max_scroll = (project.project_end_beat() + 32.0).max(64.0);
+            ui.label(egui::RichText::new("Pos:").size(11.0).color(TEXT_DIM));
+            ui.add(egui::Slider::new(&mut self.scroll_beat, 0.0..=max_scroll).show_value(false))
+                .on_hover_text(
+                    "Horizontal Song Scrollbar (or Shift + MouseWheel / Middle-Mouse Drag)",
+                );
 
             if ui.button("+ Track").clicked() {
                 actions.push(ArrangementAction::AddTrack);
@@ -163,11 +180,31 @@ impl ArrangementState {
         };
         let ruler_h = 28.0_f32;
 
-        // Ctrl + MouseWheel horizontal timeline zoom
+        // Ctrl + MouseWheel horizontal zoom, Shift + MouseWheel or Middle-Mouse drag horizontal pan!
         if ui.rect_contains_pointer(ui.max_rect()) {
-            let scroll = ui.input(|i| (i.modifiers.ctrl, i.smooth_scroll_delta));
-            if scroll.0 && scroll.1.y.abs() > 0.1 {
-                self.pixels_per_beat = (self.pixels_per_beat * (1.0 + scroll.1.y * 0.003)).clamp(14.0, 160.0);
+            let (ctrl, shift, scroll, mid_down, ptr_delta) = ui.input(|i| {
+                (
+                    i.modifiers.ctrl,
+                    i.modifiers.shift,
+                    i.smooth_scroll_delta,
+                    i.pointer.middle_down(),
+                    i.pointer.delta(),
+                )
+            });
+            if ctrl && scroll.y.abs() > 0.1 {
+                self.pixels_per_beat =
+                    (self.pixels_per_beat * (1.0 + scroll.y * 0.003)).clamp(14.0, 160.0);
+            } else if shift && (scroll.y.abs() > 0.1 || scroll.x.abs() > 0.1) {
+                let delta_px = if scroll.x.abs() > 0.1 { scroll.x } else { scroll.y };
+                self.scroll_beat =
+                    (self.scroll_beat - (delta_px / self.pixels_per_beat) as f64).max(0.0);
+            } else if scroll.x.abs() > 0.1 {
+                self.scroll_beat =
+                    (self.scroll_beat - (scroll.x / self.pixels_per_beat) as f64).max(0.0);
+            }
+            if mid_down && ptr_delta.x.abs() > 0.1 {
+                self.scroll_beat =
+                    (self.scroll_beat - (ptr_delta.x / self.pixels_per_beat) as f64).max(0.0);
             }
         }
 
@@ -295,7 +332,7 @@ impl ArrangementState {
                 + ((project.loop_end_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
             let lrect = Rect::from_min_max(
                 Pos2::new(lx0.max(ruler_tl_rect.left()), ruler_tl_rect.top()),
-                Pos2::new(lx1.min(ruler_tl_rect.right()), ruler_tl_rect.top() + 8.0),
+                Pos2::new(lx1.min(ruler_tl_rect.right()), ruler_tl_rect.top() + 7.0),
             );
             if lrect.width() > 1.0 {
                 let col = if project.loop_enabled {
@@ -304,6 +341,25 @@ impl ArrangementState {
                     Color32::from_rgba_unmultiplied(110, 115, 130, 110)
                 };
                 ui.painter().rect_filled(lrect, 2, col);
+            }
+        }
+
+        // Auto Punch-In / Punch-Out Crimson Bracket on ruler!
+        if project.punch_in_enabled && project.punch_end_beat > project.punch_start_beat {
+            let px0 = ruler_tl_rect.left()
+                + ((project.punch_start_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
+            let px1 = ruler_tl_rect.left()
+                + ((project.punch_end_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
+            let prect = Rect::from_min_max(
+                Pos2::new(px0.max(ruler_tl_rect.left()), ruler_tl_rect.top() + 7.0),
+                Pos2::new(px1.min(ruler_tl_rect.right()), ruler_tl_rect.top() + 13.0),
+            );
+            if prect.width() > 1.0 {
+                ui.painter().rect_filled(
+                    prect,
+                    2,
+                    Color32::from_rgba_unmultiplied(232, 74, 86, 210),
+                );
             }
         }
 

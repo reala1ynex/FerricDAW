@@ -153,6 +153,7 @@ const MAX_VOICES: usize = 16;
 pub struct PolySynthProcessor {
     voices: [SynthVoice; MAX_VOICES],
     voice_counter: u64,
+    vibrato_phase: f32,
     sample_rate: f32,
 }
 
@@ -161,6 +162,7 @@ impl PolySynthProcessor {
         Self {
             voices: [SynthVoice::default(); MAX_VOICES],
             voice_counter: 0,
+            vibrato_phase: 0.0,
             sample_rate: sample_rate.max(8_000.0),
         }
     }
@@ -224,6 +226,23 @@ impl PolySynthProcessor {
         params: &[f32],
         midi_events: &[MidiEvent],
     ) {
+        self.process_with_expression(
+            left,
+            right,
+            params,
+            midi_events,
+            crate::tempo_arp::MidiExpression::default(),
+        );
+    }
+
+    pub fn process_with_expression(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        midi_events: &[MidiEvent],
+        expr: crate::tempo_arp::MidiExpression,
+    ) {
         let waveform = params.first().copied().unwrap_or(0.0).round() as i32;
         let sub_detune = params.get(1).copied().unwrap_or(28.0) * 0.01;
         let base_cutoff = params.get(2).copied().unwrap_or(2600.0);
@@ -233,10 +252,12 @@ impl PolySynthProcessor {
         let decay = params.get(6).copied().unwrap_or(320.0);
         let sustain = (params.get(7).copied().unwrap_or(65.0) * 0.01).clamp(0.0, 1.0);
         let release = params.get(8).copied().unwrap_or(280.0);
-        let out_gain = 10.0_f32.powf(params.get(9).copied().unwrap_or(-3.0) / 20.0);
+        let out_gain = 10.0_f32.powf(params.get(9).copied().unwrap_or(-3.0) / 20.0)
+            * expr.expression.clamp(0.0, 1.5);
 
         let frames = left.len().min(right.len());
         let mut ev_idx = 0;
+        let vib_inc = 5.6 / self.sample_rate;
 
         for frame in 0..frames {
             while ev_idx < midi_events.len() && midi_events[ev_idx].sample_offset <= frame {
@@ -248,6 +269,10 @@ impl PolySynthProcessor {
                 }
                 ev_idx += 1;
             }
+
+            self.vibrato_phase = (self.vibrato_phase + vib_inc).fract();
+            let vib_semi = (TAU * self.vibrato_phase).sin() * expr.mod_wheel * 0.45;
+            let total_bend_semi = expr.pitch_bend_semitones + vib_semi;
 
             let mut sum_l = 0.0_f32;
             let mut sum_r = 0.0_f32;
@@ -269,7 +294,8 @@ impl PolySynthProcessor {
                     release,
                 );
 
-                let freq = 440.0 * 2.0_f32.powf((v.note as f32 - 69.0) / 12.0);
+                let freq =
+                    440.0 * 2.0_f32.powf((v.note as f32 + total_bend_semi - 69.0) / 12.0);
                 let dt = (freq / self.sample_rate).clamp(1e-5, 0.45);
                 let detune_ratio = 1.0 + 0.0085 * sub_detune;
                 let dt_det = (dt * detune_ratio).min(0.45);
@@ -287,7 +313,7 @@ impl PolySynthProcessor {
                 let raw_r = osc_a * (0.45 + 0.2 * (1.0 - sub_detune)) + osc_b * (0.45 * sub_detune) + sub;
 
                 let key_track = 2.0_f32.powf((v.note as f32 - 60.0) / 24.0);
-                let mod_octaves = f_env * flt_env_amt * 3.5;
+                let mod_octaves = f_env * flt_env_amt * 3.5 + expr.brightness_offset * 2.0;
                 let cutoff = (base_cutoff * key_track * 2.0_f32.powf(mod_octaves))
                     .clamp(45.0, self.sample_rate * 0.45);
 

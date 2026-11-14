@@ -28,6 +28,7 @@ pub enum BrowserAction {
         input: Option<String>,
     },
     SetInputGainDb(f32),
+    LockDetectedBpm(f64),
     KaossNote {
         note: u8,
         is_note_on: bool,
@@ -391,13 +392,36 @@ impl StudioBrowserState {
                                 ACCENT_TEAL,
                             );
                         }
-                        ui.label(
-                            egui::RichText::new(
-                                "Tip: Match FerricDAW BPM to your KORG DS-10 screen (or click TAP in top bar) — loops lock tight!",
-                            )
-                            .size(9.5)
-                            .color(TEXT_DIM),
-                        );
+                        if let Some(det_bpm) = telem.detected_input_bpm {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "🎯 Line-In Tempo: {:.1} BPM",
+                                        det_bpm
+                                    ))
+                                    .size(10.5)
+                                    .strong()
+                                    .color(ACCENT_AMBER),
+                                );
+                                if ui
+                                    .small_button("⚡ Lock BPM")
+                                    .on_hover_text(
+                                        "Sync FerricDAW project BPM to the beat detected on Nintendo DS / Line-In!",
+                                    )
+                                    .clicked()
+                                {
+                                    actions.push(BrowserAction::LockDetectedBpm(det_bpm as f64));
+                                }
+                            });
+                        } else {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Play a 4-bar beat on your KORG DS-10 over Line-In for automatic BPM detection (or click TAP)!",
+                                )
+                                .size(9.5)
+                                .color(TEXT_DIM),
+                            );
+                        }
                     });
             });
     }

@@ -1,11 +1,11 @@
 use ferric_dsp::{
-    db_to_lin, lin_to_db, sample_wsola_decoupled, ChromaticTuner, FxRuntimeInstance,
-    LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, MidiEvent, ModulatorRuntime, TunerReading,
-    VocalPitchTelemetry,
+    db_to_lin, lin_to_db, sample_wsola_decoupled, ArpRuntime, ChromaticTuner, FxRuntimeInstance,
+    LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, MidiEvent, MidiExpression, ModulatorRuntime,
+    OnsetBpmDetector, TunerReading, VocalPitchTelemetry,
 };
 use ferric_model::{
-    AutomationTarget, InputSource, ModTarget, ModulatorId, Project, SendTap, TakeContent,
-    TimeStretchMode, TimelineClip, Track, TrackId,
+    eval_midi_cc_curve, AutomationTarget, InputSource, MidiCcTarget, ModTarget, ModulatorId,
+    Project, SendTap, TakeContent, TimeStretchMode, TimelineClip, Track, TrackId,
 };
 use std::f32::consts::TAU;
 
@@ -62,12 +62,20 @@ pub struct AudioGraphCore {
     pub max_block: usize,
     pub is_playing: bool,
     pub playhead_beat: f64,
+    pub count_in_beats_remaining: f64,
     pub input_gain_lin: f32,
     pub sustain_pedal_down: bool,
+    pub live_pitch_bend_semi: f32,
+    pub live_mod_wheel: f32,
+    pub live_expression: f32,
+    pub live_brightness: f32,
+    clip_midi_expr: MidiExpression,
     held_sustain_notes: [bool; 128],
     fx_pool: Vec<FxRuntimeInstance>,
     mod_pool: Vec<ModulatorRuntime>,
+    arp_lanes: Vec<ArpRuntime>,
     pub input_tuner: ChromaticTuner,
+    pub input_bpm_detector: OnsetBpmDetector,
     pub master_analyzer: LoudnessAndSpectrumAnalyzer,
     pub last_master_meter: MasterMeterSnapshot,
     pub last_vocal_pitch: VocalPitchTelemetry,
@@ -99,12 +107,20 @@ impl AudioGraphCore {
             max_block: blk,
             is_playing: false,
             playhead_beat: 0.0,
+            count_in_beats_remaining: 0.0,
             input_gain_lin: 1.0,
             sustain_pedal_down: false,
+            live_pitch_bend_semi: 0.0,
+            live_mod_wheel: 0.0,
+            live_expression: 1.0,
+            live_brightness: 0.0,
+            clip_midi_expr: MidiExpression::default(),
             held_sustain_notes: [false; 128],
             fx_pool: Vec::with_capacity(160),
             mod_pool: Vec::with_capacity(64),
+            arp_lanes: (0..MAX_ENGINE_TRACKS).map(|_| ArpRuntime::new()).collect(),
             input_tuner: ChromaticTuner::new(sample_rate),
+            input_bpm_detector: OnsetBpmDetector::new(sample_rate),
             master_analyzer: LoudnessAndSpectrumAnalyzer::new(sample_rate),
             last_master_meter: MasterMeterSnapshot::default(),
             last_vocal_pitch: VocalPitchTelemetry::default(),
@@ -206,6 +222,9 @@ impl AudioGraphCore {
     pub fn all_notes_off(&mut self) {
         self.sustain_pedal_down = false;
         self.held_sustain_notes = [false; 128];
+        for arp in &mut self.arp_lanes {
+            arp.reset();
+        }
         for fx in &mut self.fx_pool {
             match &mut fx.processor {
                 ferric_dsp::DspProcessor::PolySynth(s) => s.all_notes_off(),
@@ -247,6 +266,8 @@ impl AudioGraphCore {
         if hw_in_l.len() >= frames && hw_in_r.len() >= frames {
             self.input_tuner
                 .push_block(&hw_in_l[..frames], &hw_in_r[..frames]);
+            self.input_bpm_detector
+                .push_block(&hw_in_l[..frames], &hw_in_r[..frames]);
         }
 
         let num_tracks = project.tracks.len().min(MAX_ENGINE_TRACKS);
@@ -278,6 +299,8 @@ impl AudioGraphCore {
         self.total_pdc_samples = max_pdc;
 
         let beats_per_sample = (project.bpm.max(20.0) / 60.0) / self.sample_rate as f64;
+        let in_count_in = self.is_playing && self.count_in_beats_remaining > 1e-5;
+        let arrangement_playing = self.is_playing && !in_count_in;
         let block_start_beat = self.playhead_beat;
         let block_end_beat = block_start_beat + beats_per_sample * frames as f64;
         let any_solo = project.tracks.iter().take(num_tracks).any(|t| t.solo);
@@ -304,7 +327,7 @@ impl AudioGraphCore {
 
             // FAST PATH: 1-Click Frozen Track streams pre-rendered 32-bit stem at ~0.0% DSP CPU!
             if track.frozen {
-                if self.is_playing {
+                if arrangement_playing {
                     if let Some(ref fbuf) = track.frozen_buffer {
                         let spb = 60.0 / project.bpm.max(20.0);
                         for i in 0..frames {
@@ -318,6 +341,12 @@ impl AudioGraphCore {
                 }
             } else {
                 self.midi_scratch.clear();
+                self.clip_midi_expr = MidiExpression {
+                    pitch_bend_semitones: self.live_pitch_bend_semi,
+                    mod_wheel: self.live_mod_wheel,
+                    expression: self.live_expression,
+                    brightness_offset: self.live_brightness,
+                };
 
                 // 1. Live MIDI input (including Akai LPK25 + Sustain Pedal CC64 support!)
                 for &(target_opt, ev) in live_midi {
@@ -367,7 +396,7 @@ impl AudioGraphCore {
                 }
 
                 // 3. Session Clip Launcher OR Linear Arrangement Clips
-                if self.is_playing {
+                if arrangement_playing {
                     if let Some(slot_idx) = track.active_session_slot {
                         if let Some(Some(slot)) = track.session_slots.get(slot_idx) {
                             self.evaluate_session_slot(
@@ -396,6 +425,18 @@ impl AudioGraphCore {
                     }
                 }
 
+                self.midi_scratch.sort_by_key(|e| e.sample_offset);
+
+                // 3b. Track MIDI Arpeggiator / Note-Repeat!
+                self.arp_lanes[t_idx].process_midi_block(
+                    &track.arpeggiator,
+                    frames,
+                    self.sample_rate,
+                    project.bpm,
+                    arrangement_playing,
+                    block_start_beat,
+                    &mut self.midi_scratch,
+                );
                 self.midi_scratch.sort_by_key(|e| e.sample_offset);
                 let pre_rms =
                     compute_rms(&self.bus_l[t_idx][..frames], &self.bus_r[t_idx][..frames]);
@@ -494,13 +535,14 @@ impl AudioGraphCore {
                     if let Some(inst) = self.fx_pool.iter_mut().find(|i| i.id == fx.id) {
                         let sc_slices = sc_idx_opt
                             .map(|si| (&self.sc_l[si][..frames], &self.sc_r[si][..frames]));
-                        inst.process_block_with_sidechain(
+                        inst.process_block_full(
                             &mut self.bus_l[t_idx][..frames],
                             &mut self.bus_r[t_idx][..frames],
                             &self.param_scratch,
                             wet,
                             project.bpm,
                             &self.midi_scratch,
+                            self.clip_midi_expr,
                             sc_slices,
                         );
                         max_gr_db = max_gr_db.max(inst.gain_reduction_db());
@@ -650,11 +692,18 @@ impl AudioGraphCore {
             }
         }
 
-        // 12. Metronome Click
-        if self.is_playing && project.metronome_enabled {
+        // 12. Metronome Click (always clicks during Count-In pre-roll, or when Click is enabled!)
+        if self.is_playing && (in_count_in || project.metronome_enabled) {
+            let click_ref_beat = if in_count_in {
+                let bpb = project.time_signature.beats_per_bar();
+                let total_ci = (project.count_in_bars.max(1) as f64) * bpb;
+                total_ci - self.count_in_beats_remaining
+            } else {
+                block_start_beat
+            };
             self.mix_metronome(
                 project,
-                block_start_beat,
+                click_ref_beat,
                 beats_per_sample,
                 &mut out_l[..frames],
                 &mut out_r[..frames],
@@ -687,14 +736,25 @@ impl AudioGraphCore {
             .analyze_block(&out_l[..frames], &out_r[..frames]);
 
         if self.is_playing {
-            let mut next_beat = block_end_beat;
-            if project.loop_enabled && project.loop_end_beat > project.loop_start_beat + 0.25 {
-                if block_start_beat < project.loop_end_beat && next_beat >= project.loop_end_beat {
-                    let overshoot = next_beat - project.loop_end_beat;
-                    next_beat = project.loop_start_beat + overshoot;
+            if in_count_in {
+                let step_b = beats_per_sample * frames as f64;
+                if self.count_in_beats_remaining <= step_b {
+                    self.count_in_beats_remaining = 0.0;
+                    self.last_click_step = -1;
+                } else {
+                    self.count_in_beats_remaining -= step_b;
                 }
+            } else {
+                let mut next_beat = block_end_beat;
+                if project.loop_enabled && project.loop_end_beat > project.loop_start_beat + 0.25 {
+                    if block_start_beat < project.loop_end_beat && next_beat >= project.loop_end_beat
+                    {
+                        let overshoot = next_beat - project.loop_end_beat;
+                        next_beat = project.loop_start_beat + overshoot;
+                    }
+                }
+                self.playhead_beat = next_beat;
             }
-            self.playhead_beat = next_beat;
         } else {
             self.last_click_step = -1;
         }
@@ -791,7 +851,32 @@ impl AudioGraphCore {
 
             if let Some(take) = clip.takes.get(take_idx) {
                 match &take.content {
-                    TakeContent::Midi { notes, .. } => {
+                    TakeContent::Midi { notes, cc_points } => {
+                        if i == 0 && !cc_points.is_empty() {
+                            if let Some(pb) =
+                                eval_midi_cc_curve(cc_points, MidiCcTarget::PitchBend, inner_beat)
+                            {
+                                self.clip_midi_expr.pitch_bend_semitones += (pb - 0.5) * 4.0;
+                            }
+                            if let Some(mw) =
+                                eval_midi_cc_curve(cc_points, MidiCcTarget::ModWheel, inner_beat)
+                            {
+                                self.clip_midi_expr.mod_wheel =
+                                    self.clip_midi_expr.mod_wheel.max(mw);
+                            }
+                            if let Some(ex) =
+                                eval_midi_cc_curve(cc_points, MidiCcTarget::Expression, inner_beat)
+                            {
+                                self.clip_midi_expr.expression *= ex;
+                            }
+                            if let Some(br) = eval_midi_cc_curve(
+                                cc_points,
+                                MidiCcTarget::FilterBrightness,
+                                inner_beat,
+                            ) {
+                                self.clip_midi_expr.brightness_offset += (br - 0.5) * 2.0;
+                            }
+                        }
                         let b1 = inner_beat
                             + beats_per_sample * (clip.stretch_rate.clamp(0.125, 8.0) as f64);
                         for n in notes {

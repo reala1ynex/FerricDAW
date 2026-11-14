@@ -440,3 +440,133 @@ pub fn render_all_stems_offline(
         short_term_lufs: last_lufs,
     })
 }
+
+/// Saves a complete FerricDAW Session Bundle: writes any recorded or generated long audio takes
+/// losslessly (32-bit float WAV) into `<ProjectStem>_Audio/` beside the `.ferric`/`.json` project file!
+pub fn save_project_bundle(project: &mut Project, project_file: &Path) -> Result<(), String> {
+    let parent = project_file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = project_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session");
+    let audio_dir = parent.join(format!("{}_Audio", stem));
+
+    let persist_buf = |buf: &mut AudioBuffer, label_id: &str| -> Result<(), String> {
+        if buf.len_frames() == 0 {
+            return Ok(());
+        }
+        let needs_write = match &buf.source_path {
+            None => true,
+            Some(existing) => !existing.exists(),
+        };
+        if needs_write {
+            std::fs::create_dir_all(&audio_dir).map_err(|e| e.to_string())?;
+            let wav_path = audio_dir.join(format!("{}.wav", label_id));
+            write_wav_file(
+                &wav_path,
+                buf.sample_rate,
+                BitDepth::Float32,
+                &buf.left,
+                &buf.right,
+            )
+            .map_err(|e| e.to_string())?;
+            buf.source_path = Some(wav_path);
+        }
+        Ok(())
+    };
+
+    for track in &mut project.tracks {
+        for clip in &mut track.clips {
+            for take in &mut clip.takes {
+                let tid = take.id.to_string();
+                if let ferric_model::TakeContent::Audio { buffer } = &mut take.content {
+                    persist_buf(buffer, &format!("take_{}", tid))?;
+                }
+            }
+        }
+        for slot in track.session_slots.iter_mut().flatten() {
+            let sid = slot.id.to_string();
+            if let ferric_model::TakeContent::Audio { buffer } = &mut slot.content {
+                persist_buf(buffer, &format!("slot_{}", sid))?;
+            }
+        }
+        for fx in &mut track.fx_chain {
+            let fid = fx.id.to_string();
+            if let Some(ref mut sbuf) = fx.sampler_buffer {
+                persist_buf(sbuf, &format!("sampler_{}", fid))?;
+            }
+        }
+    }
+
+    project
+        .save_to_file(project_file)
+        .map_err(|e| e.to_string())
+}
+
+/// Loads a `.ferric` or `.json` project and automatically re-hydrates all external `AudioBuffer` WAV/FLAC/MP3/OGG files!
+pub fn load_project_bundle(
+    project_file: &Path,
+    target_sample_rate: u32,
+) -> Result<Project, String> {
+    let mut project = Project::load_from_file(project_file).map_err(|e| e.to_string())?;
+    let base_dir = project_file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = project_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("session");
+    let companion_audio_dir = base_dir.join(format!("{}_Audio", stem));
+
+    let resolve_and_load = |buf: &mut AudioBuffer| {
+        if buf.len_frames() > 0 {
+            return;
+        }
+        let Some(ref src) = buf.source_path.clone() else {
+            return;
+        };
+        let candidate = if src.exists() {
+            Some(src.clone())
+        } else if base_dir.join(src).exists() {
+            Some(base_dir.join(src))
+        } else {
+            src.file_name()
+                .map(|fname| companion_audio_dir.join(fname))
+                .filter(|p| p.exists())
+        };
+        if let Some(valid_path) = candidate {
+            if let Ok(loaded) = import_audio_file(&valid_path, target_sample_rate) {
+                *buf = loaded;
+            }
+        }
+    };
+
+    for track in &mut project.tracks {
+        for clip in &mut track.clips {
+            for take in &mut clip.takes {
+                if let ferric_model::TakeContent::Audio { buffer } = &mut take.content {
+                    resolve_and_load(buffer);
+                }
+            }
+        }
+        for slot in track.session_slots.iter_mut().flatten() {
+            if let ferric_model::TakeContent::Audio { buffer } = &mut slot.content {
+                resolve_and_load(buffer);
+            }
+        }
+        for fx in &mut track.fx_chain {
+            if let Some(ref mut sbuf) = fx.sampler_buffer {
+                resolve_and_load(sbuf);
+                if fx.sampler_slices.is_empty() && sbuf.len_frames() > 0 {
+                    fx.sampler_slices = sbuf.detect_transients(16);
+                }
+            }
+        }
+    }
+
+    Ok(project)
+}

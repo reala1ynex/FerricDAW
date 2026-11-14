@@ -12,9 +12,9 @@ use browser::{BrowserAction, KaossPadState, StudioBrowserState, TapTempoTracker}
 use eframe::egui;
 use egui::{Color32, Context, Key, Stroke};
 use ferric_engine::{
-    audio_buffer_from_capture, import_audio_file, render_all_stems_offline, render_master_offline,
-    render_track_freeze_buffer, BitDepth, BounceReport, CapturedTakeEvent, EngineCommand,
-    EngineHandle,
+    audio_buffer_from_capture, import_audio_file, load_project_bundle, render_all_stems_offline,
+    render_master_offline, render_track_freeze_buffer, save_project_bundle, BitDepth, BounceReport,
+    CapturedTakeEvent, EngineCommand, EngineHandle,
 };
 use ferric_model::{
     build_demo_project, import_smf_file, AutomationTarget, ClipId, FxKind, FxSlot, HistoryManager,
@@ -72,6 +72,9 @@ struct FerricDawApp {
     inspect_master_fx: bool,
     selected_track: Option<TrackId>,
     selected_clip: Option<(TrackId, ClipId)>,
+    clipboard_clip: Option<TimelineClip>,
+    dirty_since_autosave: bool,
+    last_autosave_inst: std::time::Instant,
     pending_midi_learn: Option<PendingMidiLearn>,
     musical_typing_enabled: bool,
     musical_typing_octave: i8,
@@ -133,6 +136,9 @@ impl FerricDawApp {
             bottom_tab: BottomTab::FxAndModulators,
             show_bottom_dock: true,
             inspect_master_fx: false,
+            clipboard_clip: None,
+            dirty_since_autosave: false,
+            last_autosave_inst: std::time::Instant::now(),
             pending_midi_learn: None,
             musical_typing_enabled: true,
             musical_typing_octave: 4,
@@ -145,10 +151,58 @@ impl FerricDawApp {
 
     fn snapshot_before(&mut self, label: &'static str) {
         self.history.record(label, self.project.clone());
+        self.dirty_since_autosave = true;
     }
 
     fn sync_engine(&mut self) {
         self.engine.sync_project(&self.project);
+        self.dirty_since_autosave = true;
+    }
+
+    fn autosave_recovery_path() -> PathBuf {
+        let base = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir());
+        base.join("FerricDAW")
+            .join("autosave")
+            .join("recovery.ferric")
+    }
+
+    fn tick_autosave(&mut self) {
+        if self.dirty_since_autosave
+            && self.last_autosave_inst.elapsed().as_secs() >= 60
+            && !self.engine.latest_telemetry.is_recording
+        {
+            let path = Self::autosave_recovery_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if save_project_bundle(&mut self.project, &path).is_ok() {
+                self.dirty_since_autosave = false;
+                self.last_autosave_inst = std::time::Instant::now();
+            }
+        }
+    }
+
+    fn recover_autosave(&mut self) {
+        let path = Self::autosave_recovery_path();
+        if !path.exists() {
+            self.status_banner = "No autosave recovery snapshot found yet.".into();
+            return;
+        }
+        match load_project_bundle(&path, self.engine.sample_rate) {
+            Ok(loaded) => {
+                self.snapshot_before("Recover Autosave");
+                self.project = loaded;
+                self.selected_track = self.project.tracks.first().map(|t| t.id);
+                self.selected_clip = None;
+                self.sync_engine();
+                self.status_banner = format!("✓ Recovered session from {}", path.display());
+            }
+            Err(e) => {
+                self.status_banner = format!("Autosave recovery failed: {}", e);
+            }
+        }
     }
 
     fn perform_undo(&mut self) {
@@ -630,10 +684,12 @@ impl FerricDawApp {
                 .save_file()
         });
         if let Some(p) = path {
-            match self.project.save_to_file(&p) {
+            match save_project_bundle(&mut self.project, &p) {
                 Ok(()) => {
                     self.project_path = Some(p.clone());
-                    self.status_banner = format!("Saved session to {}", p.display());
+                    self.dirty_since_autosave = false;
+                    self.status_banner =
+                        format!("Saved full session & audio bundle to {}", p.display());
                 }
                 Err(e) => {
                     self.status_banner = format!("Save error: {}", e);
@@ -648,7 +704,7 @@ impl FerricDawApp {
             .add_filter("FerricDAW / JSON", &["ferric", "json"])
             .pick_file()
         {
-            match Project::load_from_file(&p) {
+            match load_project_bundle(&p, self.engine.sample_rate) {
                 Ok(loaded) => {
                     self.snapshot_before("Open Project");
                     self.project = loaded;
@@ -656,7 +712,8 @@ impl FerricDawApp {
                     self.selected_track = self.project.tracks.first().map(|t| t.id);
                     self.selected_clip = None;
                     self.sync_engine();
-                    self.status_banner = format!("Opened {}", p.display());
+                    self.dirty_since_autosave = false;
+                    self.status_banner = format!("Opened session bundle {}", p.display());
                 }
                 Err(e) => {
                     self.status_banner = format!("Open error: {}", e);
@@ -757,6 +814,53 @@ impl FerricDawApp {
             }
             return;
         }
+        if ctrl && ctx.input(|i| i.key_pressed(Key::C)) {
+            if let Some((tid, cid)) = self.selected_clip {
+                if let Some(clip) = self.project.find_track(tid).and_then(|t| t.find_clip(cid)) {
+                    self.clipboard_clip = Some(clip.clone());
+                    self.status_banner = format!("Copied clip '{}'", clip.name);
+                }
+            }
+            return;
+        }
+        if ctrl && ctx.input(|i| i.key_pressed(Key::X)) {
+            if let Some((tid, cid)) = self.selected_clip.take() {
+                if let Some(clip) = self
+                    .project
+                    .find_track(tid)
+                    .and_then(|t| t.find_clip(cid))
+                    .cloned()
+                {
+                    self.snapshot_before("Cut Clip");
+                    self.clipboard_clip = Some(clip);
+                    self.project
+                        .delete_clip(tid, cid, self.arrangement.ripple_edit);
+                    self.sync_engine();
+                }
+            }
+            return;
+        }
+        if ctrl && ctx.input(|i| i.key_pressed(Key::V)) {
+            if let Some(mut pasted) = self.clipboard_clip.clone() {
+                let dst_tid = self
+                    .selected_track
+                    .unwrap_or_else(|| self.project.add_track("Pasted Track"));
+                self.snapshot_before("Paste Clip");
+                pasted.id = uuid::Uuid::new_v4();
+                pasted.start_beat = self.project.snap_grid.snap(
+                    self.engine.latest_telemetry.playhead_beat,
+                    self.project.time_signature,
+                );
+                let new_cid = pasted.id;
+                if let Some(trk) = self.project.find_track_mut(dst_tid) {
+                    trk.clips.push(pasted);
+                }
+                self.selected_clip = Some((dst_tid, new_cid));
+                self.sync_engine();
+                self.status_banner = "Pasted clip at Playhead.".into();
+            }
+            return;
+        }
 
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.toggle_play();
@@ -768,9 +872,8 @@ impl FerricDawApp {
         if !ctrl && !shift && ctx.input(|i| i.key_pressed(Key::Delete)) {
             if let Some((tid, cid)) = self.selected_clip.take() {
                 self.snapshot_before("Delete Clip");
-                if let Some(t) = self.project.find_track_mut(tid) {
-                    t.clips.retain(|c| c.id != cid);
-                }
+                self.project
+                    .delete_clip(tid, cid, self.arrangement.ripple_edit);
                 self.sync_engine();
             }
         }
@@ -870,8 +973,12 @@ impl FerricDawApp {
                         self.open_project_dialog();
                         ui.close_menu();
                     }
-                    if ui.button("💾 Save Session (.ferric)...  Ctrl+S").clicked() {
+                    if ui.button("💾 Save Session Bundle (.ferric + Audio)...  Ctrl+S").clicked() {
                         self.save_project_dialog();
+                        ui.close_menu();
+                    }
+                    if ui.button("🛡 Recover Last Crash-Autosave").clicked() {
+                        self.recover_autosave();
                         ui.close_menu();
                     }
                     if ui.button("🎹 Import Standard MIDI File (.mid)...").clicked() {
@@ -916,6 +1023,59 @@ impl FerricDawApp {
                 self.sync_engine();
             }
 
+            // Count-In Bars (0 / 1 / 2 Bars) + Auto Punch-In/Out Popover!
+            let ci_lbl = if self.project.count_in_bars == 0 {
+                "Pre: Off".to_string()
+            } else {
+                format!("Pre: {}b", self.project.count_in_bars)
+            };
+            if pill_toggle(ui, &ci_lbl, self.project.count_in_bars > 0, ACCENT_AMBER)
+                .on_hover_text("Cycle Metronome Count-In before Recording (Off → 1 Bar → 2 Bars)")
+                .clicked()
+            {
+                self.project.count_in_bars = (self.project.count_in_bars + 1) % 3;
+                self.sync_engine();
+            }
+
+            ui.menu_button(
+                egui::RichText::new(if self.project.punch_in_enabled {
+                    "🎯 PUNCH ON"
+                } else {
+                    "Punch"
+                })
+                .size(11.0)
+                .color(if self.project.punch_in_enabled {
+                    ACCENT_RED
+                } else {
+                    TEXT_MAIN
+                }),
+                |ui| {
+                    let mut pch = false;
+                    pch |= ui
+                        .checkbox(&mut self.project.punch_in_enabled, "Enable Auto Punch-In / Out")
+                        .changed();
+                    pch |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.project.punch_start_beat)
+                                .range(0.0..=512.0)
+                                .speed(0.5)
+                                .prefix("Punch In Beat: "),
+                        )
+                        .changed();
+                    pch |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.project.punch_end_beat)
+                                .range(1.0..=512.0)
+                                .speed(0.5)
+                                .prefix("Punch Out Beat: "),
+                        )
+                        .changed();
+                    if pch {
+                        self.sync_engine();
+                    }
+                },
+            );
+
             if ui
                 .add(
                     egui::Button::new(
@@ -934,7 +1094,7 @@ impl FerricDawApp {
 
             ui.separator();
 
-            // LCD Position + BPM + TAP TEMPO (for syncing KORG DS-10!)
+            // LCD Position (or Count-In Countdown!) + BPM + TAP TEMPO
             egui::Frame::new()
                 .fill(BG_DEEP)
                 .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -942,21 +1102,34 @@ impl FerricDawApp {
                 .inner_margin(egui::Margin::symmetric(7, 3))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let bbt = self.project.format_bar_beat_tick(telem.playhead_beat);
-                        let secs = self.project.beats_to_seconds(telem.playhead_beat);
-                        ui.label(
-                            egui::RichText::new(bbt)
+                        if telem.count_in_beats_remaining > 0.05 {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "COUNT -{:03.1}",
+                                    telem.count_in_beats_remaining
+                                ))
                                 .size(14.0)
                                 .monospace()
                                 .strong()
-                                .color(ACCENT_TEAL),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!("{:05.2}s", secs))
-                                .size(11.0)
-                                .monospace()
-                                .color(TEXT_DIM),
-                        );
+                                .color(ACCENT_AMBER),
+                            );
+                        } else {
+                            let bbt = self.project.format_bar_beat_tick(telem.playhead_beat);
+                            let secs = self.project.beats_to_seconds(telem.playhead_beat);
+                            ui.label(
+                                egui::RichText::new(bbt)
+                                    .size(14.0)
+                                    .monospace()
+                                    .strong()
+                                    .color(ACCENT_TEAL),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("{:05.2}s", secs))
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(TEXT_DIM),
+                            );
+                        }
                     });
                 });
 
@@ -1273,6 +1446,13 @@ impl FerricDawApp {
                 BrowserAction::SetInputGainDb(db) => {
                     self.engine.set_input_gain_db(db);
                 }
+                BrowserAction::LockDetectedBpm(bpm) => {
+                    self.snapshot_before("Lock Line-In BPM");
+                    self.project.bpm = bpm.clamp(30.0, 280.0);
+                    self.status_banner =
+                        format!("✓ Locked Project Tempo to DS-10 / Line-In: {:.1} BPM!", bpm);
+                    need_sync = true;
+                }
                 BrowserAction::KaossNote { note, is_note_on } => {
                     self.engine.send(EngineCommand::LiveMidi {
                         target_track: self.selected_track,
@@ -1298,6 +1478,7 @@ impl eframe::App for FerricDawApp {
         self.handle_captured_takes();
         self.handle_midi_learn_poll();
         self.handle_shortcuts_and_musical_typing(ctx);
+        self.tick_autosave();
 
         // Handle Drag-and-Drop of external WAV/FLAC/MP3/OGG/MID files directly from Windows Explorer!
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -1641,8 +1822,11 @@ impl eframe::App for FerricDawApp {
                         }
                         ArrangementAction::DeleteClip { track_id, clip_id } => {
                             self.snapshot_before("Delete Clip");
-                            if let Some(t) = self.project.find_track_mut(track_id) {
-                                t.clips.retain(|c| c.id != clip_id);
+                            if self.project.delete_clip(
+                                track_id,
+                                clip_id,
+                                self.arrangement.ripple_edit,
+                            ) {
                                 if self.selected_clip == Some((track_id, clip_id)) {
                                     self.selected_clip = None;
                                 }

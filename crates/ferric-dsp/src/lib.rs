@@ -3,6 +3,7 @@ pub mod effects;
 pub mod instruments;
 pub mod metering;
 pub mod sampler;
+pub mod tempo_arp;
 pub mod tuner;
 pub mod warp_pitch;
 
@@ -16,6 +17,7 @@ pub use metering::{
     db_to_lin, lin_to_db, LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, SPECTRUM_BANDS,
 };
 pub use sampler::SamplePlayerProcessor;
+pub use tempo_arp::{ArpRuntime, MidiExpression, OnsetBpmDetector};
 pub use tuner::{ChromaticTuner, TunerReading};
 pub use warp_pitch::{
     sample_wsola_decoupled, DualGrainPitchShifter, VocalPitchProcessor, VocalPitchTelemetry,
@@ -164,7 +166,16 @@ impl FxRuntimeInstance {
         bpm: f64,
         midi_events: &[MidiEvent],
     ) {
-        self.process_block_with_sidechain(left, right, params, wet_mix, bpm, midi_events, None);
+        self.process_block_full(
+            left,
+            right,
+            params,
+            wet_mix,
+            bpm,
+            midi_events,
+            MidiExpression::default(),
+            None,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -176,6 +187,30 @@ impl FxRuntimeInstance {
         wet_mix: f32,
         bpm: f64,
         midi_events: &[MidiEvent],
+        sidechain_key: Option<(&[f32], &[f32])>,
+    ) {
+        self.process_block_full(
+            left,
+            right,
+            params,
+            wet_mix,
+            bpm,
+            midi_events,
+            MidiExpression::default(),
+            sidechain_key,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_block_full(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        wet_mix: f32,
+        bpm: f64,
+        midi_events: &[MidiEvent],
+        midi_expr: MidiExpression,
         sidechain_key: Option<(&[f32], &[f32])>,
     ) {
         let frames = left.len().min(right.len());
@@ -190,9 +225,13 @@ impl FxRuntimeInstance {
         }
 
         match &mut self.processor {
-            DspProcessor::PolySynth(p) => p.process(left, right, params, midi_events),
+            DspProcessor::PolySynth(p) => {
+                p.process_with_expression(left, right, params, midi_events, midi_expr)
+            }
             DspProcessor::DrumKit(p) => p.process(left, right, params, midi_events),
-            DspProcessor::SamplePlayer(p) => p.process(left, right, params, midi_events),
+            DspProcessor::SamplePlayer(p) => {
+                p.process_with_expression(left, right, params, midi_events, midi_expr)
+            }
             DspProcessor::ChromaticTuner(t) => {
                 t.ref_a4_hz = params.first().copied().unwrap_or(440.0);
                 t.push_block(&left[..frames], &right[..frames]);
@@ -412,5 +451,63 @@ mod tests {
         );
         let energy: f32 = sl.iter().map(|x| x * x).sum();
         assert!(energy > 0.001);
+    }
+
+    #[test]
+    fn onset_bpm_detector_and_arpeggiator_work_accurately() {
+        let sr = 48_000.0;
+        let mut det = OnsetBpmDetector::new(sr);
+        // Synthesize 4.5 seconds of crisp 120.0 BPM quarter-note kicks (every 0.5s = 24,000 samples)
+        let total = (4.5 * sr) as usize;
+        let mut l = vec![0.0_f32; total];
+        for beat in 0..9 {
+            let s0 = beat * 24_000;
+            for k in 0..1200 {
+                if s0 + k < total {
+                    let env = (-(k as f32) / 220.0).exp();
+                    l[s0 + k] = 0.8 * env * (TAU * 90.0 * (k as f32 / sr)).sin();
+                }
+            }
+        }
+        det.push_block(&l, &l);
+        let bpm = det.detected_bpm.expect("should detect 120 BPM");
+        assert!(
+            (bpm - 120.0).abs() <= 1.5,
+            "expected ~120 BPM, got {}",
+            bpm
+        );
+
+        // Test Track Arpeggiator expanding a C-major chord into stepped notes
+        let mut arp = ArpRuntime::new();
+        let cfg = ferric_model::TrackArpeggiator {
+            enabled: true,
+            mode: ferric_model::ArpMode::Up,
+            rate_beats: 0.25,
+            octaves: 2,
+            gate: 0.75,
+        };
+        let mut events = vec![
+            MidiEvent {
+                sample_offset: 0,
+                note: 60,
+                velocity: 100,
+                is_note_on: true,
+            },
+            MidiEvent {
+                sample_offset: 0,
+                note: 64,
+                velocity: 100,
+                is_note_on: true,
+            },
+        ];
+        arp.process_midi_block(&cfg, 24_000, sr, 120.0, true, 0.0, &mut events);
+        let note_ons: Vec<u8> = events
+            .iter()
+            .filter(|e| e.is_note_on)
+            .map(|e| e.note)
+            .collect();
+        assert!(note_ons.len() >= 4);
+        assert_eq!(note_ons[0], 60);
+        assert_eq!(note_ons[1], 64);
     }
 }

@@ -71,6 +71,31 @@ pub struct MidiCcPoint {
     pub value: f32,
 }
 
+/// Evaluates piecewise-linear MIDI CC / Pitch-Bend curve at `beat` inside a MIDI take.
+#[inline]
+pub fn eval_midi_cc_curve(points: &[MidiCcPoint], target: MidiCcTarget, beat: f64) -> Option<f32> {
+    let mut prev: Option<&MidiCcPoint> = None;
+    let mut next: Option<&MidiCcPoint> = None;
+    for p in points.iter().filter(|p| p.target == target) {
+        if p.beat <= beat {
+            prev = Some(p);
+        } else {
+            next = Some(p);
+            break;
+        }
+    }
+    match (prev, next) {
+        (None, None) => None,
+        (Some(a), None) => Some(a.value),
+        (None, Some(b)) => Some(b.value),
+        (Some(a), Some(b)) => {
+            let span = (b.beat - a.beat).max(1e-6);
+            let t = ((beat - a.beat) / span).clamp(0.0, 1.0) as f32;
+            Some(a.value + (b.value - a.value) * t)
+        }
+    }
+}
+
 /// Shared, cheaply-cloneable planar stereo audio buffer so Undo/Redo snapshots
 /// and Real-Time audio engine clones never copy megabytes of PCM data!
 #[derive(Debug, Clone)]

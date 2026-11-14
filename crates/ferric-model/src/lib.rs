@@ -5,8 +5,8 @@ pub mod theory;
 pub mod track;
 
 pub use clip::{
-    AudioBuffer, ClipId, CompSegment, FadeShape, MidiCcPoint, MidiCcTarget, MidiNote, SessionSlot,
-    StretchMarker, Take, TakeContent, TakeId, TimeStretchMode, TimelineClip,
+    eval_midi_cc_curve, AudioBuffer, ClipId, CompSegment, FadeShape, MidiCcPoint, MidiCcTarget,
+    MidiNote, SessionSlot, StretchMarker, Take, TakeContent, TakeId, TimeStretchMode, TimelineClip,
 };
 pub use fx::{
     FactoryPreset, FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget, ModulatorId,
@@ -21,8 +21,9 @@ pub use theory::{
     NOTE_PITCH_CLASSES,
 };
 pub use track::{
-    apply_curve_tension, AutomationLane, AutomationMode, AutomationPoint, AutomationTarget,
-    InputSource, SendTap, Track, TrackId, TrackSend, STUDIO_TRACK_COLORS,
+    apply_curve_tension, ArpMode, AutomationLane, AutomationMode, AutomationPoint,
+    AutomationTarget, InputSource, SendTap, Track, TrackArpeggiator, TrackId, TrackSend,
+    STUDIO_TRACK_COLORS,
 };
 
 #[cfg(test)]

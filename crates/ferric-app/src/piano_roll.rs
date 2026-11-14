@@ -33,6 +33,8 @@ pub struct PianoRollState {
     pub visible_semitones: u8,
     pub default_note_len: f64,
     pub scale_lock: bool,
+    pub drum_step_view: bool,
+    pub drum_bar_index: usize,
     pub chord_stamp: ChordStamp,
     pub active_cc_lane: Option<MidiCcTarget>,
     drag_note: Option<(Uuid, bool)>,
@@ -48,6 +50,8 @@ impl Default for PianoRollState {
             visible_semitones: 36,
             default_note_len: 0.5,
             scale_lock: true,
+            drum_step_view: false,
+            drum_bar_index: 0,
             chord_stamp: ChordStamp::SingleNote,
             active_cc_lane: None,
             drag_note: None,
@@ -108,14 +112,21 @@ impl PianoRollState {
         let root_pc = project.root_pitch_class;
         let scale = project.musical_scale;
 
-        // Top Pro MIDI Toolbar: Scale Lock, Chord Stamp, Quantize, Humanize, CC Lane, SMF Export!
+        // Top Pro MIDI Toolbar: 16-Step Drum Grid toggle, Scale Lock, Chord Stamp, Quantize, Humanize, CC Lane, SMF Export!
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
             if let Some(clip) = project
                 .find_track_mut(track_id)
                 .and_then(|t| t.find_clip_mut(clip_id))
             {
-                ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(115.0));
+                ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(105.0));
+            }
+
+            if pill_toggle(ui, "🥁 16-Step Grid", self.drum_step_view, ACCENT_AMBER)
+                .on_hover_text("Toggle TR-808 / DS-10 Style 16-Step Drum Pattern Sequencer!")
+                .clicked()
+            {
+                self.drum_step_view = !self.drum_step_view;
             }
 
             if pill_toggle(ui, "Scale Lock", self.scale_lock, ACCENT_TEAL)
@@ -221,6 +232,13 @@ impl PianoRollState {
             .and_then(|t| t.find_clip(clip_id))
             .map(|c| c.loop_length_beats.max(c.length_beats))
             .unwrap_or(16.0);
+
+        if self.drum_step_view {
+            self.render_drum_step_sequencer(
+                ui, project, track_id, clip_id, clip_start, clip_len, t_col, telem, actions,
+            );
+            return;
+        }
 
         egui::ScrollArea::horizontal()
             .id_salt("piano_roll_hscroll")
@@ -731,6 +749,144 @@ impl PianoRollState {
             }
         });
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_drum_step_sequencer(
+        &mut self,
+        ui: &mut Ui,
+        project: &mut Project,
+        track_id: TrackId,
+        clip_id: ClipId,
+        clip_start: f64,
+        clip_len: f64,
+        accent: Color32,
+        telem: &EngineTelemetry,
+        actions: &mut Vec<DockAction>,
+    ) {
+        const DRUM_ROWS: &[(&str, u8)] = &[
+            ("Kick (36)", 36),
+            ("Rimshot (37)", 37),
+            ("Snare (38)", 38),
+            ("Clap (39)", 39),
+            ("Closed Hat (42)", 42),
+            ("Open Hat (46)", 46),
+            ("Tom (43)", 43),
+            ("Crash/Ride (49)", 49),
+        ];
+
+        let num_bars = ((clip_len / 4.0).ceil() as usize).clamp(1, 16);
+        self.drum_bar_index = self.drum_bar_index.min(num_bars - 1);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Pattern Bar:").size(11.0).color(TEXT_DIM));
+            for b in 0..num_bars {
+                if pill_toggle(
+                    ui,
+                    &format!("Bar {}", b + 1),
+                    self.drum_bar_index == b,
+                    accent,
+                )
+                .clicked()
+                {
+                    self.drum_bar_index = b;
+                }
+            }
+        });
+
+        let bar_offset_beat = (self.drum_bar_index * 4) as f64;
+        let local_ph = (telem.playhead_beat - clip_start).rem_euclid(clip_len.max(4.0));
+        let active_step_opt = if telem.is_playing
+            && local_ph >= bar_offset_beat
+            && local_ph < bar_offset_beat + 4.0
+        {
+            Some(((local_ph - bar_offset_beat) * 4.0).floor() as usize)
+        } else {
+            None
+        };
+
+        let Some(clip_mut) = project
+            .find_track_mut(track_id)
+            .and_then(|t| t.find_clip_mut(clip_id))
+        else {
+            return;
+        };
+        let active_take = clip_mut.active_take.min(clip_mut.takes.len().saturating_sub(1));
+        let Some(TakeContent::Midi { notes, .. }) =
+            clip_mut.takes.get_mut(active_take).map(|t| &mut t.content)
+        else {
+            return;
+        };
+
+        egui::ScrollArea::vertical()
+            .id_salt("drum_step_seq_scroll")
+            .show(ui, |ui| {
+                egui::Grid::new("drum_step_16_grid")
+                    .spacing([4.0, 3.0])
+                    .show(ui, |ui| {
+                        for &(row_name, pitch) in DRUM_ROWS {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(row_name).size(10.0).color(TEXT_MAIN),
+                                    )
+                                    .min_size(Vec2::new(98.0, 18.0)),
+                                )
+                                .on_hover_text("Click to audition drum pad")
+                                .clicked()
+                            {
+                                actions.push(DockAction::AuditionMidi {
+                                    track_id,
+                                    note: pitch,
+                                    is_note_on: true,
+                                });
+                            }
+
+                            for step in 0..16usize {
+                                let step_beat = bar_offset_beat + (step as f64) * 0.25;
+                                let existing_idx = notes.iter().position(|n| {
+                                    n.pitch == pitch && (n.start_beat - step_beat).abs() < 0.08
+                                });
+                                let is_on = existing_idx.is_some();
+                                let is_ph = active_step_opt == Some(step);
+
+                                let fill = if is_on {
+                                    if is_ph {
+                                        Color32::WHITE
+                                    } else if (step / 4) % 2 == 0 {
+                                        accent
+                                    } else {
+                                        ACCENT_TEAL
+                                    }
+                                } else if is_ph {
+                                    Color32::from_rgb(55, 60, 74)
+                                } else if (step / 4) % 2 == 0 {
+                                    Color32::from_rgb(28, 31, 40)
+                                } else {
+                                    Color32::from_rgb(21, 23, 30)
+                                };
+
+                                if ui
+                                    .add(
+                                        egui::Button::new("")
+                                            .fill(fill)
+                                            .min_size(Vec2::new(22.0, 18.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    if let Some(idx) = existing_idx {
+                                        notes.remove(idx);
+                                    } else {
+                                        let vel = if step % 4 == 0 { 116 } else { 96 };
+                                        notes.push(MidiNote::new(pitch, vel, step_beat, 0.22));
+                                    }
+                                    actions.push(DockAction::ProjectMutated("Toggle Drum Step"));
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
 }
 
 pub fn render_fx_and_modulators_panel(
@@ -810,12 +966,62 @@ pub fn render_fx_and_modulators_panel(
             if let Some(trk) = project.find_track_mut(tid) {
                 egui::ComboBox::from_id_salt("trk_auto_mode")
                     .selected_text(format!("Auto: {}", trk.automation_mode.label()))
-                    .width(108.0)
+                    .width(98.0)
                     .show_ui(ui, |ui| {
                         for &am in ferric_model::AutomationMode::ALL {
                             ui.selectable_value(&mut trk.automation_mode, am, am.label());
                         }
                     });
+
+                ui.separator();
+                // Built-in Tempo-Synced MIDI Arpeggiator strip!
+                let mut arp_ch = false;
+                if pill_toggle(ui, "🎹 ARP", trk.arpeggiator.enabled, ACCENT_AMBER)
+                    .on_hover_text(
+                        "Enable Tempo-Synced MIDI Arpeggiator / Chord Gate (works live with Akai LPK25 & clips!)",
+                    )
+                    .clicked()
+                {
+                    trk.arpeggiator.enabled = !trk.arpeggiator.enabled;
+                    arp_ch = true;
+                }
+                if trk.arpeggiator.enabled {
+                    egui::ComboBox::from_id_salt("trk_arp_mode")
+                        .selected_text(trk.arpeggiator.mode.label())
+                        .width(82.0)
+                        .show_ui(ui, |ui| {
+                            for &m in ferric_model::ArpMode::ALL {
+                                arp_ch |= ui
+                                    .selectable_value(&mut trk.arpeggiator.mode, m, m.label())
+                                    .changed();
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("trk_arp_rate")
+                        .selected_text(match (trk.arpeggiator.rate_beats * 100.0).round() as i32 {
+                            25 => "1/16",
+                            33 => "1/8T",
+                            50 => "1/8",
+                            _ => "1/4",
+                        })
+                        .width(58.0)
+                        .show_ui(ui, |ui| {
+                            for (lbl, r) in [("1/16", 0.25), ("1/8T", 1.0 / 3.0), ("1/8", 0.5), ("1/4", 1.0)] {
+                                arp_ch |= ui
+                                    .selectable_value(&mut trk.arpeggiator.rate_beats, r, lbl)
+                                    .changed();
+                            }
+                        });
+                    arp_ch |= ui
+                        .add(
+                            egui::DragValue::new(&mut trk.arpeggiator.octaves)
+                                .range(1..=3)
+                                .prefix("Oct "),
+                        )
+                        .changed();
+                }
+                if arp_ch {
+                    actions.push(DockAction::ProjectMutated("Adjust Track Arpeggiator"));
+                }
             }
         }
     });
