@@ -376,7 +376,7 @@ impl AudioGraphCore {
                     brightness_offset: self.live_brightness,
                 };
 
-                // 1. Live MIDI input (including Akai LPK25 + Sustain Pedal CC64 support!)
+                // 1. Live MIDI input (including Sustain Pedal CC64)
                 for &(target_opt, ev) in live_midi {
                     let matches = match target_opt {
                         Some(tid) => tid == track.id,
@@ -391,7 +391,7 @@ impl AudioGraphCore {
                     }
                 }
 
-                // 2. Live hardware audio input monitoring (multi-channel matrix + DS-10 Line-In!)
+                // 2. Live hardware audio input monitoring (multi-channel matrix + Line-In)
                 if track.record_arm && track.input_monitoring {
                     let ig = self.input_gain_lin;
                     match track.input_source.hardware_channels() {
@@ -436,6 +436,7 @@ impl AudioGraphCore {
                         for (c_idx, clip) in track.clips.iter().enumerate() {
                             if !clip.muted {
                                 self.evaluate_timeline_clip(
+                                    project,
                                     track,
                                     c_idx,
                                     clip,
@@ -861,6 +862,7 @@ impl AudioGraphCore {
     #[allow(clippy::too_many_arguments)]
     fn evaluate_timeline_clip(
         &mut self,
+        project: &Project,
         track: &Track,
         clip_idx: usize,
         clip: &TimelineClip,
@@ -930,11 +932,34 @@ impl AudioGraphCore {
                         }
                         let b1 = inner_beat
                             + beats_per_sample * (clip.stretch_rate.clamp(0.125, 8.0) as f64);
+                        // DNA Feel is the live project macro; track.groove_amount is the
+                        // per-track pocket when DNA Feel is at 0 (e.g. after Apply + Feel=0).
+                        // Do NOT multiply — Apply copies dna_feel into groove_amount.
+                        let (groove_tmpl, feel) = if project.dna_feel > 0.001 {
+                            (
+                                project.dna_groove_template,
+                                project.dna_feel.clamp(0.0, 1.0),
+                            )
+                        } else {
+                            (track.groove_template, track.groove_amount.clamp(0.0, 1.0))
+                        };
+                        let dna_seed = project.id.as_u128() as u32;
                         for n in notes {
-                            if n.start_beat >= inner_beat && n.start_beat < b1 {
+                            let note_abs = clip.start_beat + n.start_beat;
+                            let (beat_off, groove_vel) =
+                                groove_tmpl.transform_note(note_abs, feel);
+                            let dna_vel = project.dna_accent_shape.velocity_scale(
+                                note_abs,
+                                project.dna_velocity,
+                                dna_seed,
+                            );
+                            let eff_start = n.start_beat + beat_off;
+                            let eff_end = n.end_beat() + beat_off;
+                            if eff_start >= inner_beat && eff_start < b1 {
                                 let p = (n.pitch as i32 + pitch_semi_round).clamp(0, 127) as u8;
-                                let v = ((n.velocity as f32 * env).round() as i32).clamp(1, 127)
-                                    as u8;
+                                let v = ((n.velocity as f32 * env * groove_vel * dna_vel).round()
+                                    as i32)
+                                    .clamp(1, 127) as u8;
                                 self.midi_scratch.push(MidiEvent {
                                     sample_offset: i,
                                     note: p,
@@ -942,8 +967,7 @@ impl AudioGraphCore {
                                     is_note_on: true,
                                 });
                             }
-                            let end_b = n.end_beat();
-                            if end_b >= inner_beat && end_b < b1 {
+                            if eff_end >= inner_beat && eff_end < b1 {
                                 let p = (n.pitch as i32 + pitch_semi_round).clamp(0, 127) as u8;
                                 self.midi_scratch.push(MidiEvent {
                                     sample_offset: i,

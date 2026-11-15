@@ -3,14 +3,18 @@
 mod arrangement;
 mod browser;
 mod help_modal;
+mod host_fingerprint;
+mod keyboard_pads;
 mod mixer;
 mod palette;
 mod piano_roll;
 mod theme;
 mod tutorial_coach;
+mod update;
 
-use arrangement::{ArrangementAction, ArrangementState};
+use arrangement::{ArrangementAction, ArrangementState, NewTrackKind};
 use browser::{BrowserAction, KaossPadState, StudioBrowserState, TapTempoTracker};
+use keyboard_pads::{KeyboardPadRig, PadBSource};
 use help_modal::{build_app_icon, render_quickstart_help_modal};
 use tutorial_coach::{TutorialAction, TutorialCoach};
 use eframe::egui;
@@ -19,23 +23,25 @@ use ferric_engine::{
     audio_buffer_from_capture, import_audio_file, load_project_bundle,
     preferred_line_input_name, preferred_speakers_output_name, realtek_combo_jack_risk,
     render_all_stems_with_options, render_master_with_options, render_track_freeze_buffer,
-    save_project_bundle, BitDepth, BounceReport, CapturedTakeEvent, EngineCommand, EngineHandle,
-    ExportFormat, MasteringOptions,
+    save_project_bundle, BitDepth, BounceReport, CapturedTakeEvent, DiscoveredExternalPlugin,
+    EngineCommand, EngineHandle, ExportFormat, MasteringOptions,
 };
 use ferric_model::{
     build_demo_project, build_tutorial_project_through, import_smf_file, AutomationTarget, ClipId,
-    FxKind, FxSlot, HistoryManager, InputSource, MidiLearnMapping, ModulatorSlot, NightCurrentStep,
-    Project, Take, TakeContent, TimelineClip, Track, TrackId,
+    FxKind, FxSlot, GrooveTemplate, HistoryManager, InputSource, MidiLearnMapping, MixSnapshot,
+    ModulatorSlot, NightCurrentStep, Project, Take, TakeContent, TimelineClip, Track, TrackId,
+    VelocityAccentShape, VoicingStyle,
 };
+use host_fingerprint::{compute_host_seed, format_host_seed, random_host_seed};
 use mixer::{render_mixer_console, render_routing_matrix};
 use palette::{CommandPalette, PaletteCommand};
 use piano_roll::{render_fx_and_modulators_panel, DockAction, PianoRollState};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use theme::{
     apply_studio_theme, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL,
     BG_DEEP, BG_ELEVATED, BG_PANEL, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
+use update::UpdateService;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BottomTab {
@@ -44,6 +50,49 @@ enum BottomTab {
     KaossPad,
     MixingConsole,
     RoutingMatrix,
+    LaunchPad,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HardwareRigPreset {
+    UsbMidiAndLineIn,
+    AkaiLpk25AndDs10,
+    MidiKeyboardOnly,
+    LineInOnly,
+}
+
+impl HardwareRigPreset {
+    fn snapshot_label(self) -> &'static str {
+        match self {
+            Self::UsbMidiAndLineIn => "Spawn Hardware Rig (MIDI + Line-In)",
+            Self::AkaiLpk25AndDs10 => "Spawn Hardware Rig (keyboard + handheld tip)",
+            Self::MidiKeyboardOnly => "Spawn Hardware Rig (MIDI only)",
+            Self::LineInOnly => "Spawn Hardware Rig (Line-In only)",
+        }
+    }
+
+    fn includes_midi(self) -> bool {
+        !matches!(self, Self::LineInOnly)
+    }
+
+    fn includes_line_in(self) -> bool {
+        !matches!(self, Self::MidiKeyboardOnly)
+    }
+
+    fn status_banner(self) -> &'static str {
+        match self {
+            Self::UsbMidiAndLineIn => {
+                "Spawned Hardware Rig — USB MIDI + Line-In (Speakers out + Line-In / Ext Mic preferred)"
+            }
+            Self::AkaiLpk25AndDs10 => {
+                "Spawned Hardware Rig tip preset — same generic MIDI + Line-In tracks (tip naming only)"
+            }
+            Self::MidiKeyboardOnly => "Spawned USB MIDI Synth track — arm and play any controller",
+            Self::LineInOnly => {
+                "Spawned Line-In Capture track — Speakers out + Line-In / Ext Mic preferred"
+            }
+        }
+    }
 }
 
 struct BounceModalState {
@@ -61,7 +110,51 @@ struct BounceModalState {
     last_report: Option<Result<BounceReport, String>>,
     /// Last successful master bounce path (for A/B audition).
     last_master_path: Option<PathBuf>,
+    /// Golden Bounce: reference WAV (defaults to Night Current demo).
+    reference_path: Option<PathBuf>,
+    reference_lufs: Option<f32>,
+    reference_true_peak: Option<f32>,
+    reference_duration: Option<f64>,
+    reference_peaks: Vec<f32>,
+    bounce_peaks: Vec<f32>,
+    loudness_match_ab: bool,
+    show_golden_panel: bool,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchQuantize {
+    Bar,
+    Beat,
+    Quarter,
+}
+
+impl LaunchQuantize {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bar => "1 Bar",
+            Self::Beat => "1 Beat",
+            Self::Quarter => "1/4",
+        }
+    }
+
+    fn quantize_beat(self, beat: f64, beats_per_bar: f64) -> f64 {
+        let grid = match self {
+            Self::Bar => beats_per_bar.max(1.0),
+            Self::Beat => 1.0,
+            Self::Quarter => 0.25,
+        };
+        (beat / grid).ceil() * grid
+    }
+}
+
+struct MixMorphState {
+    from: MixSnapshot,
+    to: MixSnapshot,
+    start_beat: f64,
+    duration_beats: f64,
+    last_applied_t: f32,
+}
+
 
 struct PendingMidiLearn {
     track_id: TrackId,
@@ -113,13 +206,24 @@ struct FerricDawApp {
     dirty_since_autosave: bool,
     last_autosave_inst: std::time::Instant,
     pending_midi_learn: Option<PendingMidiLearn>,
-    musical_typing_enabled: bool,
-    musical_typing_octave: i8,
-    held_typing_keys: HashSet<Key>,
+    keyboard_pads: KeyboardPadRig,
     bounce_modal: BounceModalState,
     show_first_run: bool,
     status_banner: String,
     capture_inbox: Vec<CapturedTakeEvent>,
+    /// Scene Launch Pad focus — number row fires scenes when true.
+    launch_pad_focused: bool,
+    launch_quantize: LaunchQuantize,
+    mix_morph_enabled: bool,
+    mix_morph_beats: f64,
+    mix_morph: Option<MixMorphState>,
+    pending_scene_launch: Option<(usize, f64)>,
+    /// Plugin Playground: sandboxed audition candidate awaiting Insert.
+    playground_plugin: Option<DiscoveredExternalPlugin>,
+    playground_ok: bool,
+    updater: UpdateService,
+    show_update_modal: bool,
+    quit_for_update: bool,
 }
 
 impl FerricDawApp {
@@ -148,9 +252,7 @@ impl FerricDawApp {
             initial_project
         };
 
-        let lpk_badge = if engine.has_akai_lpk25() {
-            " • Akai LPK25 Connected!"
-        } else if !engine.midi_port_names.is_empty() {
+        let lpk_badge = if !engine.midi_port_names.is_empty() {
             " • USB MIDI Connected!"
         } else {
             ""
@@ -173,6 +275,14 @@ impl FerricDawApp {
                 tpdf_dither: true,
                 last_report: None,
                 last_master_path: None,
+                reference_path: None,
+                reference_lufs: None,
+                reference_true_peak: None,
+                reference_duration: None,
+                reference_peaks: Vec::new(),
+                bounce_peaks: Vec::new(),
+                loudness_match_ab: true,
+                show_golden_panel: false,
             },
             status_banner: if show_first_run {
                 format!(
@@ -208,13 +318,29 @@ impl FerricDawApp {
             dirty_since_autosave: false,
             last_autosave_inst: std::time::Instant::now(),
             pending_midi_learn: None,
-            musical_typing_enabled: false,
-            musical_typing_octave: 4,
-            held_typing_keys: HashSet::new(),
+            keyboard_pads: KeyboardPadRig::default(),
             show_first_run,
             capture_inbox: Vec::new(),
+            launch_pad_focused: false,
+            launch_quantize: LaunchQuantize::Bar,
+            mix_morph_enabled: false,
+            mix_morph_beats: 4.0,
+            mix_morph: None,
+            pending_scene_launch: None,
+            playground_plugin: None,
+            playground_ok: false,
+            updater: UpdateService::default(),
+            show_update_modal: false,
+            quit_for_update: false,
         };
         app.engine.sync_project(&app.project);
+        if let Some(note) = app.engine.driver_status_note {
+            app.browser.driver_honesty_note = Some(note.to_string());
+        }
+        app.browser.live_exclusive = app.engine.has_exclusive_output();
+        if UpdateService::feed_configured() {
+            app.updater.check_async();
+        }
 
         // Support launching `ferricdaw.exe my_song.ferric` (or `.json` / `.wav` / `.flac` / `.mid`) from CLI / File Association!
         if let Some(arg_path) = cli_path {
@@ -475,66 +601,79 @@ impl FerricDawApp {
         self.sync_engine();
     }
 
-    /// 1-Click Hardware Studio Rig tailored specifically for Akai LPK25 + Nintendo DS KORG DS-10!
-    fn spawn_akai_and_ds10_rig(&mut self) {
-        self.snapshot_before("Spawn Akai LPK25 + KORG DS-10 Rig");
-        self.engine.rescan_midi_devices();
-
-        // 1. Akai LPK25 USB MIDI Lead/Arp Synth Track (Armed for MIDI!)
-        let lpk_id = self.project.add_track("LPK25 Analog Synth");
-        if let Some(t) = self.project.find_track_mut(lpk_id) {
-            t.color = [232, 114, 62];
-            t.input_source = InputSource::MidiAll;
-            t.record_arm = true;
-            let mut poly = FxSlot::new(FxKind::PolySynth);
-            poly.set_param(0, 0.0); // Fat Saw
-            poly.set_param(1, 42.0); // Unison Sub/Detune
-            poly.set_param(2, 2400.0);
-            poly.set_param(3, 0.38);
-            t.fx_chain.push(poly);
-            t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
-        }
-
-        // 2. Nintendo DS (KORG DS-10) → Realtek External Mic (mono) console channel.
-        // Mic Boost + big digital trim = hiss; keep Windows Boost at 0 and trim modest.
-        let ds_id = self.project.add_track("Nintendo DS — KORG DS-10 Line-In");
-        if let Some(t) = self.project.find_track_mut(ds_id) {
-            t.color = [66, 179, 165];
-            t.input_source = InputSource::AudioMono { channel: 0 };
-            t.record_arm = true;
-            t.input_monitoring = true;
-            t.gain_db = 0.0;
-
-            let mut eq = FxSlot::new(FxKind::ParametricEq);
-            eq.set_param(0, 100.0); // HPF cable / bias
-            eq.set_param(2, 0.0);
-            eq.set_param(10, -3.0); // tame mic-jack hiss shelf
-            eq.set_param(11, -1.0);
-            let mut comp = FxSlot::new(FxKind::Compressor);
-            comp.preset_name = "DS Mic-Jack Leveler".into();
-            comp.set_param(0, -24.0);
-            comp.set_param(1, 2.5);
-            comp.set_param(2, 10.0);
-            comp.set_param(3, 150.0);
-            comp.set_param(5, 3.0); // light makeup — never stack with Mic Boost
-
-            t.fx_chain.push(eq);
-            t.fx_chain.push(comp);
-        }
-
-        self.selected_track = Some(lpk_id);
-        self.bottom_tab = BottomTab::KaossPad;
-        self.show_bottom_dock = true;
-        // Auto-route around Realtek combo-jack mute (Speakers out + External Mic in).
-        self.apply_ds10_safe_audio_routing();
-        self.sync_engine();
-        self.status_banner =
-            "⚡ Spawned LPK25 + DS-10 Line-In • locked Speakers out + Line-In mic (avoids combo-jack mute)"
-                .into();
+    /// 1-Click Hardware Studio Rig presets (generic MIDI / Line-In first).
+    fn spawn_hardware_studio_rig(&mut self) {
+        self.spawn_hardware_rig_preset(HardwareRigPreset::UsbMidiAndLineIn);
     }
 
-    /// Lock capture to Realtek External Microphone (not Steam/AMD array) + clean DS monitor chain.
-    fn apply_ds10_safe_audio_routing(&mut self) {
+    fn spawn_hardware_rig_preset(&mut self, preset: HardwareRigPreset) {
+        self.snapshot_before(preset.snapshot_label());
+        self.engine.rescan_midi_devices();
+
+        let mut focus = None;
+        if preset.includes_midi() {
+            let name = match preset {
+                HardwareRigPreset::AkaiLpk25AndDs10 => "USB MIDI Synth (keyboard tip)",
+                _ => "USB MIDI Synth",
+            };
+            let midi_id = self.project.add_track(name);
+            if let Some(t) = self.project.find_track_mut(midi_id) {
+                t.color = [232, 114, 62];
+                t.input_source = InputSource::MidiAll;
+                t.record_arm = true;
+                let mut poly = FxSlot::new(FxKind::PolySynth);
+                poly.set_param(0, 0.0);
+                poly.set_param(1, 42.0);
+                poly.set_param(2, 2400.0);
+                poly.set_param(3, 0.38);
+                t.fx_chain.push(poly);
+                t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+            }
+            focus = Some(midi_id);
+        }
+
+        if preset.includes_line_in() {
+            let name = match preset {
+                HardwareRigPreset::AkaiLpk25AndDs10 => "Line-In Capture (handheld tip name)",
+                _ => "Line-In Capture",
+            };
+            let line_id = self.project.add_track(name);
+            if let Some(t) = self.project.find_track_mut(line_id) {
+                t.color = [66, 179, 165];
+                t.input_source = InputSource::AudioMono { channel: 0 };
+                t.record_arm = true;
+                t.input_monitoring = true;
+                t.gain_db = 0.0;
+                let mut eq = FxSlot::new(FxKind::ParametricEq);
+                eq.set_param(0, 100.0);
+                eq.set_param(2, 0.0);
+                eq.set_param(10, -3.0);
+                eq.set_param(11, -1.0);
+                let mut comp = FxSlot::new(FxKind::Compressor);
+                comp.preset_name = "Line-In Leveler".into();
+                comp.set_param(0, -24.0);
+                comp.set_param(1, 2.5);
+                comp.set_param(2, 10.0);
+                comp.set_param(3, 150.0);
+                comp.set_param(5, 3.0);
+                t.fx_chain.push(eq);
+                t.fx_chain.push(comp);
+            }
+            if focus.is_none() {
+                focus = Some(line_id);
+            }
+            self.apply_line_in_safe_audio_routing();
+        }
+
+        self.selected_track = focus;
+        self.bottom_tab = BottomTab::KaossPad;
+        self.show_bottom_dock = true;
+        self.sync_engine();
+        self.status_banner = preset.status_banner().into();
+    }
+
+    /// Prefer Speakers output + Line-In / External Mic capture; clean Line-In monitor chain.
+    fn apply_line_in_safe_audio_routing(&mut self) {
         let speakers = preferred_speakers_output_name();
         let line_in = preferred_line_input_name();
         if let Some(ref s) = speakers {
@@ -543,7 +682,6 @@ impl FerricDawApp {
         if let Some(ref i) = line_in {
             self.browser.selected_in = Some(i.clone());
         } else {
-            // Explicit fallback string matching this machine's endpoint name.
             let fallback = self
                 .browser
                 .audio_inputs
@@ -555,11 +693,10 @@ impl FerricDawApp {
                 .cloned();
             self.browser.selected_in = fallback;
         }
-        // Modest digital trim only — Windows Mic Boost must stay at 0% or the jack hisses.
         self.browser.input_gain_db = 6.0;
         for t in &mut self.project.tracks {
             let name = t.name.to_lowercase();
-            if !(name.contains("ds-10") || name.contains("nintendo ds") || name.contains("line-in"))
+            if !(name.contains("line-in") || name.contains("line in") || name.contains("capture"))
             {
                 continue;
             }
@@ -567,7 +704,6 @@ impl FerricDawApp {
             t.record_arm = true;
             t.input_monitoring = true;
             t.gain_db = 0.0;
-            // Drop gate (pops) + tape (hisses when gain-staged hot).
             t.fx_chain
                 .retain(|fx| fx.kind != FxKind::NoiseGate && fx.kind != FxKind::TapeSaturator);
             if let Some(eq) = t.fx_chain.iter_mut().find(|fx| fx.kind == FxKind::ParametricEq) {
@@ -588,7 +724,7 @@ impl FerricDawApp {
                 comp.set_param(5, 3.0);
             } else {
                 let mut comp = FxSlot::new(FxKind::Compressor);
-                comp.preset_name = "DS Mic-Jack Leveler".into();
+                comp.preset_name = "Line-In Leveler".into();
                 comp.set_param(0, -24.0);
                 comp.set_param(1, 2.5);
                 comp.set_param(2, 10.0);
@@ -618,11 +754,11 @@ impl FerricDawApp {
             || in_name.to_lowercase().contains("nvidia")
         {
             self.status_banner = format!(
-                "⚠ Capture device is '{in_name}' — switch Input to 'External Microphone (Realtek)' or Windows will never hear the DS."
+                "⚠ Capture device is '{in_name}' — switch Input to External Microphone / Line-In or Windows will not hear the line source."
             );
         } else {
             self.status_banner = format!(
-                "DS capture: {in_name} @ +6 dB • Mic Boost 0% • hiss shelf cut (raise DS headphone vol, not boost)"
+                "Line-In capture: {in_name} @ +6 dB • Mic Boost 0% • hiss shelf cut (raise source volume, not Mic Boost)"
             );
         }
     }
@@ -747,7 +883,7 @@ impl FerricDawApp {
                             existing.show_take_lanes = true;
                         } else {
                             let title = if is_retroactive {
-                                "Retroactive DS-10 / Audio Riff"
+                                "Retroactive Line-In / Audio Riff"
                             } else {
                                 "Recorded Audio Take"
                             };
@@ -982,6 +1118,10 @@ impl FerricDawApp {
         };
         self.snapshot_before(label);
         self.project = build_tutorial_project_through(self.engine.sample_rate, step);
+        self.project.tutorial_step_reached = self
+            .project
+            .tutorial_step_reached
+            .max(step.index() as u8);
         self.project_path = None;
         self.selected_track = self.project.tracks.first().map(|t| t.id);
         self.selected_clip = None;
@@ -991,41 +1131,21 @@ impl FerricDawApp {
     }
 
     fn play_night_current_demo_reference(&mut self) {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                candidates.push(dir.join("demo").join("NightCurrent-Demo.wav"));
-                candidates.push(dir.join("assets").join("demo").join("NightCurrent-Demo.wav"));
+        let Some(path) = self.find_night_current_demo_path() else {
+            self.status_banner =
+                "demo/NightCurrent-Demo.wav not found next to ferricdaw.exe — check the release zip."
+                    .into();
+            return;
+        };
+        match import_audio_file(&path, self.engine.sample_rate) {
+            Ok(buf) => {
+                self.engine.send(EngineCommand::PreviewBuffer(buf));
+                self.status_banner = format!("Playing reference demo — {}", path.display());
+            }
+            Err(e) => {
+                self.status_banner = format!("Demo WAV found but failed to load: {e}");
             }
         }
-        candidates.push(PathBuf::from("demo/NightCurrent-Demo.wav"));
-        candidates.push(PathBuf::from("assets/demo/NightCurrent-Demo.wav"));
-        candidates.push(PathBuf::from(
-            r"C:\Users\ndrpe\Projects\FerricDAW\assets\demo\NightCurrent-Demo.wav",
-        ));
-
-        for path in candidates {
-            if !path.exists() {
-                continue;
-            }
-            match import_audio_file(&path, self.engine.sample_rate) {
-                Ok(buf) => {
-                    self.engine.send(EngineCommand::PreviewBuffer(buf));
-                    self.status_banner = format!(
-                        "Playing reference demo — {}",
-                        path.display()
-                    );
-                    return;
-                }
-                Err(e) => {
-                    self.status_banner = format!("Demo WAV found but failed to load: {e}");
-                    return;
-                }
-            }
-        }
-        self.status_banner =
-            "demo/NightCurrent-Demo.wav not found next to ferricdaw.exe — check the release zip."
-                .into();
     }
 
     fn render_destructive_confirm_modal(&mut self, ctx: &Context) {
@@ -1096,7 +1216,7 @@ impl FerricDawApp {
         match cmd {
             PaletteCommand::TogglePlay => self.toggle_play(),
             PaletteCommand::ToggleRecord => self.toggle_record(),
-            PaletteCommand::SetupAkaiDs10Rig => self.spawn_akai_and_ds10_rig(),
+            PaletteCommand::SetupHardwareRig => self.spawn_hardware_studio_rig(),
             PaletteCommand::ToggleFreezeSelectedTrack => {
                 if let Some(tid) = self.selected_track {
                     self.toggle_freeze_track(tid);
@@ -1106,16 +1226,11 @@ impl FerricDawApp {
                 self.engine
                     .send(EngineCommand::CaptureRetroactive { seconds_back: 15.0 });
                 self.status_banner =
-                    "Requested 15s Retroactive Capture (LPK25 MIDI, Musical Typing, or DS-10 Line-In!)"
+                    "Requested 15s Retroactive Capture (USB MIDI, Musical Typing, or Line-In)"
                         .into();
             }
             PaletteCommand::AddUniversalTrack => {
-                self.snapshot_before("Add Universal Track");
-                let id = self
-                    .project
-                    .add_track(format!("{:02} Universal Track", self.project.tracks.len() + 1));
-                self.selected_track = Some(id);
-                self.sync_engine();
+                self.spawn_track_of_kind(NewTrackKind::Universal);
             }
             PaletteCommand::AddWavetableSynthTrack => {
                 self.snapshot_before("Add FerricWave Wavetable Synth Track");
@@ -1124,6 +1239,8 @@ impl FerricDawApp {
                     self.project.tracks.len() + 1
                 ));
                 if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
                     t.fx_chain.push(FxSlot::new(FxKind::WavetableSynth));
                     t.fx_chain.push(FxSlot::new(FxKind::MultibandOtt));
                     t.fx_chain.push(FxSlot::new(FxKind::ConvolutionIr));
@@ -1138,8 +1255,131 @@ impl FerricDawApp {
                     .project
                     .add_track(format!("{:02} PolySynth", self.project.tracks.len() + 1));
                 if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
                     t.fx_chain.push(FxSlot::new(FxKind::PolySynth));
                     t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddMonoBassTrack => {
+                self.snapshot_before("Add MonoBass Track");
+                let id = self
+                    .project
+                    .add_track(format!("{:02} MonoBass", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [180, 72, 48];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    let mut bass = FxSlot::new(FxKind::MonoBass);
+                    bass.preset_name = "Dark Sub MonoBass".into();
+                    bass.set_param(0, 0.0);
+                    bass.set_param(1, 55.0);
+                    bass.set_param(2, 220.0);
+                    bass.set_param(9, 62.0);
+                    t.fx_chain.push(bass);
+                    t.fx_chain.push(FxSlot::new(FxKind::Compressor));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddPrismTrack => {
+                self.snapshot_before("Add Ferric Prism Track");
+                let id = self
+                    .project
+                    .add_track(format!("{:02} Ferric Prism", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [186, 108, 226];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    let mut prism = FxSlot::new(FxKind::PrismSynth);
+                    prism.preset_name = "Glass Pad Morph".into();
+                    prism.set_param(0, 58.0);
+                    prism.set_param(1, 48.0);
+                    prism.set_param(2, 36.0);
+                    t.fx_chain.push(prism);
+                    t.fx_chain.push(FxSlot::new(FxKind::PlateHallReverb));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddHostDnaTrack => {
+                self.snapshot_before("Add HostDNA Track");
+                let seed = compute_host_seed();
+                let id = self.project.add_track(format!(
+                    "{:02} HostDNA {}",
+                    self.project.tracks.len() + 1,
+                    format_host_seed(seed)
+                ));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [72, 168, 140];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    t.fx_chain.push(FxSlot::new_host_dna(seed));
+                    t.fx_chain.push(FxSlot::new(FxKind::PlateHallReverb));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.status_banner = format!(
+                    "HostDNA Init from this PC · seed {} (editable; paste/reseed anytime)",
+                    format_host_seed(seed)
+                );
+                self.sync_engine();
+            }
+            PaletteCommand::SpawnDualKeyboardStudio => self.spawn_dual_keyboard_studio(),
+            PaletteCommand::AddPadTrack => {
+                self.snapshot_before("Add Soft Pad Track");
+                let id = self
+                    .project
+                    .add_track(format!("{:02} Soft Pad", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [120, 96, 180];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    let mut pad = FxSlot::new(FxKind::PolySynth);
+                    pad.preset_name = "Soft Analog Pad".into();
+                    pad.set_param(0, 0.0);
+                    pad.set_param(1, 38.0);
+                    pad.set_param(2, 1800.0);
+                    pad.set_param(5, 220.0);
+                    pad.set_param(6, 780.0);
+                    pad.set_param(7, 78.0);
+                    pad.set_param(8, 920.0);
+                    t.fx_chain.push(pad);
+                    t.fx_chain.push(FxSlot::new(FxKind::PlateHallReverb));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddPercTrack => {
+                self.snapshot_before("Add Percussion Track");
+                let id = self
+                    .project
+                    .add_track(format!("{:02} Percussion", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [220, 160, 48];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    let mut kit = FxSlot::new(FxKind::DrumKit);
+                    kit.preset_name = "Tight Techno Kit".into();
+                    kit.set_param(0, 78.0);
+                    kit.set_param(1, 48.0);
+                    kit.set_param(2, 72.0);
+                    kit.set_param(3, 85.0);
+                    kit.set_param(4, 18.0);
+                    t.fx_chain.push(kit);
+                    let mut glue = FxSlot::new(FxKind::Compressor);
+                    glue.preset_name = "Perc Glue".into();
+                    glue.set_param(0, -18.0);
+                    glue.set_param(1, 3.0);
+                    glue.set_param(2, 8.0);
+                    glue.set_param(3, 80.0);
+                    t.fx_chain.push(glue);
                 }
                 self.selected_track = Some(id);
                 self.bottom_tab = BottomTab::FxAndModulators;
@@ -1151,6 +1391,8 @@ impl FerricDawApp {
                     .project
                     .add_track(format!("{:02} Slice Sampler", self.project.tracks.len() + 1));
                 if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
                     t.fx_chain.push(FxSlot::new(FxKind::SamplePlayer));
                 }
                 self.selected_track = Some(id);
@@ -1158,20 +1400,7 @@ impl FerricDawApp {
                 self.sync_engine();
             }
             PaletteCommand::AddVocalPitchTrack => {
-                self.snapshot_before("Add Vocal Auto-Pitch Track");
-                let id = self
-                    .project
-                    .add_track(format!("{:02} Vocal Auto-Pitch", self.project.tracks.len() + 1));
-                if let Some(t) = self.project.find_track_mut(id) {
-                    t.input_source = InputSource::AudioMono { channel: 0 };
-                    t.fx_chain.push(FxSlot::new(FxKind::NoiseGate));
-                    t.fx_chain.push(FxSlot::new(FxKind::VocalPitch));
-                    t.fx_chain.push(FxSlot::new(FxKind::Compressor));
-                    t.fx_chain.push(FxSlot::new(FxKind::PlateHallReverb));
-                }
-                self.selected_track = Some(id);
-                self.bottom_tab = BottomTab::FxAndModulators;
-                self.sync_engine();
+                self.spawn_track_of_kind(NewTrackKind::Vocal);
             }
             PaletteCommand::AddDrumTrack => {
                 self.snapshot_before("Add Drum Kit Track");
@@ -1179,6 +1408,8 @@ impl FerricDawApp {
                     .project
                     .add_track(format!("{:02} Studio Drum Kit", self.project.tracks.len() + 1));
                 if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
                     t.fx_chain.push(FxSlot::new(FxKind::DrumKit));
                 }
                 self.selected_track = Some(id);
@@ -1191,6 +1422,8 @@ impl FerricDawApp {
                     .add_track(format!("{:02} Guitar Amp Rig", self.project.tracks.len() + 1));
                 if let Some(t) = self.project.find_track_mut(id) {
                     t.input_source = InputSource::AudioMono { channel: 0 };
+                    t.record_arm = true;
+                    t.input_monitoring = true;
                     t.fx_chain.push(FxSlot::new(FxKind::ChromaticTuner));
                     t.fx_chain.push(FxSlot::new(FxKind::NoiseGate));
                     t.fx_chain.push(FxSlot::new(FxKind::AmpCabSim));
@@ -1593,6 +1826,29 @@ impl FerricDawApp {
             return;
         }
 
+        if self.launch_pad_focused
+            && self.bottom_tab == BottomTab::LaunchPad
+            && !ctrl
+            && !shift
+        {
+            let num_keys = [
+                Key::Num1,
+                Key::Num2,
+                Key::Num3,
+                Key::Num4,
+                Key::Num5,
+                Key::Num6,
+                Key::Num7,
+                Key::Num8,
+            ];
+            for (i, key) in num_keys.iter().enumerate() {
+                if ctx.input(|inp| inp.key_pressed(*key)) && i < self.project.scenes.len() {
+                    self.queue_scene_launch(i);
+                    return;
+                }
+            }
+        }
+
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.toggle_play();
         }
@@ -1600,7 +1856,48 @@ impl FerricDawApp {
             self.execute_palette_command(PaletteCommand::CaptureRetroactive);
             return;
         }
-        if !ctrl && !shift && ctx.input(|i| i.key_pressed(Key::Delete)) {
+        // Transport letters when musical typing pads are off (avoids pad key collisions).
+        if !ctrl && !shift && !self.keyboard_pads.enabled {
+            if ctx.input(|i| i.key_pressed(Key::R)) {
+                self.toggle_record();
+                return;
+            }
+            if ctx.input(|i| i.key_pressed(Key::L)) {
+                self.project.loop_enabled = !self.project.loop_enabled;
+                self.sync_engine();
+                return;
+            }
+            if ctx.input(|i| i.key_pressed(Key::C)) {
+                self.project.metronome_enabled = !self.project.metronome_enabled;
+                self.sync_engine();
+                return;
+            }
+            if ctx.input(|i| i.key_pressed(Key::S)) {
+                if let Some((tid, cid)) = self.selected_clip {
+                    let beat = self.engine.latest_telemetry.playhead_beat;
+                    self.snapshot_before("Split Clip at Playhead");
+                    if let Some(new_id) = self.project.split_clip(tid, cid, beat) {
+                        self.selected_clip = Some((tid, new_id));
+                        self.sync_engine();
+                    }
+                }
+                return;
+            }
+            if ctx.input(|i| i.key_pressed(Key::Q)) {
+                if let Some((tid, cid)) = self.selected_clip {
+                    self.snapshot_before("Quantize MIDI 1/16");
+                    self.project.quantize_midi_clip(tid, cid, 0.25);
+                    self.sync_engine();
+                }
+                return;
+            }
+        }
+        // Delete/Backspace on selected MIDI note tiles is handled in the piano roll.
+        if !ctrl
+            && !shift
+            && self.piano_roll.selected_notes.is_empty()
+            && ctx.input(|i| i.key_pressed(Key::Delete))
+        {
             if self.arrangement.multi_selected_clips.len() > 1 {
                 self.snapshot_before("Delete Selected Clips");
                 let batch: Vec<_> = self.arrangement.multi_selected_clips.drain(..).collect();
@@ -1618,54 +1915,366 @@ impl FerricDawApp {
             }
         }
 
-        if self.musical_typing_enabled && !ctrl {
-            if ctx.input(|i| i.key_pressed(Key::Z)) {
-                self.musical_typing_octave = (self.musical_typing_octave - 1).max(1);
+        if !ctrl {
+            for ev in self.keyboard_pads.poll(ctx, self.selected_track) {
+                self.engine.send(EngineCommand::LiveMidi {
+                    target_track: ev.target_track,
+                    note: ev.note,
+                    velocity: ev.velocity,
+                    is_note_on: ev.is_note_on,
+                });
             }
-            if ctx.input(|i| i.key_pressed(Key::X)) {
-                self.musical_typing_octave = (self.musical_typing_octave + 1).min(7);
-            }
+        }
+    }
 
-            let key_map: &[(Key, u8)] = &[
-                (Key::A, 0),
-                (Key::W, 1),
-                (Key::S, 2),
-                (Key::E, 3),
-                (Key::D, 4),
-                (Key::F, 5),
-                (Key::T, 6),
-                (Key::G, 7),
-                (Key::Y, 8),
-                (Key::H, 9),
-                (Key::U, 10),
-                (Key::J, 11),
-                (Key::K, 12),
-            ];
-            let base = ((self.musical_typing_octave as i32 + 1) * 12).clamp(12, 96) as u8;
-            let target = self.selected_track;
-
-            for &(k, semi) in key_map {
-                let note = (base + semi).min(127);
-                let down = ctx.input(|i| i.key_down(k));
-                let was_down = self.held_typing_keys.contains(&k);
-                if down && !was_down {
-                    self.held_typing_keys.insert(k);
-                    self.engine.send(EngineCommand::LiveMidi {
-                        target_track: target,
-                        note,
-                        velocity: 108,
-                        is_note_on: true,
-                    });
-                } else if !down && was_down {
-                    self.held_typing_keys.remove(&k);
-                    self.engine.send(EngineCommand::LiveMidi {
-                        target_track: target,
-                        note,
-                        velocity: 0,
-                        is_note_on: false,
-                    });
+    /// Create a track from a first-class type (Vocal / MIDI / Instrument / Audio / Universal).
+    fn spawn_track_of_kind(&mut self, kind: NewTrackKind) {
+        self.snapshot_before(kind.label());
+        let idx = self.project.tracks.len() + 1;
+        let id = match kind {
+            NewTrackKind::Vocal => {
+                let id = self.project.add_track(format!("{:02} Vocal", idx));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [220, 92, 118];
+                    t.input_source = InputSource::AudioMono { channel: 0 };
+                    t.record_arm = true;
+                    t.input_monitoring = true;
+                    t.fx_chain.push(FxSlot::new(FxKind::NoiseGate));
+                    let mut vocal = FxSlot::new(FxKind::VocalPitch);
+                    vocal.preset_name = "Natural Vocal".into();
+                    t.fx_chain.push(vocal);
+                    t.fx_chain.push(FxSlot::new(FxKind::Compressor));
                 }
+                id
             }
+            NewTrackKind::Midi => {
+                let id = self.project.add_track(format!("{:02} MIDI", idx));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [92, 168, 220];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    t.input_monitoring = true;
+                }
+                id
+            }
+            NewTrackKind::Instrument => {
+                let id = self.project.add_track(format!("{:02} Instrument", idx));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [186, 108, 226];
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    t.input_monitoring = true;
+                    t.fx_chain.push(FxSlot::new(FxKind::PolySynth));
+                    t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+                }
+                id
+            }
+            NewTrackKind::AudioInterface => {
+                let id = self.project.add_track(format!("{:02} Audio In", idx));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.color = [72, 180, 140];
+                    t.input_source = InputSource::AudioMono { channel: 0 };
+                    t.record_arm = true;
+                    t.input_monitoring = true;
+                    t.fx_chain.push(FxSlot::new(FxKind::ParametricEq));
+                    t.fx_chain.push(FxSlot::new(FxKind::Compressor));
+                }
+                id
+            }
+            NewTrackKind::Universal => {
+                let id = self
+                    .project
+                    .add_track(format!("{:02} Universal Track", idx));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::AudioAndMidi { stereo_pair: 0 };
+                    t.input_monitoring = true;
+                }
+                id
+            }
+        };
+        self.selected_track = Some(id);
+        self.status_banner = format!("Added {} — {}", kind.label(), kind.hint());
+        if matches!(
+            kind,
+            NewTrackKind::Instrument | NewTrackKind::Vocal | NewTrackKind::AudioInterface
+        ) {
+            self.bottom_tab = BottomTab::FxAndModulators;
+            self.show_bottom_dock = true;
+        }
+        self.sync_engine();
+    }
+
+    /// Spawn Prism on Pad A + Drum Kit on Pad B and enable dual keyboard pads.
+    fn spawn_dual_keyboard_studio(&mut self) {
+        self.snapshot_before("Spawn Dual Keyboard Studio");
+        let prism_id = self.project.add_track("Pad A — Ferric Prism");
+        if let Some(t) = self.project.find_track_mut(prism_id) {
+            t.color = [186, 108, 226];
+            t.input_source = InputSource::MidiAll;
+            let mut prism = FxSlot::new(FxKind::PrismSynth);
+            prism.preset_name = "Laptop Lead Prism".into();
+            prism.set_param(0, 72.0);
+            prism.set_param(1, 55.0);
+            prism.set_param(2, 28.0);
+            prism.set_param(3, 32.0);
+            t.fx_chain.push(prism);
+            t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+        }
+        let kit_id = self.project.add_track("Pad B — Perc / Kit");
+        if let Some(t) = self.project.find_track_mut(kit_id) {
+            t.color = [220, 160, 48];
+            t.input_source = InputSource::MidiAll;
+            let mut kit = FxSlot::new(FxKind::DrumKit);
+            kit.preset_name = "Tight Techno Kit".into();
+            kit.set_param(0, 78.0);
+            kit.set_param(1, 48.0);
+            kit.set_param(3, 85.0);
+            t.fx_chain.push(kit);
+        }
+        self.keyboard_pads.enabled = true;
+        self.keyboard_pads.pad_a_track = Some(prism_id);
+        self.keyboard_pads.pad_b_track = Some(kit_id);
+        self.keyboard_pads.pad_b_layout = keyboard_pads::PadBLayout::DrumGrid;
+        // Compact laptops: number row. Full keyboards: keep Numpad (raw VK).
+        self.keyboard_pads.pad_b_source = PadBSource::Numpad;
+        self.selected_track = Some(prism_id);
+        self.browser.visible = true;
+        self.browser.tab = browser::BrowserTab::HardwareRig;
+        self.sync_engine();
+        self.status_banner =
+            "Dual Keyboard Studio ready — letters → Prism, numpad/number-row → drums. Toggle Pads in the transport bar."
+                .into();
+    }
+
+    fn render_dna_strip(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(
+                egui::RichText::new("DNA")
+                    .size(11.0)
+                    .strong()
+                    .color(ACCENT_FERRIC),
+            )
+            .on_hover_text(
+                "Feel = live timing pocket · Velocity = live accents · Apply writes Feel into notes",
+            );
+            ui.label(egui::RichText::new("Feel").size(10.5).color(TEXT_DIM));
+            ui.spacing_mut().slider_width = 88.0;
+            let mut feel_pct = (self.project.dna_feel * 100.0).round();
+            if ui
+                .add(egui::Slider::new(&mut feel_pct, 0.0..=100.0).show_value(true))
+                .changed()
+            {
+                self.project.dna_feel = (feel_pct / 100.0).clamp(0.0, 1.0);
+                self.sync_engine();
+            }
+            egui::ComboBox::from_id_salt("dna_groove_tmpl")
+                .selected_text(match self.project.dna_groove_template {
+                    GrooveTemplate::Straight => "Straight",
+                    GrooveTemplate::Mpc58Classic => "Techno Pocket",
+                    GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
+                    GrooveTemplate::PushedUrgent16ths => "Push",
+                    other => other.short_badge(),
+                })
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for &tmpl in GrooveTemplate::ALL {
+                        let label = match tmpl {
+                            GrooveTemplate::Straight => "Straight",
+                            GrooveTemplate::Mpc58Classic => "Techno Pocket",
+                            GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
+                            GrooveTemplate::PushedUrgent16ths => "Push",
+                            other => other.label(),
+                        };
+                        if ui
+                            .selectable_value(
+                                &mut self.project.dna_groove_template,
+                                tmpl,
+                                label,
+                            )
+                            .changed()
+                        {
+                            self.sync_engine();
+                        }
+                    }
+                });
+            ui.separator();
+            ui.label(egui::RichText::new("Velocity").size(10.5).color(TEXT_DIM));
+            ui.spacing_mut().slider_width = 88.0;
+            let mut vel_pct = (self.project.dna_velocity * 100.0).round();
+            if ui
+                .add(egui::Slider::new(&mut vel_pct, 0.0..=100.0).show_value(true))
+                .changed()
+            {
+                self.project.dna_velocity = (vel_pct / 100.0).clamp(0.0, 1.0);
+                self.sync_engine();
+            }
+            egui::ComboBox::from_id_salt("dna_accent_shape")
+                .selected_text(self.project.dna_accent_shape.label())
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    for &shape in VelocityAccentShape::ALL {
+                        if ui
+                            .selectable_value(
+                                &mut self.project.dna_accent_shape,
+                                shape,
+                                shape.label(),
+                            )
+                            .changed()
+                        {
+                            self.sync_engine();
+                        }
+                    }
+                });
+            if ui
+                .small_button("Apply drums")
+                .on_hover_text(
+                    "Writes Feel groove into drum/kit note timing (undoable) · Velocity stays live",
+                )
+                .clicked()
+            {
+                self.snapshot_before("Apply DNA to Drums");
+                self.project.apply_dna_to_tracks(true);
+                self.sync_engine();
+                self.status_banner =
+                    "DNA Feel template applied to drums (Velocity DNA stays live).".into();
+            }
+            if ui
+                .small_button("Apply all MIDI")
+                .on_hover_text(
+                    "Writes Feel groove into all MIDI tracks (undoable) · Velocity stays live",
+                )
+                .clicked()
+            {
+                self.snapshot_before("Apply DNA to All MIDI");
+                self.project.apply_dna_to_tracks(false);
+                self.sync_engine();
+                self.status_banner =
+                    "DNA Feel template applied to MIDI instruments (Velocity DNA stays live)."
+                        .into();
+            }
+        });
+    }
+
+    fn render_update_modal(&mut self, ctx: &Context) {
+        if !self.show_update_modal {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("FerricDAW Updates")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.5_f32, ACCENT_FERRIC))
+                    .corner_radius(8)
+                    .inner_margin(14.0),
+            )
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Installed: v{}",
+                        UpdateService::current_version()
+                    ))
+                    .size(13.0)
+                    .strong()
+                    .color(TEXT_MAIN),
+                );
+                ui.label(
+                    egui::RichText::new(UpdateService::feed_url())
+                        .size(10.0)
+                        .monospace()
+                        .color(TEXT_DIM),
+                );
+                ui.add_space(8.0);
+
+                if !UpdateService::feed_configured() {
+                    ui.label(
+                        egui::RichText::new(
+                            "Update feed not configured yet. After GitHub Releases are set up, \
+                             the portable zip will include update_feed.url automatically.",
+                        )
+                        .color(ACCENT_AMBER),
+                    );
+                } else if let Some(err) = &self.updater.last_error {
+                    ui.label(egui::RichText::new(err).color(ACCENT_RED));
+                    if ui.button("Retry check").clicked() {
+                        self.updater.check_async();
+                    }
+                } else if let Some(feed) = self.updater.pending.clone() {
+                    ui.label(
+                        egui::RichText::new(format!("New version: v{}", feed.version))
+                            .size(15.0)
+                            .strong()
+                            .color(ACCENT_TEAL),
+                    );
+                    if !feed.notes.is_empty() {
+                        ui.label(egui::RichText::new(&feed.notes).color(TEXT_DIM));
+                    }
+                    ui.add_space(6.0);
+                    if self.updater.downloading {
+                        ui.label("Downloading…");
+                    } else if self.updater.download_path.is_some() {
+                        ui.label(
+                            egui::RichText::new("Download ready — install will restart FerricDAW.")
+                                .color(ACCENT_TEAL),
+                        );
+                        if ui
+                            .button(
+                                egui::RichText::new("Install & Restart")
+                                    .strong()
+                                    .color(ACCENT_FERRIC),
+                            )
+                            .clicked()
+                        {
+                            match self.updater.apply_and_restart() {
+                                Ok(()) => {
+                                    self.status_banner =
+                                        "Applying update — FerricDAW will restart…".into();
+                                    self.quit_for_update = true;
+                                }
+                                Err(e) => {
+                                    self.updater.last_error = Some(e);
+                                }
+                            }
+                        }
+                    } else if ui
+                        .button(egui::RichText::new("Download update").strong().color(ACCENT_TEAL))
+                        .clicked()
+                    {
+                        self.updater.download_async();
+                    }
+                    if ui.button("Open release page").clicked() {
+                        let _ = std::process::Command::new("cmd")
+                            .args(["/C", "start", "", &feed.url])
+                            .spawn();
+                    }
+                } else if self.updater.checked_this_session {
+                    ui.label(
+                        egui::RichText::new("You're on the latest version.")
+                            .color(ACCENT_TEAL),
+                    );
+                    if ui.button("Check again").clicked() {
+                        self.updater.check_async();
+                    }
+                } else {
+                    ui.label("Checking…");
+                    if ui.button("Check now").clicked() {
+                        self.updater.check_async();
+                    }
+                }
+
+                ui.add_space(8.0);
+                if ui.button("Close").clicked() {
+                    self.show_update_modal = false;
+                }
+            });
+        if !open {
+            self.show_update_modal = false;
         }
     }
 
@@ -1676,43 +2285,30 @@ impl FerricDawApp {
             ui.spacing_mut().item_spacing.x = 6.0;
 
             if pill_toggle(ui, "☰ Browser", self.browser.visible, ACCENT_TEAL)
-                .on_hover_text("Show/Hide Left Studio Browser (Akai LPK25 + DS-10 Rig, Samples, Presets & CLAP Plugins)")
+                .on_hover_text("Show/Hide Left Studio Browser (Hardware Rig, Samples, Presets & CLAP/VST3)")
                 .clicked()
             {
                 self.browser.visible = !self.browser.visible;
             }
 
             ui.menu_button(
-                egui::RichText::new("🧲 FERRIC DAW")
+                egui::RichText::new("Ferric")
                     .size(13.0)
                     .strong()
                     .color(ACCENT_FERRIC),
                 |ui| {
-                    if ui.button("📄 New Empty Session").clicked() {
+                    ui.set_min_width(240.0);
+                    ui.label(egui::RichText::new("Session").size(10.5).color(TEXT_DIM));
+                    if ui.button("New Empty Session").clicked() {
                         self.request_destructive(PendingDestructive::NewEmpty);
                         ui.close_menu();
                     }
-                    if ui
-                        .button("🎹 Spawn Akai LPK25 + KORG DS-10 Hybrid Rig")
-                        .clicked()
-                    {
-                        self.spawn_akai_and_ds10_rig();
-                        ui.close_menu();
-                    }
-                    if ui
-                        .button("🎵 Reload Afterglow Copper Playground")
-                        .clicked()
-                    {
-                        self.request_destructive(PendingDestructive::LoadDemo);
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if ui.button("📂 Open Session (.ferric / .json)...  Ctrl+O").clicked() {
+                    if ui.button("Open…  Ctrl+O").clicked() {
                         self.open_project_dialog();
                         ui.close_menu();
                     }
                     if !self.recent_projects.is_empty() {
-                        ui.menu_button("🕘 Open Recent Session", |ui| {
+                        ui.menu_button("Open Recent", |ui| {
                             for rp in self.recent_projects.clone() {
                                 if ui.button(rp.display().to_string()).clicked() {
                                     self.request_destructive(PendingDestructive::OpenPath(rp));
@@ -1721,49 +2317,91 @@ impl FerricDawApp {
                             }
                         });
                     }
-                    if ui.button("💾 Save Session Bundle (.ferric + Audio)...  Ctrl+S").clicked() {
+                    if ui.button("Save  Ctrl+S").clicked() {
                         self.save_project_dialog();
                         ui.close_menu();
                     }
-                    if ui.button("💾 Save Session As...  Ctrl+Shift+S").clicked() {
+                    if ui.button("Save As…").clicked() {
                         self.save_project_as_dialog();
                         ui.close_menu();
                     }
-                    if ui.button("🛡 Recover Last Crash-Autosave").clicked() {
+                    if ui.button("Recover Crash Autosave").clicked() {
                         self.recover_autosave();
                         ui.close_menu();
                     }
-                    if ui.button("🎹 Import Standard MIDI File (.mid)...").clicked() {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Add").size(10.5).color(TEXT_DIM));
+                    ui.menu_button("Add Track…", |ui| {
+                        for &kind in NewTrackKind::ALL {
+                            if ui
+                                .button(kind.label())
+                                .on_hover_text(kind.hint())
+                                .clicked()
+                            {
+                                self.spawn_track_of_kind(kind);
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                    if ui.button("Import Audio onto Selected Track…").clicked() {
+                        if self.selected_track.is_none() {
+                            self.spawn_track_of_kind(NewTrackKind::AudioInterface);
+                        }
+                        if let Some(tid) = self.selected_track {
+                            self.import_audio_to_track(tid);
+                        }
+                        ui.close_menu();
+                    }
+                    if ui.button("Import MIDI (.mid)…").clicked() {
                         self.import_smf_midi_dialog(None);
                         ui.close_menu();
                     }
+                    if ui.button("Hardware Studio Rig (MIDI + Line-In)").clicked() {
+                        self.spawn_hardware_studio_rig();
+                        ui.close_menu();
+                    }
+                    if ui.button("Afterglow Copper Playground").clicked() {
+                        self.request_destructive(PendingDestructive::LoadDemo);
+                        ui.close_menu();
+                    }
                     ui.separator();
-                    if ui.button("💿 Bounce Master / Stems to FLAC or WAV...  Ctrl+B").clicked() {
+                    ui.label(egui::RichText::new("Updates").size(10.5).color(TEXT_DIM));
+                    if ui
+                        .button(format!(
+                            "Check for Updates… (v{})",
+                            UpdateService::current_version()
+                        ))
+                        .clicked()
+                    {
+                        self.updater.check_async();
+                        self.show_update_modal = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    ui.label(egui::RichText::new("Export / Edit").size(10.5).color(TEXT_DIM));
+                    if ui.button("Bounce Master / Stems…  Ctrl+B").clicked() {
                         self.execute_palette_command(PaletteCommand::OpenBounceModal);
                         ui.close_menu();
                     }
-                    if ui.button("🔗 Glue / Consolidate Selected Clips  Ctrl+G").clicked() {
+                    if ui.button("Glue Selected Clips  Ctrl+G").clicked() {
                         self.glue_selected_clips();
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui
-                        .button("🎓 Night Current Tutorial (build the song)")
-                        .clicked()
-                    {
+                    if ui.button("Night Current Tutorial").clicked() {
                         self.start_night_current_tutorial();
                         ui.close_menu();
                     }
-                    if ui.button("❓ Quickstart & Keyboard Shortcuts  F1").clicked() {
+                    if ui.button("Help & Shortcuts  F1").clicked() {
                         self.show_help_modal = true;
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("↩ Undo  Ctrl+Z").clicked() {
+                    if ui.button("Undo  Ctrl+Z").clicked() {
                         self.perform_undo();
                         ui.close_menu();
                     }
-                    if ui.button("↪ Redo  Ctrl+Y").clicked() {
+                    if ui.button("Redo  Ctrl+Y").clicked() {
                         self.perform_redo();
                         ui.close_menu();
                     }
@@ -1772,21 +2410,65 @@ impl FerricDawApp {
 
             ui.separator();
 
-            if ui.button("⏮").on_hover_text("Return to Start").clicked() {
+            if ui
+                .small_button("⏮")
+                .on_hover_text("Return playhead to start")
+                .clicked()
+            {
                 self.engine.send(EngineCommand::SeekBeat(0.0));
             }
-            let play_lbl = if telem.is_playing { "⏸ PAUSE" } else { "▶ PLAY" };
-            if pill_toggle(ui, play_lbl, telem.is_playing, ACCENT_TEAL).clicked() {
+            if ui
+                .small_button("◀Bar")
+                .on_hover_text("Nudge playhead back 1 bar")
+                .clicked()
+            {
+                let bpb = self.project.time_signature.beats_per_bar();
+                let beat = (telem.playhead_beat - bpb).max(0.0);
+                self.engine.send(EngineCommand::SeekBeat(beat));
+            }
+            if ui
+                .small_button("Bar▶")
+                .on_hover_text("Nudge playhead forward 1 bar")
+                .clicked()
+            {
+                let bpb = self.project.time_signature.beats_per_bar();
+                self.engine
+                    .send(EngineCommand::SeekBeat(telem.playhead_beat + bpb));
+            }
+            let play_lbl = if telem.is_playing { "Pause" } else { "Play" };
+            if pill_toggle(ui, play_lbl, telem.is_playing, ACCENT_TEAL)
+                .on_hover_text("Space — play / pause")
+                .clicked()
+            {
                 self.toggle_play();
             }
-            if pill_toggle(ui, "● REC", telem.is_recording, ACCENT_RED).clicked() {
+            if ui
+                .small_button("Stop")
+                .on_hover_text("Stop playback (keeps playhead)")
+                .clicked()
+            {
+                if telem.is_recording {
+                    self.engine.send(EngineCommand::SetRecord(false));
+                }
+                self.engine.send(EngineCommand::Stop);
+            }
+            if pill_toggle(ui, "Rec", telem.is_recording, ACCENT_RED)
+                .on_hover_text("Record — arms selected track if nothing is armed")
+                .clicked()
+            {
                 self.toggle_record();
             }
-            if pill_toggle(ui, "⟳ LOOP", self.project.loop_enabled, ACCENT_FERRIC).clicked() {
+            if pill_toggle(ui, "Loop", self.project.loop_enabled, ACCENT_FERRIC)
+                .on_hover_text("Toggle loop · right-click ruler to set loop region")
+                .clicked()
+            {
                 self.project.loop_enabled = !self.project.loop_enabled;
                 self.sync_engine();
             }
-            if pill_toggle(ui, "⏱ CLICK", self.project.metronome_enabled, ACCENT_AMBER).clicked() {
+            if pill_toggle(ui, "Click", self.project.metronome_enabled, ACCENT_AMBER)
+                .on_hover_text("Metronome click")
+                .clicked()
+            {
                 self.project.metronome_enabled = !self.project.metronome_enabled;
                 self.sync_engine();
             }
@@ -1854,7 +2536,7 @@ impl FerricDawApp {
                     )
                     .fill(Color32::from_rgb(44, 36, 22)),
                 )
-                .on_hover_text("Retroactive Capture (Shift+R): Drops last 15s of LPK25 MIDI or DS-10 Audio!")
+                .on_hover_text("Retroactive Capture (Shift+R): Drops last 15s of USB MIDI or Line-In audio")
                 .clicked()
             {
                 self.execute_palette_command(PaletteCommand::CaptureRetroactive);
@@ -1885,13 +2567,27 @@ impl FerricDawApp {
                             let bbt = self.project.format_bar_beat_tick(telem.playhead_beat);
                             let secs = self.project.beats_to_seconds(telem.playhead_beat);
                             let cur_ts = self.project.time_signature_at_beat(telem.playhead_beat);
-                            ui.label(
-                                egui::RichText::new(bbt)
-                                    .size(14.0)
-                                    .monospace()
-                                    .strong()
-                                    .color(ACCENT_TEAL),
-                            );
+                            let pos_resp = ui
+                                .add(
+                                    egui::Label::new(
+                                        egui::RichText::new(bbt)
+                                            .size(14.0)
+                                            .monospace()
+                                            .strong()
+                                            .color(ACCENT_TEAL),
+                                    )
+                                    .sense(egui::Sense::click_and_drag()),
+                                )
+                                .on_hover_text(
+                                    "Drag to scrub playhead · or click the arrangement ruler / empty lane",
+                                );
+                            if pos_resp.dragged() {
+                                let dx = pos_resp.drag_delta().x;
+                                let ppb = self.arrangement.pixels_per_beat.max(14.0);
+                                let beat =
+                                    (telem.playhead_beat + (dx / ppb) as f64).max(0.0);
+                                self.engine.send(EngineCommand::SeekBeat(beat));
+                            }
                             ui.label(
                                 egui::RichText::new(format!(
                                     "{:05.2}s  {}/{}",
@@ -1908,13 +2604,13 @@ impl FerricDawApp {
             if !self.project.tempo_map.is_empty() {
                 let live_bpm = self.project.bpm_at_beat(telem.playhead_beat);
                 ui.label(
-                    egui::RichText::new(format!("🎼 {:.1} BPM", live_bpm))
+                    egui::RichText::new(format!("{:.1} BPM", live_bpm))
                         .size(11.5)
                         .monospace()
                         .strong()
                         .color(ACCENT_AMBER),
                 )
-                .on_hover_text("Live Conductor Tempo Map Active!");
+                .on_hover_text("Conductor tempo map active — edit in Tempo Map lane");
             } else if ui
                 .add(
                     egui::DragValue::new(&mut self.project.bpm)
@@ -1922,13 +2618,35 @@ impl FerricDawApp {
                         .speed(0.25)
                         .suffix(" BPM"),
                 )
+                .on_hover_text("Project tempo")
                 .changed()
             {
                 self.sync_engine();
             }
+            // Global meter — always visible next to BPM
+            let mut meter_changed = false;
+            ui.label(egui::RichText::new("Meter").size(10.5).color(TEXT_DIM));
+            meter_changed |= ui
+                .add(
+                    egui::DragValue::new(&mut self.project.time_signature.numerator)
+                        .range(1..=16)
+                        .speed(0.2),
+                )
+                .changed();
+            ui.label(egui::RichText::new("/").size(11.0).color(TEXT_DIM));
+            meter_changed |= ui
+                .add(
+                    egui::DragValue::new(&mut self.project.time_signature.denominator)
+                        .range(1..=16)
+                        .speed(0.2),
+                )
+                .changed();
+            if meter_changed {
+                self.sync_engine();
+            }
             if ui
                 .small_button("TAP")
-                .on_hover_text("Tap 4x along to your Nintendo DS KORG DS-10 to lock exact BPM!")
+                .on_hover_text("Tap 4× to set project tempo")
                 .clicked()
             {
                 if let Some(new_bpm) = self.tap_tempo.register_tap() {
@@ -1938,27 +2656,61 @@ impl FerricDawApp {
                 }
             }
 
-            let mt_lbl = format!("🎹 Keys C{}", self.musical_typing_octave);
+            let mt_lbl = if self.keyboard_pads.enabled {
+                format!(
+                    "Pads A{} B{}",
+                    self.keyboard_pads.pad_a_octave, self.keyboard_pads.pad_b_octave
+                )
+            } else {
+                "Pads".into()
+            };
             if pill_toggle(
                 ui,
                 &mt_lbl,
-                self.musical_typing_enabled,
+                self.keyboard_pads.enabled,
                 Color32::from_rgb(186, 108, 226),
+            )
+            .on_hover_text(
+                "Dual keyboard pads — letters = Pad A, numpad/number row = Pad B (Hardware Rig)",
             )
             .clicked()
             {
-                self.musical_typing_enabled = !self.musical_typing_enabled;
+                if self.keyboard_pads.enabled {
+                    for ev in self.keyboard_pads.panic_release_all() {
+                        self.engine.send(EngineCommand::LiveMidi {
+                            target_track: ev.target_track,
+                            note: ev.note,
+                            velocity: ev.velocity,
+                            is_note_on: ev.is_note_on,
+                        });
+                    }
+                }
+                self.keyboard_pads.enabled = !self.keyboard_pads.enabled;
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if pill_toggle(ui, "❓ Help", self.show_help_modal, ACCENT_TEAL)
-                    .on_hover_text("Open Studio Quickstart & Shortcut Guide (F1)")
+                if self.updater.pending.is_some() {
+                    if ui
+                        .button(
+                            egui::RichText::new("Update")
+                                .size(11.0)
+                                .strong()
+                                .color(ACCENT_AMBER),
+                        )
+                        .on_hover_text("A newer FerricDAW build is available")
+                        .clicked()
+                    {
+                        self.show_update_modal = true;
+                    }
+                }
+                if pill_toggle(ui, "Help", self.show_help_modal, ACCENT_TEAL)
+                    .on_hover_text("Quickstart, Feature Guide & Shortcuts (F1)")
                     .clicked()
                 {
                     self.show_help_modal = !self.show_help_modal;
                 }
-                if pill_toggle(ui, "🎓 Tutorial", self.tutorial.open, ACCENT_FERRIC)
-                    .on_hover_text("In-app Night Current tutorial — build the song step by step")
+                if pill_toggle(ui, "Tutorial", self.tutorial.open, ACCENT_FERRIC)
+                    .on_hover_text("Night Current tutorial — build the song step by step")
                     .clicked()
                 {
                     if self.tutorial.open {
@@ -1967,8 +2719,15 @@ impl FerricDawApp {
                         self.start_night_current_tutorial();
                     }
                 }
+                if pill_toggle(ui, "Dock", self.show_bottom_dock, ACCENT_TEAL)
+                    .on_hover_text("Show / hide lower dock (MIDI, FX, Mix…)")
+                    .clicked()
+                {
+                    self.show_bottom_dock = !self.show_bottom_dock;
+                }
                 if ui
-                    .button(egui::RichText::new("⌘ Ctrl+K").size(11.0).color(ACCENT_FERRIC))
+                    .button(egui::RichText::new("Ctrl+K").size(11.0).color(ACCENT_FERRIC))
+                    .on_hover_text("Command palette — add tracks, FX, tools")
                     .clicked()
                 {
                     self.palette.toggle();
@@ -1976,7 +2735,7 @@ impl FerricDawApp {
 
                 ui.label(
                     egui::RichText::new(format!(
-                        "DSP {:.1}% | {:.1} LUFS",
+                        "DSP {:.0}% · {:.1} LUFS",
                         telem.cpu_load_percent, telem.master.momentary_lufs
                     ))
                     .size(10.5)
@@ -1984,16 +2743,73 @@ impl FerricDawApp {
                     .color(TEXT_DIM),
                 );
 
-                if self.engine.has_akai_lpk25() {
+                if !self.engine.midi_port_names.is_empty() {
                     ui.label(
-                        egui::RichText::new("LPK25 ●")
+                        egui::RichText::new("MIDI ●")
                             .size(10.5)
                             .strong()
                             .color(ACCENT_TEAL),
-                    );
+                    )
+                    .on_hover_text(self.engine.midi_port_names.join(", "));
                 }
             });
         });
+    }
+
+    fn load_golden_reference_stats(&mut self, path: PathBuf) {
+        match import_audio_file(&path, self.engine.sample_rate) {
+            Ok(buf) => {
+                let lufs = ferric_dsp::measure_integrated_lufs(
+                    buf.sample_rate,
+                    &buf.left,
+                    &buf.right,
+                );
+                let tp = ferric_dsp::measure_true_peak_dbtp(&buf.left, &buf.right);
+                let peaks: Vec<f32> = buf
+                    .peaks
+                    .iter()
+                    .step_by((buf.peaks.len() / 128).max(1))
+                    .map(|(mn, mx)| mn.abs().max(mx.abs()))
+                    .take(128)
+                    .collect();
+                self.bounce_modal.reference_path = Some(path);
+                self.bounce_modal.reference_lufs = Some(lufs);
+                self.bounce_modal.reference_true_peak = Some(tp);
+                self.bounce_modal.reference_duration = Some(buf.duration_secs());
+                self.bounce_modal.reference_peaks = peaks;
+                self.bounce_modal.show_golden_panel = true;
+            }
+            Err(e) => {
+                self.status_banner = format!("Golden reference load failed: {e}");
+            }
+        }
+    }
+
+    fn ensure_default_golden_reference(&mut self) {
+        if self.bounce_modal.reference_path.is_some() {
+            return;
+        }
+        if let Some(p) = self.find_night_current_demo_path() {
+            self.load_golden_reference_stats(p);
+        }
+    }
+
+    fn find_night_current_demo_path(&self) -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("demo").join("NightCurrent-Demo.wav"));
+                candidates.push(dir.join("assets").join("demo").join("NightCurrent-Demo.wav"));
+            }
+        }
+        candidates.push(PathBuf::from("demo/NightCurrent-Demo.wav"));
+        candidates.push(PathBuf::from("assets/demo/NightCurrent-Demo.wav"));
+        // Also search upward from CWD for repo layouts during `cargo run`.
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd.join("demo").join("NightCurrent-Demo.wav"));
+            candidates.push(cwd.join("assets").join("demo").join("NightCurrent-Demo.wav"));
+        }
+        candidates.into_iter().find(|p| p.is_file())
     }
 
     fn render_bounce_modal(&mut self, ctx: &Context) {
@@ -2001,12 +2817,12 @@ impl FerricDawApp {
             return;
         }
         let mut keep_open = true;
-        egui::Window::new("💿 Mastering Bounce & Lossless FLAC / WAV Stem Export")
+        egui::Window::new("💿 Mastering Bounce & Golden Bounce Studio")
             .open(&mut keep_open)
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([495.0, 360.0])
+            .default_size([560.0, 520.0])
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new(
@@ -2176,10 +2992,16 @@ impl FerricDawApp {
                             .set_title("Choose Output Directory for Stems")
                             .pick_folder()
                         {
-                            self.bounce_modal.last_report = Some(
-                                render_all_stems_with_options(&self.project, &dir, &opts)
-                                    .map_err(|e| e.to_string()),
-                            );
+                            let report = render_all_stems_with_options(&self.project, &dir, &opts)
+                                .map_err(|e| e.to_string());
+                            if report.is_ok() {
+                                self.project.tutorial_bounce_done = true;
+                                self.project.tutorial_step_reached = self
+                                    .project
+                                    .tutorial_step_reached
+                                    .max(NightCurrentStep::Bounce.index() as u8);
+                            }
+                            self.bounce_modal.last_report = Some(report);
                         }
                     } else {
                         let ext = opts.format.extension();
@@ -2193,76 +3015,395 @@ impl FerricDawApp {
                                 .map_err(|e| e.to_string());
                             if report.is_ok() {
                                 self.bounce_modal.last_master_path = Some(file.clone());
+                                self.project.tutorial_bounce_done = true;
+                                self.project.tutorial_step_reached = self
+                                    .project
+                                    .tutorial_step_reached
+                                    .max(NightCurrentStep::Bounce.index() as u8);
+                                if let Ok(buf) =
+                                    import_audio_file(&file, self.engine.sample_rate)
+                                {
+                                    self.bounce_modal.bounce_peaks = buf
+                                        .peaks
+                                        .iter()
+                                        .step_by((buf.peaks.len() / 128).max(1))
+                                        .map(|(mn, mx)| mn.abs().max(mx.abs()))
+                                        .take(128)
+                                        .collect();
+                                }
+                                self.ensure_default_golden_reference();
                             }
                             self.bounce_modal.last_report = Some(report);
                         }
                     }
                 }
 
-                if let Some(ref res) = self.bounce_modal.last_report {
+                let report_ok = self
+                    .bounce_modal
+                    .last_report
+                    .as_ref()
+                    .and_then(|r| r.as_ref().ok().cloned());
+                let report_err = self
+                    .bounce_modal
+                    .last_report
+                    .as_ref()
+                    .and_then(|r| r.as_ref().err().cloned());
+                if let Some(rep) = report_ok {
                     ui.separator();
-                    match res {
-                        Ok(rep) => {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "✓ Exported {} file(s) ({:.1}s) • Integrated: {:.1} LUFS • True Peak: {:+.2} dBTP",
-                                    rep.output_files.len(),
-                                    rep.duration_secs,
-                                    rep.integrated_lufs,
-                                    rep.true_peak_dbtp
-                                ))
-                                .color(ACCENT_TEAL),
-                            );
-                            ui.add_space(6.0);
-                            ui.horizontal(|ui| {
-                                if ui
-                                    .button(
-                                        egui::RichText::new("A/B vs Night Current demo")
-                                            .strong()
-                                            .color(ACCENT_TEAL),
-                                    )
-                                    .on_hover_text(
-                                        "Audition the shipped golden demo WAV (finish line)",
-                                    )
-                                    .clicked()
-                                {
-                                    self.play_night_current_demo_reference();
-                                }
-                                if self.bounce_modal.last_master_path.is_some()
-                                    && ui
-                                        .button("Play my bounce")
-                                        .on_hover_text("Audition the file you just exported")
-                                        .clicked()
-                                {
-                                    if let Some(path) =
-                                        self.bounce_modal.last_master_path.clone()
-                                    {
-                                        match import_audio_file(&path, self.engine.sample_rate)
-                                        {
-                                            Ok(buf) => {
-                                                self.engine
-                                                    .send(EngineCommand::PreviewBuffer(buf));
-                                                self.status_banner = format!(
-                                                    "Playing your bounce — {}",
-                                                    path.display()
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "✓ Exported {} file(s) ({:.1}s) • Integrated: {:.1} LUFS • True Peak: {:+.2} dBTP",
+                            rep.output_files.len(),
+                            rep.duration_secs,
+                            rep.integrated_lufs,
+                            rep.true_peak_dbtp
+                        ))
+                        .color(ACCENT_TEAL),
+                    );
+                    self.bounce_modal.show_golden_panel = true;
+                    ui.add_space(4.0);
+                    let mut open_golden = false;
+                    let mut play_ref = false;
+                    let mut play_bounce = false;
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(
+                                egui::RichText::new("Open Golden Bounce")
+                                    .strong()
+                                    .color(ACCENT_TEAL),
+                            )
+                            .clicked()
+                        {
+                            open_golden = true;
+                        }
+                        if ui
+                            .button("A/B vs reference")
+                            .on_hover_text("Audition golden / demo reference")
+                            .clicked()
+                        {
+                            play_ref = true;
+                        }
+                        if self.bounce_modal.last_master_path.is_some()
+                            && ui
+                                .button("Play my bounce")
+                                .on_hover_text("Audition the file you just exported")
+                                .clicked()
+                        {
+                            play_bounce = true;
+                        }
+                    });
+                    if open_golden || play_ref {
+                        self.ensure_default_golden_reference();
+                        self.bounce_modal.show_golden_panel = true;
+                    }
+                    if play_ref {
+                        self.play_night_current_demo_reference();
+                    }
+                    if play_bounce {
+                        if let Some(path) = self.bounce_modal.last_master_path.clone() {
+                            match import_audio_file(&path, self.engine.sample_rate) {
+                                Ok(mut buf) => {
+                                    if self.bounce_modal.loudness_match_ab {
+                                        if let Some(ref_lufs) = self.bounce_modal.reference_lufs {
+                                            let delta = ref_lufs
+                                                - ferric_dsp::measure_integrated_lufs(
+                                                    buf.sample_rate,
+                                                    &buf.left,
+                                                    &buf.right,
                                                 );
-                                            }
-                                            Err(e) => {
-                                                self.status_banner =
-                                                    format!("Could not play bounce: {e}");
-                                            }
+                                            let g = ferric_dsp::db_to_lin(delta);
+                                            let left: Vec<f32> =
+                                                buf.left.iter().map(|s| s * g).collect();
+                                            let right: Vec<f32> =
+                                                buf.right.iter().map(|s| s * g).collect();
+                                            buf = ferric_model::AudioBuffer::from_stereo(
+                                                buf.sample_rate,
+                                                left,
+                                                right,
+                                                buf.source_path.clone(),
+                                            );
                                         }
                                     }
+                                    let peaks: Vec<f32> = buf
+                                        .peaks
+                                        .iter()
+                                        .step_by((buf.peaks.len() / 128).max(1))
+                                        .map(|(mn, mx)| mn.abs().max(mx.abs()))
+                                        .take(128)
+                                        .collect();
+                                    self.bounce_modal.bounce_peaks = peaks;
+                                    self.engine.send(EngineCommand::PreviewBuffer(buf));
+                                    self.status_banner =
+                                        format!("Playing your bounce — {}", path.display());
                                 }
-                            });
-                        }
-                        Err(err) => {
-                            ui.label(egui::RichText::new(err).color(ACCENT_RED));
+                                Err(e) => {
+                                    self.status_banner = format!("Could not play bounce: {e}");
+                                }
+                            }
                         }
                     }
+
+                    if self.bounce_modal.show_golden_panel {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new("Golden Bounce Studio")
+                                .strong()
+                                .color(ACCENT_FERRIC),
+                        );
+                        ui.horizontal(|ui| {
+                            let ref_name = self
+                                .bounce_modal
+                                .reference_path
+                                .as_ref()
+                                .and_then(|p| {
+                                    p.file_name().and_then(|n| n.to_str()).map(str::to_string)
+                                })
+                                .unwrap_or_else(|| "NightCurrent-Demo.wav".into());
+                            ui.label(
+                                egui::RichText::new(format!("Ref: {ref_name}"))
+                                    .size(10.5)
+                                    .color(TEXT_DIM),
+                            );
+                            if ui.small_button("Pick reference…").clicked() {
+                                if let Some(p) = rfd::FileDialog::new()
+                                    .add_filter("Audio", &["wav", "flac", "mp3", "ogg"])
+                                    .pick_file()
+                                {
+                                    self.load_golden_reference_stats(p);
+                                }
+                            }
+                            if ui.small_button("Use demo").clicked() {
+                                self.bounce_modal.reference_path = None;
+                                self.ensure_default_golden_reference();
+                            }
+                            ui.checkbox(
+                                &mut self.bounce_modal.loudness_match_ab,
+                                "Loudness-match A/B",
+                            );
+                        });
+                        let ref_lufs = self.bounce_modal.reference_lufs;
+                        let ref_tp = self.bounce_modal.reference_true_peak;
+                        let ref_dur = self.bounce_modal.reference_duration;
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Your bounce").size(10.5).strong(),
+                                );
+                                ui.label(format!("{:.1} LUFS", rep.integrated_lufs));
+                                ui.label(format!("{:+.2} dBTP", rep.true_peak_dbtp));
+                                ui.label(format!("{:.1}s", rep.duration_secs));
+                            });
+                            ui.separator();
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("Reference").size(10.5).strong());
+                                ui.label(format!("{:.1} LUFS", ref_lufs.unwrap_or(f32::NAN)));
+                                ui.label(format!("{:+.2} dBTP", ref_tp.unwrap_or(f32::NAN)));
+                                ui.label(format!("{:.1}s", ref_dur.unwrap_or(f64::NAN)));
+                            });
+                            if let Some(rl) = ref_lufs {
+                                let delta = rep.integrated_lufs - rl;
+                                ui.separator();
+                                ui.label(
+                                    egui::RichText::new(format!("Δ LUFS {:+.1}", delta))
+                                        .strong()
+                                        .color(if delta.abs() < 1.0 {
+                                            ACCENT_TEAL
+                                        } else {
+                                            ACCENT_AMBER
+                                        }),
+                                );
+                            }
+                        });
+                        let wave_h = 36.0_f32;
+                        let bounce_peaks = self.bounce_modal.bounce_peaks.clone();
+                        let ref_peaks = self.bounce_modal.reference_peaks.clone();
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), wave_h * 2.0 + 8.0),
+                            egui::Sense::hover(),
+                        );
+                        let mid = rect.center().y;
+                        let draw_peaks = |peaks: &[f32], y0: f32, col: Color32| {
+                            if peaks.is_empty() {
+                                return;
+                            }
+                            let w = rect.width() / peaks.len() as f32;
+                            for (i, &p) in peaks.iter().enumerate() {
+                                let x = rect.left() + i as f32 * w;
+                                let h = p.clamp(0.0, 1.0) * (wave_h * 0.45);
+                                ui.painter().line_segment(
+                                    [egui::pos2(x, y0 - h), egui::pos2(x, y0 + h)],
+                                    Stroke::new(1.0_f32, col),
+                                );
+                            }
+                        };
+                        draw_peaks(&bounce_peaks, mid - wave_h * 0.5, ACCENT_TEAL);
+                        draw_peaks(&ref_peaks, mid + wave_h * 0.5, ACCENT_FERRIC);
+                    }
+                } else if let Some(err) = report_err {
+                    ui.separator();
+                    ui.label(egui::RichText::new(err).color(ACCENT_RED));
                 }
             });
         self.bounce_modal.open = keep_open;
+    }
+
+    fn queue_scene_launch(&mut self, scene_idx: usize) {
+        let beats_per_bar = self.project.time_signature.numerator.max(1) as f64;
+        let now = self.engine.latest_telemetry.playhead_beat;
+        let at = if self.engine.latest_telemetry.is_playing {
+            self.launch_quantize.quantize_beat(now, beats_per_bar)
+        } else {
+            now
+        };
+        self.pending_scene_launch = Some((scene_idx, at));
+        if self.mix_morph_enabled {
+            // Mix slot follows scene index when possible (A/B/C/D).
+            let slot = scene_idx.min(3);
+            if let Some(Some(to)) = self.project.mix_snapshots.get(slot).cloned() {
+                self.mix_morph = Some(MixMorphState {
+                    from: self.project.capture_mix_state("morph-from"),
+                    to,
+                    start_beat: at,
+                    duration_beats: self.mix_morph_beats.max(0.25),
+                    last_applied_t: 0.0,
+                });
+            }
+        }
+        self.status_banner = format!(
+            "Scene {} armed @ {:.2} ({})",
+            scene_idx + 1,
+            at,
+            self.launch_quantize.label()
+        );
+    }
+
+    fn tick_launch_and_morph(&mut self) {
+        let beat = self.engine.latest_telemetry.playhead_beat;
+        if let Some((scene_idx, at)) = self.pending_scene_launch {
+            if !self.engine.latest_telemetry.is_playing || beat + 1e-4 >= at {
+                self.project.launch_scene(scene_idx);
+                self.pending_scene_launch = None;
+                self.sync_engine();
+            }
+        }
+        if let Some(mut morph) = self.mix_morph.take() {
+            let t = ((beat - morph.start_beat) / morph.duration_beats.max(0.25)).clamp(0.0, 1.0)
+                as f32;
+            if (t - morph.last_applied_t).abs() > 0.02 || t >= 1.0 {
+                self.project.apply_lerped_mix(&morph.from, &morph.to, t);
+                morph.last_applied_t = t;
+                self.sync_engine();
+            }
+            if t < 1.0 {
+                self.mix_morph = Some(morph);
+            }
+        }
+    }
+
+    fn render_launch_pad(&mut self, ui: &mut egui::Ui) {
+        self.launch_pad_focused = true;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Scene Launch Pad")
+                    .strong()
+                    .color(ACCENT_FERRIC),
+            );
+            ui.label(egui::RichText::new("Quantize").size(10.5).color(TEXT_DIM));
+            for q in [LaunchQuantize::Bar, LaunchQuantize::Beat, LaunchQuantize::Quarter] {
+                if pill_toggle(ui, q.label(), self.launch_quantize == q, ACCENT_TEAL).clicked() {
+                    self.launch_quantize = q;
+                }
+            }
+            ui.separator();
+            ui.checkbox(&mut self.mix_morph_enabled, "Mix morph");
+            ui.add(
+                egui::DragValue::new(&mut self.mix_morph_beats)
+                    .range(0.25..=32.0)
+                    .prefix("over ")
+                    .suffix(" beats"),
+            );
+            ui.label(
+                egui::RichText::new("Keys 1–8 fire scenes while this tab is focused")
+                    .size(10.0)
+                    .color(TEXT_DIM),
+            );
+        });
+        ui.add_space(6.0);
+        let scene_labels: Vec<(usize, String)> = self
+            .project
+            .scenes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.name.clone()))
+            .collect();
+        let mut launch_idx = None;
+        ui.horizontal_wrapped(|ui| {
+            for (i, name) in &scene_labels {
+                let armed = self.pending_scene_launch.map(|(s, _)| s) == Some(*i);
+                let label = format!("{}\n{}", i + 1, name);
+                if ui
+                    .add_sized(
+                        [96.0, 64.0],
+                        egui::Button::new(
+                            egui::RichText::new(label)
+                                .size(12.0)
+                                .strong()
+                                .color(if armed {
+                                    Color32::BLACK
+                                } else {
+                                    TEXT_MAIN
+                                }),
+                        )
+                        .fill(if armed {
+                            ACCENT_TEAL
+                        } else {
+                            BG_ELEVATED
+                        }),
+                    )
+                    .clicked()
+                {
+                    launch_idx = Some(*i);
+                }
+            }
+        });
+        if let Some(i) = launch_idx {
+            self.queue_scene_launch(i);
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Mix morph target").size(10.5).color(TEXT_DIM));
+            for (slot, name) in [(0, "Mix A"), (1, "Mix B"), (2, "Mix C"), (3, "Mix D")] {
+                let filled = self
+                    .project
+                    .mix_snapshots
+                    .get(slot)
+                    .and_then(|s| s.as_ref())
+                    .is_some();
+                if ui
+                    .add_enabled(
+                        filled,
+                        egui::Button::new(if filled {
+                            name.to_string()
+                        } else {
+                            format!("{name} (empty)")
+                        }),
+                    )
+                    .clicked()
+                {
+                    if let Some(Some(to)) = self.project.mix_snapshots.get(slot).cloned() {
+                        let now = self.engine.latest_telemetry.playhead_beat;
+                        self.mix_morph = Some(MixMorphState {
+                            from: self.project.capture_mix_state("morph-from"),
+                            to,
+                            start_beat: now,
+                            duration_beats: self.mix_morph_beats.max(0.25),
+                            last_applied_t: 0.0,
+                        });
+                        self.status_banner = format!("Morphing toward {name}…");
+                    }
+                }
+            }
+        });
     }
 
     fn process_browser_actions(&mut self, browser_actions: Vec<BrowserAction>) {
@@ -2307,36 +3448,139 @@ impl FerricDawApp {
                     need_sync = true;
                 }
                 BrowserAction::ApplyPreset(preset) => {
-                    if let Some(tid) = self.selected_track {
-                        self.snapshot_before("Load Factory Preset");
-                        if let Some(trk) = self.project.find_track_mut(tid) {
-                            let mut slot = FxSlot::new(preset.kind);
-                            slot.preset_name = preset.name.to_string();
-                            slot.wet_mix = preset.wet_mix;
-                            slot.params = preset.params.to_vec();
-                            trk.fx_chain.push(slot);
+                    self.snapshot_before("Load Factory Preset");
+                    let tid = self.selected_track.unwrap_or_else(|| {
+                        let n = self.project.tracks.len() + 1;
+                        let name = if preset.kind.is_instrument() {
+                            format!("{:02} Instrument", n)
+                        } else {
+                            format!("{:02} Universal Track", n)
+                        };
+                        let id = self.project.add_track(name);
+                        if let Some(t) = self.project.find_track_mut(id) {
+                            t.input_source = if preset.kind.is_instrument() {
+                                InputSource::MidiAll
+                            } else {
+                                InputSource::AudioAndMidi { stereo_pair: 0 }
+                            };
                         }
-                        self.bottom_tab = BottomTab::FxAndModulators;
-                        need_sync = true;
+                        id
+                    });
+                    if let Some(trk) = self.project.find_track_mut(tid) {
+                        let mut slot = FxSlot::new(preset.kind);
+                        slot.preset_name = preset.name.to_string();
+                        slot.wet_mix = preset.wet_mix;
+                        slot.params = preset.params.to_vec();
+                        trk.fx_chain.push(slot);
                     }
+                    self.selected_track = Some(tid);
+                    self.bottom_tab = BottomTab::FxAndModulators;
+                    self.show_bottom_dock = true;
+                    self.status_banner = format!("Loaded preset '{}'", preset.name);
+                    need_sync = true;
                 }
                 BrowserAction::LoadExternalPlugin(plug) => {
-                    if let Some(tid) = self.selected_track {
-                        self.snapshot_before("Insert External Plugin");
-                        let fmt_badge = plug.format.badge();
+                    self.snapshot_before("Insert External Plugin");
+                    let tid = self.selected_track.unwrap_or_else(|| {
+                        let id = self.project.add_track(format!(
+                            "{:02} Universal Track",
+                            self.project.tracks.len() + 1
+                        ));
+                        id
+                    });
+                    let fmt_badge = plug.format.badge();
+                    if let Some(trk) = self.project.find_track_mut(tid) {
+                        trk.fx_chain.push(FxSlot::new_external_plugin(
+                            plug.format,
+                            plug.bundle_path,
+                            plug.id,
+                            plug.name.clone(),
+                        ));
+                    }
+                    self.selected_track = Some(tid);
+                    self.status_banner =
+                        format!("✓ Inserted {} plugin '{}'", fmt_badge, plug.name);
+                    self.bottom_tab = BottomTab::FxAndModulators;
+                    self.show_bottom_dock = true;
+                    need_sync = true;
+                }
+                BrowserAction::AuditionPlugin(plug) => {
+                    // Sandbox audition: load on a temporary playground track; quarantine on crash.
+                    let path = plug.bundle_path.clone();
+                    if self.engine.quarantine.is_quarantined(&path) {
+                        self.status_banner = format!(
+                            "🛡 '{}' is quarantined — Reset quarantine to retry.",
+                            plug.name
+                        );
+                        self.playground_plugin = None;
+                        self.playground_ok = false;
+                    } else {
+                        self.snapshot_before("Plugin Playground Audition");
+                        let tid = self.project.add_track(format!("Playground · {}", plug.name));
                         if let Some(trk) = self.project.find_track_mut(tid) {
                             trk.fx_chain.push(FxSlot::new_external_plugin(
                                 plug.format,
-                                plug.bundle_path,
-                                plug.id,
+                                plug.bundle_path.clone(),
+                                plug.id.clone(),
                                 plug.name.clone(),
                             ));
                         }
-                        self.status_banner =
-                            format!("✓ Inserted {} plugin '{}'", fmt_badge, plug.name);
+                        self.selected_track = Some(tid);
+                        self.playground_plugin = Some(plug.clone());
+                        self.playground_ok = true;
                         self.bottom_tab = BottomTab::FxAndModulators;
+                        self.status_banner = format!(
+                            "Playground auditioning '{}' in sandbox — if it survives, Insert.",
+                            plug.name
+                        );
                         need_sync = true;
                     }
+                }
+                BrowserAction::InsertAuditionedPlugin => {
+                    if let Some(plug) = self.playground_plugin.clone() {
+                        if !self.playground_ok {
+                            self.status_banner =
+                                "Playground audition did not survive — not inserting.".into();
+                        } else if let Some(tid) = self.selected_track {
+                            // Prefer inserting onto a non-playground track if user reselected.
+                            self.snapshot_before("Insert Surviving Playground Plugin");
+                            if let Some(trk) = self.project.find_track_mut(tid) {
+                                if !trk.name.starts_with("Playground ·") {
+                                    trk.fx_chain.push(FxSlot::new_external_plugin(
+                                        plug.format,
+                                        plug.bundle_path,
+                                        plug.id,
+                                        plug.name.clone(),
+                                    ));
+                                    self.status_banner = format!(
+                                        "✓ Inserted surviving plugin '{}' into {}",
+                                        plug.name, trk.name
+                                    );
+                                    need_sync = true;
+                                } else {
+                                    self.status_banner = format!(
+                                        "✓ '{}' already on Playground track — select another track to copy-insert.",
+                                        plug.name
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                BrowserAction::ClearPlayground => {
+                    self.snapshot_before("Clear Plugin Playground");
+                    self.project.tracks.retain(|t| !t.name.starts_with("Playground ·"));
+                    if self
+                        .selected_track
+                        .and_then(|id| self.project.find_track(id))
+                        .is_none()
+                    {
+                        self.selected_track = self.project.tracks.first().map(|t| t.id);
+                    }
+                    self.playground_plugin = None;
+                    self.playground_ok = false;
+                    self.status_banner = "Plugin Playground cleared (audition tracks removed).".into();
+                    need_sync = true;
                 }
                 BrowserAction::ClearPluginQuarantine => {
                     self.engine.quarantine.clear_all();
@@ -2345,8 +3589,20 @@ impl FerricDawApp {
                 BrowserAction::ImportMidiFile(p) => {
                     self.import_smf_midi_dialog(Some(p));
                 }
-                BrowserAction::SetupAkaiAndDs10Rig => {
-                    self.spawn_akai_and_ds10_rig();
+                BrowserAction::SetupHardwareRig => {
+                    self.spawn_hardware_studio_rig();
+                }
+                BrowserAction::SetupHardwareRigPreset(idx) => {
+                    let preset = match idx {
+                        1 => HardwareRigPreset::AkaiLpk25AndDs10,
+                        2 => HardwareRigPreset::MidiKeyboardOnly,
+                        3 => HardwareRigPreset::LineInOnly,
+                        _ => HardwareRigPreset::UsbMidiAndLineIn,
+                    };
+                    self.spawn_hardware_rig_preset(preset);
+                }
+                BrowserAction::SpawnDualKeyboardStudio => {
+                    self.spawn_dual_keyboard_studio();
                 }
                 BrowserAction::RescanMidi => {
                     self.engine.rescan_midi_devices();
@@ -2359,10 +3615,10 @@ impl FerricDawApp {
                         )
                     };
                 }
-                BrowserAction::FixDs10ComboJackRouting => {
-                    self.apply_ds10_safe_audio_routing();
+                BrowserAction::FixLineInComboJackRouting => {
+                    self.apply_line_in_safe_audio_routing();
                     self.status_banner = format!(
-                        "🔊 DS mute fix • Out: {} • In: {}",
+                        "🔊 Line-In routing • Out: {} • In: {}",
                         self.engine.audio_device_name, self.engine.audio_input_name
                     );
                 }
@@ -2390,7 +3646,11 @@ impl FerricDawApp {
                     if let Some(note) = self.engine.driver_status_note {
                         msg.push_str(" · ");
                         msg.push_str(note);
+                        self.browser.driver_honesty_note = Some(note.to_string());
+                    } else {
+                        self.browser.driver_honesty_note = None;
                     }
+                    self.browser.live_exclusive = self.engine.has_exclusive_output();
                     if realtek_combo_jack_risk(
                         &self.engine.audio_device_name,
                         &self.engine.audio_input_name,
@@ -2401,7 +3661,7 @@ impl FerricDawApp {
                         .contains("headphone")
                     {
                         msg.push_str(
-                            " ⚠ Headphones output + DS on combo jack usually = silence — use Force Speakers + Line-In",
+                            " ⚠ Headphones output + line source on combo jack usually = silence — use Force Speakers + Line-In",
                         );
                     }
                     self.status_banner = msg;
@@ -2427,7 +3687,7 @@ impl FerricDawApp {
                     self.snapshot_before("Lock Line-In BPM");
                     self.project.bpm = bpm.clamp(30.0, 280.0);
                     self.status_banner =
-                        format!("✓ Locked Project Tempo to DS-10 / Line-In: {:.1} BPM!", bpm);
+                        format!("Locked project tempo to Line-In: {:.1} BPM", bpm);
                     need_sync = true;
                 }
                 BrowserAction::KaossNote { note, is_note_on } => {
@@ -2451,6 +3711,13 @@ impl FerricDawApp {
 
 impl eframe::App for FerricDawApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.tick_launch_and_morph();
+        // Playground survival: if auditioned plugin got quarantined after load, block Insert.
+        if let Some(ref plug) = self.playground_plugin {
+            if self.engine.quarantine.is_quarantined(&plug.bundle_path) {
+                self.playground_ok = false;
+            }
+        }
         if !self.viewport_bootstrapped {
             self.viewport_bootstrapped = true;
             let inner = ctx.input(|i| i.viewport().inner_rect);
@@ -2461,6 +3728,11 @@ impl eframe::App for FerricDawApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1520.0, 900.0)));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
             }
+        }
+
+        if self.quit_for_update {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
         }
 
         self.engine.poll_ui(&mut self.capture_inbox);
@@ -2474,6 +3746,15 @@ impl eframe::App for FerricDawApp {
         self.handle_midi_learn_poll();
         self.handle_shortcuts_and_musical_typing(ctx);
         self.tick_autosave();
+
+        let had_pending = self.updater.pending.is_some();
+        self.updater.poll();
+        if self.updater.pending.is_some() && !had_pending {
+            self.show_update_modal = true;
+            if let Some(ref feed) = self.updater.pending {
+                self.status_banner = format!("Update available: v{}", feed.version);
+            }
+        }
 
         // Handle Drag-and-Drop of external WAV/FLAC/MP3/OGG/MID files directly from Windows Explorer!
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -2531,6 +3812,7 @@ impl eframe::App for FerricDawApp {
         self.render_first_run_modal(ctx);
         self.render_bounce_modal(ctx);
         self.render_destructive_confirm_modal(ctx);
+        self.render_update_modal(ctx);
         if render_quickstart_help_modal(ctx, &mut self.show_help_modal) {
             self.start_night_current_tutorial();
         }
@@ -2546,18 +3828,63 @@ impl eframe::App for FerricDawApp {
 
         // 1. Top Studio Transport Bar
         egui::TopBottomPanel::top("ferric_transport_top")
-            .exact_height(42.0)
+            .exact_height(46.0)
             .frame(
                 egui::Frame::new()
                     .fill(BG_ELEVATED)
                     .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                    .inner_margin(egui::Margin::symmetric(10, 6)),
+                    .inner_margin(egui::Margin::symmetric(8, 5)),
             )
             .show(ctx, |ui| {
                 self.render_top_transport_bar(ui);
             });
 
-        // 2. Dockable Left Studio Browser (Hardware Rig / DS-10 / LPK25, Samples, Presets & CLAP)
+        egui::TopBottomPanel::top("ferric_dna_strip")
+            .exact_height(34.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_PANEL)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(10, 4)),
+            )
+            .show(ctx, |ui| {
+                self.render_dna_strip(ui);
+            });
+
+        if !self.engine.has_live_output {
+            egui::TopBottomPanel::top("ferric_offline_audio_banner")
+                .exact_height(28.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(120, 36, 28))
+                        .inner_margin(egui::Margin::symmetric(10, 4)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "OFFLINE AUDIO — no live output. Check devices / driver (Exclusive may have fallen back).",
+                            )
+                            .size(12.0)
+                            .strong()
+                            .color(Color32::WHITE),
+                        );
+                        if ui
+                            .button(
+                                egui::RichText::new("Open Hardware Rig")
+                                    .strong()
+                                    .color(ACCENT_AMBER),
+                            )
+                            .clicked()
+                        {
+                            self.browser.visible = true;
+                            self.browser.tab = browser::BrowserTab::HardwareRig;
+                        }
+                    });
+                });
+        }
+
+        // 2. Dockable Left Studio Browser (Hardware Rig, Samples, Presets & CLAP)
         if self.browser.visible {
             egui::SidePanel::left("ferric_left_browser")
                 .resizable(true)
@@ -2573,6 +3900,12 @@ impl eframe::App for FerricDawApp {
                     let mut b_actions = Vec::new();
                     let telem = self.engine.latest_telemetry;
                     let has_lpk = self.engine.has_akai_lpk25();
+                    let pad_tracks: Vec<_> = self
+                        .project
+                        .tracks
+                        .iter()
+                        .map(|t| (t.id, t.name.clone()))
+                        .collect();
                     self.browser.ui(
                         ui,
                         self.engine.sample_rate,
@@ -2582,6 +3915,9 @@ impl eframe::App for FerricDawApp {
                         &self.engine.audio_device_name,
                         &self.engine.audio_input_name,
                         &telem,
+                        &mut self.keyboard_pads,
+                        &pad_tracks,
+                        self.selected_track,
                         &mut b_actions,
                     );
                     self.process_browser_actions(b_actions);
@@ -2630,6 +3966,29 @@ impl eframe::App for FerricDawApp {
                                 .color(TEXT_DIM),
                         );
                     }
+                    if let Some(ref plug) = self.playground_plugin {
+                        ui.separator();
+                        let ok = self.playground_ok;
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Playground: {} {}",
+                                plug.name,
+                                if ok { "● survived" } else { "✕ quarantined" }
+                            ))
+                            .size(10.5)
+                            .color(if ok { ACCENT_TEAL } else { ACCENT_RED }),
+                        );
+                        if ok
+                            && ui
+                                .small_button("Insert into selected track")
+                                .clicked()
+                        {
+                            self.process_browser_actions(vec![BrowserAction::InsertAuditionedPlugin]);
+                        }
+                        if ui.small_button("Clear").clicked() {
+                            self.process_browser_actions(vec![BrowserAction::ClearPlayground]);
+                        }
+                    }
                 });
             });
 
@@ -2657,17 +4016,41 @@ impl eframe::App for FerricDawApp {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        for (tab, label) in [
-                            (BottomTab::EditorAndComp, "🎹 MIDI / Warp / Comp"),
-                            (BottomTab::FxAndModulators, "🎛 FX, Sidechain & Mods"),
-                            (BottomTab::KaossPad, "🎮 DS-10 KAOSS X-Y Pad"),
-                            (BottomTab::MixingConsole, "🎚 Mixing Console"),
-                            (BottomTab::RoutingMatrix, "🔀 Routing Matrix"),
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (tab, label, tip) in [
+                            (
+                                BottomTab::EditorAndComp,
+                                "MIDI",
+                                "Piano roll · warp · take comp",
+                            ),
+                            (
+                                BottomTab::FxAndModulators,
+                                "FX",
+                                "Instruments, inserts, sidechain & modulators",
+                            ),
+                            (BottomTab::KaossPad, "Kaoss", "XY pad — sculpt selected track sound"),
+                            (
+                                BottomTab::LaunchPad,
+                                "Launch",
+                                "Scene fire + mix morph (keys 1–8)",
+                            ),
+                            (
+                                BottomTab::MixingConsole,
+                                "Mix",
+                                "Channel strip console · Mix A–D recall",
+                            ),
+                            (
+                                BottomTab::RoutingMatrix,
+                                "Route",
+                                "Sends & routing matrix",
+                            ),
                         ] {
                             if pill_toggle(ui, label, self.bottom_tab == tab, ACCENT_FERRIC)
+                                .on_hover_text(tip)
                                 .clicked()
                             {
                                 self.bottom_tab = tab;
+                                self.launch_pad_focused = tab == BottomTab::LaunchPad;
                             }
                         }
                         if let Some(tid) = self.selected_track {
@@ -2675,15 +4058,29 @@ impl eframe::App for FerricDawApp {
                                 ui.separator();
                                 ui.label(
                                     egui::RichText::new(format!(
-                                        "Track: {}{}",
+                                        "{}{}",
                                         trk.name,
-                                        if trk.frozen { " [❄ FROZEN]" } else { "" }
+                                        if trk.frozen { " · frozen" } else { "" }
                                     ))
                                     .size(11.5)
                                     .color(TEXT_MAIN),
                                 );
+                                ui.label(
+                                    egui::RichText::new(trk.input_source.short_label())
+                                        .size(10.5)
+                                        .color(TEXT_DIM),
+                                );
                             }
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button("Hide")
+                                .on_hover_text("Hide lower dock (toggle Dock in transport)")
+                                .clicked()
+                            {
+                                self.show_bottom_dock = false;
+                            }
+                        });
                     });
                     ui.separator();
 
@@ -2744,6 +4141,9 @@ impl eframe::App for FerricDawApp {
                         BottomTab::RoutingMatrix => {
                             render_routing_matrix(ui, &mut self.project, &mut dock_actions);
                         }
+                        BottomTab::LaunchPad => {
+                            self.render_launch_pad(ui);
+                        }
                     }
 
                     if !kaoss_actions.is_empty() {
@@ -2755,6 +4155,74 @@ impl eframe::App for FerricDawApp {
                         match act {
                             DockAction::ProjectMutated(_lbl) => {
                                 need_sync = true;
+                            }
+                            DockAction::RecallMix(slot) => {
+                                self.snapshot_before("Recall Mix Snapshot");
+                                if self.project.recall_mix_snapshot(slot) {
+                                    need_sync = true;
+                                }
+                            }
+                            DockAction::StoreMix(slot) => {
+                                self.snapshot_before("Store Mix Snapshot");
+                                let letter = ['A', 'B', 'C', 'D'][slot.min(3)];
+                                self.project
+                                    .capture_mix_snapshot(slot, format!("Mix {letter}"));
+                                need_sync = true;
+                            }
+                            DockAction::AddVcaGroup => {
+                                self.snapshot_before("Add VCA Group");
+                                let n = self.project.vca_groups.len() + 1;
+                                self.project.add_vca_group(format!("VCA {n}"));
+                                need_sync = true;
+                            }
+                            DockAction::HostDnaReseed(fx_id) => {
+                                self.snapshot_before("HostDNA Reseed");
+                                let seed = compute_host_seed();
+                                for t in &mut self.project.tracks {
+                                    if let Some(fx) = t.fx_chain.iter_mut().find(|f| f.id == fx_id) {
+                                        fx.apply_host_dna_seed(seed);
+                                        need_sync = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            DockAction::HostDnaRandomize(fx_id) => {
+                                self.snapshot_before("HostDNA Randomize");
+                                let seed = random_host_seed();
+                                for t in &mut self.project.tracks {
+                                    if let Some(fx) = t.fx_chain.iter_mut().find(|f| f.id == fx_id) {
+                                        fx.apply_host_dna_seed(seed);
+                                        need_sync = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            DockAction::HostDnaSibling(fx_id, sib) => {
+                                self.snapshot_before("HostDNA Sibling");
+                                for t in &mut self.project.tracks {
+                                    if let Some(fx) = t.fx_chain.iter_mut().find(|f| f.id == fx_id) {
+                                        let base = if fx.host_dna_seed == 0 {
+                                            compute_host_seed()
+                                        } else {
+                                            fx.host_dna_seed
+                                        };
+                                        fx.apply_host_dna_seed(FxSlot::host_dna_sibling_seed(
+                                            base, sib,
+                                        ));
+                                        need_sync = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            DockAction::HostDnaPaste(fx_id, seed) => {
+                                self.snapshot_before("HostDNA Paste Seed");
+                                for t in &mut self.project.tracks {
+                                    if let Some(fx) = t.fx_chain.iter_mut().find(|f| f.id == fx_id) {
+                                        fx.apply_host_dna_seed(seed);
+                                        need_sync = true;
+                                        break;
+                                    }
+                                }
                             }
                             DockAction::AuditionMidi {
                                 track_id,
@@ -2874,6 +4342,12 @@ impl eframe::App for FerricDawApp {
                             self.selected_track = Some(tid);
                             self.inspect_master_fx = false;
                         }
+                        ArrangementAction::OpenFxPanel(tid) => {
+                            self.selected_track = Some(tid);
+                            self.inspect_master_fx = false;
+                            self.bottom_tab = BottomTab::FxAndModulators;
+                            self.show_bottom_dock = true;
+                        }
                         ArrangementAction::SelectClip { track_id, clip_id } => {
                             self.selected_track = Some(track_id);
                             self.selected_clip = Some((track_id, clip_id));
@@ -2883,6 +4357,55 @@ impl eframe::App for FerricDawApp {
                             self.selected_clip = Some((track_id, clip_id));
                             self.bottom_tab = BottomTab::EditorAndComp;
                             self.show_bottom_dock = true;
+                        }
+                        ArrangementAction::GenerateArr {
+                            spawn_pad,
+                            spawn_bass,
+                            spawn_arp,
+                            section_idx,
+                        } => {
+                            let range = section_idx.and_then(|i| self.project.scene_beat_range(i));
+                            // Peek: only snapshot when generate will create something.
+                            let will_create = !self.project.chord_track.is_empty()
+                                && (spawn_pad || spawn_bass || spawn_arp)
+                                && range
+                                    .map(|(a, b)| {
+                                        self.project.chord_track.iter().any(|c| {
+                                            c.start_beat < b && c.end_beat() > a
+                                        })
+                                    })
+                                    .unwrap_or(true);
+                            if will_create {
+                                self.snapshot_before("Generate Arr");
+                            }
+                            let (ids, card) = self.project.generate_arrangement_from_chords_in_range(
+                                VoicingStyle::OpenSpreadPad,
+                                spawn_pad,
+                                spawn_bass,
+                                spawn_arp,
+                                range,
+                            );
+                            if ids.is_empty() {
+                                self.arrangement.generate_patch_card = None;
+                            } else {
+                                self.arrangement.generate_patch_card = Some(card.clone());
+                                if let Some(tid) = ids.last().copied() {
+                                    self.selected_track = Some(tid);
+                                }
+                                need_sync = true;
+                            }
+                            self.status_banner = card;
+                        }
+                        ArrangementAction::UndoGenerateArr => {
+                            if self.history.last_undo_label() == Some("Generate Arr") {
+                                self.perform_undo();
+                                self.arrangement.generate_patch_card = None;
+                                self.status_banner = "Undid Generate Arr.".into();
+                            } else {
+                                self.status_banner =
+                                    "No Generate Arr on top of history — use Ctrl+Z for the last action."
+                                        .into();
+                            }
                         }
                         ArrangementAction::ProjectMutated(_lbl) => {
                             need_sync = true;
@@ -2972,17 +4495,8 @@ impl eframe::App for FerricDawApp {
                                 need_sync = true;
                             }
                         }
-                        ArrangementAction::AddTrack => {
-                            self.snapshot_before("Add Track");
-                            let idx = self.project.tracks.len() + 1;
-                            let track = Track::new(
-                                format!("{:02} Universal Track", idx),
-                                idx - 1,
-                                self.project.scenes.len(),
-                            );
-                            let id = track.id;
-                            self.project.tracks.push(track);
-                            self.selected_track = Some(id);
+                        ArrangementAction::AddTrack(kind) => {
+                            self.spawn_track_of_kind(kind);
                             need_sync = true;
                         }
                     }

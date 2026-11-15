@@ -10,6 +10,9 @@ pub type ModulatorId = Uuid;
 pub enum FxKind {
     // Instruments (MIDI -> Audio)
     PolySynth,
+    MonoBass,
+    PrismSynth,
+    HostDna,
     WavetableSynth,
     DrumKit,
     SamplePlayer,
@@ -34,6 +37,9 @@ pub enum FxKind {
 impl FxKind {
     pub const ALL: &'static [FxKind] = &[
         FxKind::PolySynth,
+        FxKind::MonoBass,
+        FxKind::PrismSynth,
+        FxKind::HostDna,
         FxKind::WavetableSynth,
         FxKind::DrumKit,
         FxKind::SamplePlayer,
@@ -54,6 +60,9 @@ impl FxKind {
     pub fn display_name(self) -> &'static str {
         match self {
             FxKind::PolySynth => "Ferric PolySynth (16-Voice VA/FM)",
+            FxKind::MonoBass => "Ferric MonoBass (Glide Sub / Acid Bass)",
+            FxKind::PrismSynth => "Ferric Prism (Morph VA + Formant Character Synth)",
+            FxKind::HostDna => "Ferric HostDNA (Machine-Seeded Character Synth)",
             FxKind::WavetableSynth => "FerricWave (Wavetable + Granular Cloud Synth)",
             FxKind::DrumKit => "Ferric 8-Pad Studio Drum Kit",
             FxKind::SamplePlayer => "Ferric Chromatic & Slice Sampler",
@@ -75,6 +84,9 @@ impl FxKind {
     pub fn short_badge(self) -> &'static str {
         match self {
             FxKind::PolySynth => "SYNTH",
+            FxKind::MonoBass => "MONO-BASS",
+            FxKind::PrismSynth => "PRISM",
+            FxKind::HostDna => "HOST-DNA",
             FxKind::WavetableSynth => "WAVE+GRAN",
             FxKind::DrumKit => "DRUMS",
             FxKind::SamplePlayer => "SAMPLER",
@@ -96,7 +108,13 @@ impl FxKind {
     pub fn is_instrument(self) -> bool {
         matches!(
             self,
-            FxKind::PolySynth | FxKind::WavetableSynth | FxKind::DrumKit | FxKind::SamplePlayer
+            FxKind::PolySynth
+                | FxKind::MonoBass
+                | FxKind::PrismSynth
+                | FxKind::HostDna
+                | FxKind::WavetableSynth
+                | FxKind::DrumKit
+                | FxKind::SamplePlayer
         )
     }
 
@@ -115,6 +133,32 @@ impl FxKind {
             ParamSpec::new("Decay", "ms", 10.0, 2500.0, 320.0),
             ParamSpec::new("Sustain", "%", 0.0, 100.0, 65.0),
             ParamSpec::new("Release", "ms", 10.0, 3500.0, 280.0),
+            ParamSpec::new("Output", "dB", -24.0, 12.0, -3.0),
+        ];
+        const MONOBASS_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Waveform", "", 0.0, 3.0, 0.0),
+            ParamSpec::new("Glide", "ms", 0.0, 500.0, 40.0),
+            ParamSpec::new("Cutoff", "Hz", 40.0, 8000.0, 680.0),
+            ParamSpec::new("Resonance", "", 0.05, 0.95, 0.42),
+            ParamSpec::new("Filter Env", "%", 0.0, 100.0, 55.0),
+            ParamSpec::new("Attack", "ms", 0.5, 800.0, 4.0),
+            ParamSpec::new("Decay", "ms", 10.0, 2000.0, 220.0),
+            ParamSpec::new("Sustain", "%", 0.0, 100.0, 70.0),
+            ParamSpec::new("Release", "ms", 5.0, 2500.0, 160.0),
+            ParamSpec::new("Sub Mix", "%", 0.0, 100.0, 35.0),
+            ParamSpec::new("Output", "dB", -24.0, 12.0, -2.0),
+        ];
+        const PRISM_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Morph", "%", 0.0, 100.0, 42.0),
+            ParamSpec::new("Prism", "%", 0.0, 100.0, 35.0),
+            ParamSpec::new("Spread", "%", 0.0, 100.0, 22.0),
+            ParamSpec::new("Drive", "%", 0.0, 100.0, 18.0),
+            ParamSpec::new("Cutoff", "Hz", 80.0, 16000.0, 3200.0),
+            ParamSpec::new("Resonance", "", 0.05, 0.92, 0.22),
+            ParamSpec::new("Attack", "ms", 1.0, 2500.0, 18.0),
+            ParamSpec::new("Decay", "ms", 10.0, 3000.0, 380.0),
+            ParamSpec::new("Sustain", "%", 0.0, 100.0, 68.0),
+            ParamSpec::new("Release", "ms", 10.0, 4000.0, 420.0),
             ParamSpec::new("Output", "dB", -24.0, 12.0, -3.0),
         ];
         const DRUMKIT_SPECS: &[ParamSpec] = &[
@@ -248,6 +292,9 @@ impl FxKind {
 
         match self {
             FxKind::PolySynth => POLYSYNTH_SPECS,
+            FxKind::MonoBass => MONOBASS_SPECS,
+            FxKind::PrismSynth => PRISM_SPECS,
+            FxKind::HostDna => PRISM_SPECS,
             FxKind::WavetableSynth => WAVETABLE_SPECS,
             FxKind::DrumKit => DRUMKIT_SPECS,
             FxKind::SamplePlayer => SAMPLER_SPECS,
@@ -387,6 +434,9 @@ pub struct FxSlot {
     /// worker process over IPC pipes so a buggy C++ plugin crash can NEVER take down the live DAW!
     #[serde(default)]
     pub sandbox_out_of_process: bool,
+    /// HostDNA machine seed (hashed traits). Travels with the patch; 0 = unset.
+    #[serde(default)]
+    pub host_dna_seed: u64,
 }
 
 impl FxSlot {
@@ -417,6 +467,36 @@ impl FxSlot {
             plugin_state_b64: None,
             plugin_output_trim_db: 0.0,
             sandbox_out_of_process: false,
+            host_dna_seed: 0,
+        }
+    }
+
+    /// Build an Init HostDNA patch from a hashed host seed (fully editable afterward).
+    pub fn new_host_dna(seed: u64) -> Self {
+        let mut slot = Self::new(FxKind::HostDna);
+        slot.apply_host_dna_seed(seed);
+        slot
+    }
+
+    pub fn apply_host_dna_seed(&mut self, seed: u64) {
+        self.host_dna_seed = seed;
+        self.preset_name = format!("HostDNA {:016X}", seed);
+        let params = host_dna_params_from_seed(seed);
+        for (i, v) in params.into_iter().enumerate() {
+            if let Some(p) = self.params.get_mut(i) {
+                *p = v;
+            }
+        }
+    }
+
+    /// Three alternate Init siblings from the same host seed (A/B/C mutations).
+    pub fn host_dna_sibling_seed(seed: u64, sibling: u8) -> u64 {
+        match sibling % 3 {
+            0 => seed,
+            1 => seed ^ 0xA5A5_5A5A_C3C3_3C3C,
+            _ => seed
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                .wrapping_add(0xD1B5_4A32_D192_E9AD),
         }
     }
 
@@ -583,6 +663,30 @@ impl FxSlot {
     }
 }
 
+/// Map a hashed HostDNA seed onto Prism-compatible Init params (fully editable afterward).
+pub fn host_dna_params_from_seed(seed: u64) -> Vec<f32> {
+    let slice = |axis: u32| -> f32 {
+        let h = seed
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(u64::from(axis).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+        ((h >> 33) as u32) as f32 / (u32::MAX as f32)
+    };
+    // Morph, Prism, Spread, Drive, Cutoff, Res, Attack, Decay, Sustain, Release, Output
+    vec![
+        12.0 + slice(0) * 78.0,
+        8.0 + slice(1) * 82.0,
+        4.0 + slice(2) * 55.0,
+        4.0 + slice(3) * 60.0,
+        180.0 + slice(4) * 9_200.0,
+        0.07 + slice(5) * 0.75,
+        2.0 + slice(6) * 480.0,
+        35.0 + slice(7) * 1_400.0,
+        28.0 + slice(8) * 65.0,
+        35.0 + slice(9) * 1_800.0,
+        -9.0 + slice(10) * 10.0,
+    ]
+}
+
 /// Curated Factory Presets for the Dockable Studio Browser!
 #[derive(Debug, Clone)]
 pub struct FactoryPreset {
@@ -594,6 +698,104 @@ pub struct FactoryPreset {
 }
 
 pub const FACTORY_PRESETS: &[FactoryPreset] = &[
+    FactoryPreset {
+        category: "HostDNA",
+        name: "Init from Host (placeholder seed)",
+        kind: FxKind::HostDna,
+        params: &[42.0, 35.0, 22.0, 18.0, 3200.0, 0.22, 18.0, 380.0, 68.0, 420.0, -3.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Prism",
+        name: "Glass Pad Morph",
+        kind: FxKind::PrismSynth,
+        params: &[58.0, 48.0, 36.0, 12.0, 4200.0, 0.18, 140.0, 620.0, 78.0, 980.0, -3.5],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Prism",
+        name: "Laptop Lead Prism",
+        kind: FxKind::PrismSynth,
+        params: &[72.0, 55.0, 28.0, 32.0, 6800.0, 0.30, 6.0, 260.0, 55.0, 220.0, -2.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Prism",
+        name: "Warm Morph Keys",
+        kind: FxKind::PrismSynth,
+        params: &[28.0, 22.0, 14.0, 10.0, 2800.0, 0.16, 8.0, 420.0, 62.0, 360.0, -2.5],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Prism",
+        name: "Velvet Bass Morph",
+        kind: FxKind::PrismSynth,
+        params: &[18.0, 28.0, 8.0, 24.0, 520.0, 0.35, 4.0, 280.0, 80.0, 180.0, -1.5],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Bass",
+        name: "Dark Sub MonoBass",
+        kind: FxKind::MonoBass,
+        params: &[0.0, 55.0, 220.0, 0.28, 35.0, 2.0, 180.0, 85.0, 220.0, 62.0, -1.5],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Bass",
+        name: "Acid Glide Squelch",
+        kind: FxKind::MonoBass,
+        params: &[0.0, 85.0, 420.0, 0.82, 78.0, 1.0, 160.0, 12.0, 90.0, 28.0, -1.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Bass",
+        name: "Round Square Sub",
+        kind: FxKind::MonoBass,
+        params: &[1.0, 25.0, 380.0, 0.35, 40.0, 6.0, 260.0, 75.0, 180.0, 48.0, -2.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Pads",
+        name: "Soft Analog Pad",
+        kind: FxKind::PolySynth,
+        params: &[0.0, 38.0, 1800.0, 0.18, 28.0, 220.0, 780.0, 78.0, 920.0, -4.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Pads",
+        name: "Night Current Air Pad",
+        kind: FxKind::WavetableSynth,
+        params: &[1.0, 42.0, 5.0, 28.0, 38.0, 96.0, 4800.0, 0.18, 180.0, 720.0, 80.0, 1100.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Perc",
+        name: "Tight Techno Kit",
+        kind: FxKind::DrumKit,
+        params: &[78.0, 48.0, 72.0, 85.0, 18.0, -1.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Perc",
+        name: "Roomy Live Kit",
+        kind: FxKind::DrumKit,
+        params: &[62.0, 55.0, 58.0, 180.0, 48.0, 0.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Synth",
+        name: "Plucky Techno Stab",
+        kind: FxKind::PolySynth,
+        params: &[1.0, 22.0, 3200.0, 0.45, 62.0, 1.0, 140.0, 8.0, 80.0, -2.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Synth",
+        name: "Warm Keys Rhodes-ish",
+        kind: FxKind::PolySynth,
+        params: &[3.0, 12.0, 4800.0, 0.16, 30.0, 4.0, 520.0, 42.0, 380.0, -2.5],
+        wet_mix: 1.0,
+    },
     FactoryPreset {
         category: "Synth",
         name: "FerricWave Lush Shimmer Cloud Pad",

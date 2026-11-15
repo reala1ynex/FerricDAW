@@ -1,4 +1,6 @@
-﻿# Configure Windows recording for Nintendo DS → External Microphone (Realtek).
+﻿# Configure Windows recording for Line-In / External Microphone (Realtek).
+# Handy tip for handheld/console headphone outs into a combo jack — not brand-required.
+# Prefer tools\SetLineInCapture.ps1 (this file remains as a compatibility alias).
 # Prefers NirSoft SoundVolumeView (WinGet) for reliable default + subunit levels.
 
 $ErrorActionPreference = 'Continue'
@@ -27,7 +29,7 @@ if ($svv) {
     # Boost at 100% turns the mic jack into a noise floor generator — leave at 0.
     & $svv /SetVolume 'Realtek(R) Audio\Subunit\Microphone Boost' 0
     Write-Output 'OK: External Microphone (Realtek) = default @ 100%, Mic Volume 100%, Mic Boost 0% (anti-hiss)'
-    Write-Output 'HINT: Raise DS headphone volume; Ferric +6 dB trim max — never Mic Boost for Line-In'
+    Write-Output 'HINT: Raise source/headphone volume; Ferric +6 dB trim max — never Mic Boost for Line-In'
     exit 0
 }
 

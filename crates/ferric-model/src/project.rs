@@ -273,6 +273,26 @@ pub struct Project {
     pub markers: Vec<TimelineMarker>,
     pub tracks: Vec<Track>,
     pub master: MasterBus,
+    /// Highest Night Current tutorial step index reached (survives title renames).
+    #[serde(default)]
+    pub tutorial_step_reached: u8,
+    /// Set when the user completes a Bounce during the Night Current tutorial.
+    #[serde(default)]
+    pub tutorial_bounce_done: bool,
+    /// Project Groove DNA — Feel macro (0..=1) scales track groove amounts.
+    #[serde(default = "default_dna_feel")]
+    pub dna_feel: f32,
+    /// Project Velocity DNA depth (0..=1).
+    #[serde(default)]
+    pub dna_velocity: f32,
+    #[serde(default)]
+    pub dna_groove_template: crate::track::GrooveTemplate,
+    #[serde(default)]
+    pub dna_accent_shape: crate::track::VelocityAccentShape,
+}
+
+fn default_dna_feel() -> f32 {
+    0.0
 }
 
 fn default_true_flag() -> bool {
@@ -303,17 +323,17 @@ impl Project {
             },
             Scene {
                 id: Uuid::new_v4(),
-                name: "Verse".into(),
+                name: "Groove".into(),
                 length_beats: 16.0,
             },
             Scene {
                 id: Uuid::new_v4(),
-                name: "Chorus".into(),
+                name: "Hook".into(),
                 length_beats: 16.0,
             },
             Scene {
                 id: Uuid::new_v4(),
-                name: "Jam / Bridge".into(),
+                name: "Stack".into(),
                 length_beats: 16.0,
             },
         ];
@@ -359,6 +379,36 @@ impl Project {
             ],
             tracks: Vec::new(),
             master: MasterBus::default(),
+            tutorial_step_reached: 0,
+            tutorial_bounce_done: false,
+            dna_feel: 0.0,
+            dna_velocity: 0.0,
+            dna_groove_template: crate::track::GrooveTemplate::Straight,
+            dna_accent_shape: crate::track::VelocityAccentShape::Flat,
+        }
+    }
+
+    /// Push project DNA onto drum-like tracks (name contains drum/kit/perc) or all MIDI instrument tracks.
+    pub fn apply_dna_to_tracks(&mut self, drums_only: bool) {
+        let feel = self.dna_feel.clamp(0.0, 1.0);
+        let tmpl = self.dna_groove_template;
+        for t in &mut self.tracks {
+            let name = t.name.to_lowercase();
+            let is_drum = name.contains("drum")
+                || name.contains("kit")
+                || name.contains("perc")
+                || t.fx_chain.iter().any(|f| f.kind == crate::fx::FxKind::DrumKit);
+            if drums_only && !is_drum {
+                continue;
+            }
+            if !drums_only {
+                let has_inst = t.fx_chain.iter().any(|f| f.kind.is_instrument());
+                if !has_inst && !is_drum {
+                    continue;
+                }
+            }
+            t.groove_template = tmpl;
+            t.groove_amount = feel;
         }
     }
 
@@ -1295,6 +1345,24 @@ impl Project {
 
     /// 1-Click Songwriting Arranger: Generates a voiced Pad Track, a locked Sub-Bass Track, and/or
     /// a Shimmer Arp Track directly from `self.chord_track`!
+    /// Cumulative beat range for a scene index (Intro / Groove / … storyboard sections).
+    pub fn scene_beat_range(&self, scene_idx: usize) -> Option<(f64, f64)> {
+        if scene_idx >= self.scenes.len() {
+            return None;
+        }
+        let mut start = 0.0_f64;
+        for (i, s) in self.scenes.iter().enumerate() {
+            let end = start + s.length_beats.max(0.25);
+            if i == scene_idx {
+                return Some((start, end));
+            }
+            start = end;
+        }
+        None
+    }
+
+    /// Generate arrangement from the chord lane. Optional `beat_range` scopes writes to a section.
+    /// Returns created track ids and a human patch-card summary for Undo via history.
     pub fn generate_arrangement_from_chords(
         &mut self,
         voicing: VoicingStyle,
@@ -1302,22 +1370,54 @@ impl Project {
         spawn_bass: bool,
         spawn_arp: bool,
     ) -> Vec<TrackId> {
+        self.generate_arrangement_from_chords_in_range(voicing, spawn_pad, spawn_bass, spawn_arp, None)
+            .0
+    }
+
+    pub fn generate_arrangement_from_chords_in_range(
+        &mut self,
+        voicing: VoicingStyle,
+        spawn_pad: bool,
+        spawn_bass: bool,
+        spawn_arp: bool,
+        beat_range: Option<(f64, f64)>,
+    ) -> (Vec<TrackId>, String) {
         if self.chord_track.is_empty() {
-            return Vec::new();
+            return (Vec::new(), "No chords in lane.".into());
         }
         self.sort_chord_track();
-        let min_b = self.chord_track.first().map(|c| c.start_beat).unwrap_or(0.0);
-        let max_b = self
+        let chords: Vec<_> = self
             .chord_track
+            .iter()
+            .filter(|ch| {
+                let Some((a, b)) = beat_range else {
+                    return true;
+                };
+                ch.start_beat < b && ch.end_beat() > a
+            })
+            .cloned()
+            .collect();
+        if chords.is_empty() {
+            return (
+                Vec::new(),
+                "No chords inside selected storyboard section.".into(),
+            );
+        }
+        let min_b = chords
+            .iter()
+            .map(|c| c.start_beat)
+            .fold(f64::INFINITY, f64::min);
+        let max_b = chords
             .iter()
             .map(|c| c.end_beat())
             .fold(4.0_f64, f64::max);
         let clip_len = (max_b - min_b).max(1.0);
         let mut created = Vec::new();
+        let mut parts = Vec::new();
 
         if spawn_pad {
             let mut pad_notes = Vec::new();
-            for ch in &self.chord_track {
+            for ch in &chords {
                 let rel_b = (ch.start_beat - min_b).max(0.0);
                 for pitch in ch.voiced_pitches(voicing, 60) {
                     pad_notes.push(MidiNote::new(
@@ -1341,11 +1441,12 @@ impl Project {
                     .push(TimelineClip::new_midi("Voiced Chords", min_b, clip_len, pad_notes));
             }
             created.push(tid);
+            parts.push("Pad");
         }
 
         if spawn_bass {
             let mut bass_notes = Vec::new();
-            for ch in &self.chord_track {
+            for ch in &chords {
                 let rel_b = (ch.start_beat - min_b).max(0.0);
                 let root_midi = 36 + (ch.root_pc % 12); // C2..B2 sub-bass register
                 let fifth_midi = root_midi + 7;
@@ -1378,11 +1479,12 @@ impl Project {
                     .push(TimelineClip::new_midi("Chord Bassline", min_b, clip_len, bass_notes));
             }
             created.push(tid);
+            parts.push("Bass");
         }
 
         if spawn_arp {
             let mut arp_notes = Vec::new();
-            for ch in &self.chord_track {
+            for ch in &chords {
                 let rel_b = (ch.start_beat - min_b).max(0.0);
                 for pitch in ch.voiced_pitches(VoicingStyle::ClosePiano, 60) {
                     arp_notes.push(MidiNote::new(pitch, 96, rel_b, ch.length_beats));
@@ -1405,10 +1507,93 @@ impl Project {
                     .push(TimelineClip::new_midi("Arp Driver Chords", min_b, clip_len, arp_notes));
             }
             created.push(tid);
+            parts.push("Arp");
         }
 
-        created
+        let section = beat_range
+            .map(|(a, b)| format!(" section {:.0}–{:.0}b", a, b))
+            .unwrap_or_default();
+        let card = if created.is_empty() {
+            format!("Generate Arr: nothing created{section}.")
+        } else {
+            format!(
+                "Generate Arr: created {} ({}){section}. Undo restores prior state.",
+                created.len(),
+                parts.join("+")
+            )
+        };
+        (created, card)
     }
+
+    /// Snapshot the live console mix without writing a Mix A–D slot.
+    pub fn capture_mix_state(&self, name: impl Into<String>) -> MixSnapshot {
+        let tracks = self
+            .tracks
+            .iter()
+            .map(|t| TrackMixState {
+                track_id: t.id,
+                gain_db: t.gain_db,
+                pan: t.pan,
+                stereo_width: t.stereo_width,
+                mute: t.mute,
+                solo: t.solo,
+                send_gains: t.sends.iter().map(|s| (s.id, s.gain_db, s.muted)).collect(),
+                fx_enabled_wet: t
+                    .fx_chain
+                    .iter()
+                    .map(|f| (f.id, f.enabled, f.wet_mix))
+                    .collect(),
+            })
+            .collect();
+        let vca_gains = self
+            .vca_groups
+            .iter()
+            .map(|v| (v.id, v.gain_db, v.mute, v.solo))
+            .collect();
+        MixSnapshot {
+            name: name.into(),
+            master_gain_db: self.master.gain_db,
+            vca_gains,
+            tracks,
+        }
+    }
+
+    /// Absolute mix morph: `value = from + (to - from) * t` (t=0 → from, t=1 → to).
+    pub fn apply_lerped_mix(&mut self, from: &MixSnapshot, to: &MixSnapshot, t: f32) {
+        let t = t.clamp(0.0, 1.0);
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        self.master.gain_db = lerp(from.master_gain_db, to.master_gain_db);
+        for (vid, to_gdb, to_m, to_s) in &to.vca_gains {
+            let from_gdb = from
+                .vca_gains
+                .iter()
+                .find(|(id, ..)| id == vid)
+                .map(|(_, g, ..)| *g)
+                .unwrap_or(*to_gdb);
+            if let Some(vg) = self.vca_groups.iter_mut().find(|v| v.id == *vid) {
+                vg.gain_db = lerp(from_gdb, *to_gdb);
+                if t > 0.5 {
+                    vg.mute = *to_m;
+                    vg.solo = *to_s;
+                }
+            }
+        }
+        for ts in &to.tracks {
+            let Some(from_ts) = from.tracks.iter().find(|f| f.track_id == ts.track_id) else {
+                continue;
+            };
+            if let Some(trk) = self.tracks.iter_mut().find(|t| t.id == ts.track_id) {
+                trk.gain_db = lerp(from_ts.gain_db, ts.gain_db);
+                trk.pan = lerp(from_ts.pan, ts.pan);
+                trk.stereo_width = lerp(from_ts.stereo_width, ts.stereo_width);
+                if t > 0.5 {
+                    trk.mute = ts.mute;
+                    trk.solo = ts.solo;
+                }
+            }
+        }
+    }
+
 
     pub fn add_vca_group(&mut self, name: impl Into<String>) -> Uuid {
         let palette = [

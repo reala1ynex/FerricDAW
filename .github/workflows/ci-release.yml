@@ -58,18 +58,35 @@ jobs:
       - name: Assemble Portable Distribution Archive
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist/FerricDAW | Out-Null
-          Copy-Item target/release/ferricdaw.exe dist/FerricDAW/
+          $Tag = "${{ github.ref_name }}"
+          $Ver = $Tag.TrimStart('v')
+          $Stage = "dist/FerricDAW"
+          New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+          Copy-Item target/release/ferricdaw.exe $Stage/
           if (Test-Path target/release/ferric-plugin-bridge.exe) {
-            Copy-Item target/release/ferric-plugin-bridge.exe dist/FerricDAW/
+            Copy-Item target/release/ferric-plugin-bridge.exe $Stage/
           }
-          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE dist/FerricDAW/
-          if (Test-Path tools/SetDs10Capture.ps1) {
-            Copy-Item tools/SetDs10Capture.ps1 dist/FerricDAW/
+          Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE $Stage/
+          if (Test-Path tools/SetDs10Capture.ps1) { Copy-Item tools/SetDs10Capture.ps1 $Stage/ }
+          if (Test-Path tools/SetLineInCapture.ps1) { Copy-Item tools/SetLineInCapture.ps1 $Stage/ }
+          if (Test-Path docs) {
+            New-Item -ItemType Directory -Force -Path "$Stage/docs" | Out-Null
+            Copy-Item docs/*.md "$Stage/docs/" -ErrorAction SilentlyContinue
           }
-          Compress-Archive -Path dist/FerricDAW/* -DestinationPath dist/FerricDAW-${{ github.ref_name }}-win-x64.zip -Force
+          $FeedUrl = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
+          Set-Content -Path "$Stage/update_feed.url" -Value $FeedUrl -Encoding ascii
+          $ZipName = "FerricDAW-$Tag-win-x64.zip"
+          $ZipPath = "dist/$ZipName"
+          Compress-Archive -Path "$Stage/*" -DestinationPath $ZipPath -Force
+          $Hash = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash.ToLowerInvariant()
+          $Url = "https://github.com/${{ github.repository }}/releases/download/$Tag/$ZipName"
+          @{ version = $Ver; url = $Url; sha256 = $Hash; notes = "FerricDAW $Tag portable Windows x64" } |
+            ConvertTo-Json -Compress |
+            Set-Content -Path dist/latest.json -Encoding utf8
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/FerricDAW-${{ github.ref_name }}-win-x64.zip
+          files: |
+            dist/FerricDAW-${{ github.ref_name }}-win-x64.zip
+            dist/latest.json

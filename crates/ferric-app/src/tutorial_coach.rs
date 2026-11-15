@@ -200,12 +200,12 @@ impl TutorialCoach {
                     } else if step.is_build_step() {
                         if ui
                             .button(
-                                RichText::new("Do this step")
+                                RichText::new("Apply (rebuild through step)")
                                     .strong()
                                     .color(ACCENT_TEAL),
                             )
                             .on_hover_text(
-                                "Applies the recipe through this step (rebuilds the tutorial song — confirm if you have work)",
+                                "Apply rebuilds the tutorial song through this step (replaces the project — confirm if you have unsaved work)",
                             )
                             .clicked()
                         {

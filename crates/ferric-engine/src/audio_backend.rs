@@ -24,7 +24,7 @@ impl AudioDriverKind {
     pub fn label(self) -> &'static str {
         match self {
             AudioDriverKind::WasapiShared => "WASAPI Shared",
-            AudioDriverKind::WasapiExclusive => "WASAPI Low Buffer",
+            AudioDriverKind::WasapiExclusive => "WASAPI Exclusive",
             AudioDriverKind::Asio => "ASIO (if installed)",
         }
     }
@@ -35,7 +35,7 @@ impl AudioDriverKind {
                 "Default shared-mode WASAPI — safe, plays nice with other apps"
             }
             AudioDriverKind::WasapiExclusive => {
-                "Requests a smaller buffer on shared WASAPI. True device-locking exclusive mode is not available through this host yet."
+                "True exclusive-mode WASAPI — locks the output device for lower latency. Falls back to Shared if the device rejects exclusive."
             }
             AudioDriverKind::Asio => {
                 "Uses the ASIO cpal host when ASIO4ALL / an interface driver is installed; otherwise falls back to WASAPI and says so in the status bar."
@@ -163,11 +163,10 @@ pub fn host_for_driver(kind: AudioDriverKind) -> ResolvedAudioHost {
                 ),
             }
         }
+        // Exclusive is opened via wasapi_exclusive COM path; cpal host is still used for shared input.
         AudioDriverKind::WasapiExclusive => ResolvedAudioHost {
             host: cpal::default_host(),
-            fallback_note: Some(
-                "WASAPI Low Buffer: smaller buffer on shared WASAPI (not true exclusive lock yet).",
-            ),
+            fallback_note: None,
         },
         AudioDriverKind::WasapiShared => ResolvedAudioHost {
             host: cpal::default_host(),

@@ -9,7 +9,7 @@ use ferric_engine::{
     AudioDeviceInfo, AudioDriverKind, DiscoveredExternalPlugin, EngineTelemetry, PluginQuarantine,
 };
 use ferric_model::{
-    synthesize_browser_sample, AudioBuffer, ExternalPluginFormat, FactoryPreset, FxKind,
+    synthesize_browser_sample, AudioBuffer, ExternalPluginFormat, FactoryPreset, FxKind, FxSlot,
     MusicalScale, Project, TrackId, FACTORY_PRESETS, NOTE_PITCH_CLASSES,
 };
 use std::path::PathBuf;
@@ -21,11 +21,17 @@ pub enum BrowserAction {
     LoadIntoSampler { name: String, buffer: AudioBuffer },
     ApplyPreset(FactoryPreset),
     LoadExternalPlugin(DiscoveredExternalPlugin),
+    /// Crashproof Plugin Playground: sandbox audition first.
+    AuditionPlugin(DiscoveredExternalPlugin),
+    InsertAuditionedPlugin,
+    ClearPlayground,
     ClearPluginQuarantine,
     ImportMidiFile(PathBuf),
-    SetupAkaiAndDs10Rig,
-    /// Force Speakers out + External Mic/Line in (fixes Realtek combo-jack mute when DS is plugged).
-    FixDs10ComboJackRouting,
+    SetupHardwareRig,
+    SetupHardwareRigPreset(u8),
+    SpawnDualKeyboardStudio,
+    /// Force Speakers out + External Mic/Line in (helps combo-jack mute when a line source is plugged).
+    FixLineInComboJackRouting,
     RescanMidi,
     SwitchAudioDevices {
         output: Option<String>,
@@ -51,6 +57,24 @@ pub enum BrowserTab {
     HardwareRig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TheaterSkin {
+    #[default]
+    DefaultDesk,
+    LaptopPads,
+    HandheldTip,
+}
+
+impl TheaterSkin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DefaultDesk => "Default Desk",
+            Self::LaptopPads => "Laptop Pads",
+            Self::HandheldTip => "Handheld Tip",
+        }
+    }
+}
+
 pub struct StudioBrowserState {
     pub visible: bool,
     pub tab: BrowserTab,
@@ -72,15 +96,26 @@ pub struct StudioBrowserState {
     pub input_gain_db: f32,
     /// Cached I/O matrix — never call `list_audio_device_matrix` every frame.
     pub io_matrix_cache: Vec<AudioDeviceInfo>,
+    pub theater_skin: TheaterSkin,
+    /// Honest Exclusive/ASIO fallback note from the last engine start.
+    pub driver_honesty_note: Option<String>,
+    /// Live Exclusive session active (not merely selected in the driver combo).
+    pub live_exclusive: bool,
 }
 
 impl Default for StudioBrowserState {
     fn default() -> Self {
         let mut custom_plugin_dirs = Vec::new();
-        for cand in [
-            PathBuf::from("plugins"),
-            PathBuf::from("C:\\Users\\ndrpe\\Projects\\FerricDAW\\plugins"),
-        ] {
+        let mut plugin_cands = vec![PathBuf::from("plugins")];
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                plugin_cands.push(dir.join("plugins"));
+            }
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            plugin_cands.push(cwd.join("plugins"));
+        }
+        for cand in plugin_cands {
             if cand.is_dir() && !custom_plugin_dirs.contains(&cand) {
                 custom_plugin_dirs.push(cand);
             }
@@ -108,6 +143,9 @@ impl Default for StudioBrowserState {
             recording_offset_samples: 0,
             input_gain_db: 0.0,
             io_matrix_cache: Vec::new(),
+            theater_skin: TheaterSkin::DefaultDesk,
+            driver_honesty_note: None,
+            live_exclusive: false,
         };
         if let Ok(profile) = std::env::var("USERPROFILE") {
             let music = PathBuf::from(profile).join("Music");
@@ -150,13 +188,16 @@ impl StudioBrowserState {
         active_out: &str,
         active_in: &str,
         telem: &EngineTelemetry,
+        keyboard_pads: &mut crate::keyboard_pads::KeyboardPadRig,
+        pad_tracks: &[(ferric_model::TrackId, String)],
+        selected_track: Option<ferric_model::TrackId>,
         actions: &mut Vec<BrowserAction>,
     ) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             if pill_toggle(
                 ui,
-                "🎹 Rig / DS-10",
+                "🎹 Hardware Rig",
                 self.tab == BrowserTab::HardwareRig,
                 ACCENT_FERRIC,
             )
@@ -176,7 +217,7 @@ impl StudioBrowserState {
             }
             if pill_toggle(
                 ui,
-                "🎛 CLAP / VST3",
+                "🎛 Presets / Plugins",
                 self.tab == BrowserTab::PresetsAndClap,
                 ACCENT_AMBER,
             )
@@ -196,6 +237,9 @@ impl StudioBrowserState {
                     active_out,
                     active_in,
                     telem,
+                    keyboard_pads,
+                    pad_tracks,
+                    selected_track,
                     actions,
                 );
             }
@@ -217,12 +261,159 @@ impl StudioBrowserState {
         active_out: &str,
         active_in: &str,
         telem: &EngineTelemetry,
+        keyboard_pads: &mut crate::keyboard_pads::KeyboardPadRig,
+        pad_tracks: &[(ferric_model::TrackId, String)],
+        selected_track: Option<ferric_model::TrackId>,
         actions: &mut Vec<BrowserAction>,
     ) {
         egui::ScrollArea::vertical()
             .id_salt("hw_rig_scroll")
             .show(ui, |ui| {
-                // Featured 1-Click Hardware Studio Rig Builder for Akai LPK25 + Nintendo DS KORG DS-10!
+                // Hardware Rig Theater — desk layout + skins
+                egui::Frame::new()
+                    .fill(BG_DEEP)
+                    .stroke(Stroke::new(1.2_f32, ACCENT_TEAL))
+                    .corner_radius(6)
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("🎭 Hardware Rig Theater")
+                                .size(12.0)
+                                .strong()
+                                .color(ACCENT_TEAL),
+                        );
+                        ui.horizontal(|ui| {
+                            for skin in [
+                                TheaterSkin::DefaultDesk,
+                                TheaterSkin::LaptopPads,
+                                TheaterSkin::HandheldTip,
+                            ] {
+                                if pill_toggle(
+                                    ui,
+                                    skin.label(),
+                                    self.theater_skin == skin,
+                                    ACCENT_FERRIC,
+                                )
+                                .clicked()
+                                {
+                                    self.theater_skin = skin;
+                                }
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let want_excl = matches!(
+                            self.selected_audio_driver,
+                            AudioDriverKind::WasapiExclusive
+                        );
+                        let live_excl = self.live_exclusive;
+                        let status = match (want_excl, live_excl) {
+                            (true, true) => "Exclusive ● locked",
+                            (true, false) => "Exclusive → Shared fallback",
+                            _ => "Shared",
+                        };
+                        let buf = self
+                            .selected_buffer_size
+                            .map(|b| format!("{b}"))
+                            .unwrap_or_else(|| "auto".into());
+                        let ping = telem
+                            .measured_loopback_samples
+                            .map(|s| format!("{s} smp"))
+                            .unwrap_or_else(|| "—".into());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · out {} · buf {} · ping {}",
+                                status, active_out, buf, ping
+                            ))
+                            .size(11.0)
+                            .strong()
+                            .monospace()
+                            .color(if live_excl {
+                                ACCENT_TEAL
+                            } else if want_excl {
+                                ACCENT_AMBER
+                            } else {
+                                TEXT_DIM
+                            }),
+                        );
+                        if let Some(note) = self.driver_honesty_note.as_ref() {
+                            ui.label(
+                                egui::RichText::new(note.as_str())
+                                    .size(10.0)
+                                    .color(ACCENT_AMBER),
+                            );
+                        }
+                        ui.add_space(4.0);
+                        match self.theater_skin {
+                            TheaterSkin::DefaultDesk => {
+                                ui.columns(3, |cols| {
+                                    cols[0].label(
+                                        egui::RichText::new("MIDI")
+                                            .size(11.0)
+                                            .strong()
+                                            .color(ACCENT_FERRIC),
+                                    );
+                                    cols[0].label(
+                                        egui::RichText::new(if midi_ports.is_empty() {
+                                            "No USB MIDI"
+                                        } else {
+                                            "Controller ready"
+                                        })
+                                        .size(10.0)
+                                        .color(TEXT_DIM),
+                                    );
+                                    cols[1].label(
+                                        egui::RichText::new("XY / Pads")
+                                            .size(11.0)
+                                            .strong()
+                                            .color(ACCENT_TEAL),
+                                    );
+                                    cols[1].label(
+                                        egui::RichText::new(if keyboard_pads.enabled {
+                                            "Keyboard pads ON"
+                                        } else {
+                                            "Kaoss + dual pads"
+                                        })
+                                        .size(10.0)
+                                        .color(TEXT_DIM),
+                                    );
+                                    cols[2].label(
+                                        egui::RichText::new("Line-In")
+                                            .size(11.0)
+                                            .strong()
+                                            .color(ACCENT_AMBER),
+                                    );
+                                    cols[2].label(
+                                        egui::RichText::new(format!(
+                                            "{:.0} dB in",
+                                            telem.input_peak_db
+                                        ))
+                                        .size(10.0)
+                                        .color(TEXT_DIM),
+                                    );
+                                });
+                            }
+                            TheaterSkin::LaptopPads => {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Laptop Pads skin — letters = Pad A synth, numpad = Pad B kit. Tip preset only; any MIDI works.",
+                                    )
+                                    .size(10.5)
+                                    .color(TEXT_DIM),
+                                );
+                            }
+                            TheaterSkin::HandheldTip => {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Handheld Tip skin — Line-In + latency truth for phone/DS-style sources. Same generic I/O.",
+                                    )
+                                    .size(10.5)
+                                    .color(TEXT_DIM),
+                                );
+                            }
+                        }
+                    });
+                ui.add_space(6.0);
+
                 egui::Frame::new()
                     .fill(BG_ELEVATED)
                     .stroke(Stroke::new(1.2_f32, ACCENT_FERRIC))
@@ -230,14 +421,14 @@ impl StudioBrowserState {
                     .inner_margin(8.0)
                     .show(ui, |ui| {
                         ui.label(
-                            egui::RichText::new("⚡ Akai LPK25 + KORG DS-10 Studio")
+                            egui::RichText::new("⚡ Hardware Studio Rig")
                                 .size(12.0)
                                 .strong()
                                 .color(ACCENT_FERRIC),
                         );
                         ui.label(
                             egui::RichText::new(
-                                "1-click creates an armed LPK25 Synth/Sampler track + a dedicated Stereo Line-In track for your Nintendo DS (with Noise Gate, EQ, Tape Warmth & Tempo Delay)!",
+                                "1-click creates an armed USB MIDI synth track plus a Line-In capture track (EQ + compressor). Works with any controller and any line-level source.",
                             )
                             .size(10.5)
                             .color(TEXT_DIM),
@@ -246,7 +437,7 @@ impl StudioBrowserState {
                         if ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new("🚀 Spawn LPK25 + DS-10 Hybrid Tracks")
+                                    egui::RichText::new("Spawn MIDI + Line-In Rig")
                                         .size(11.0)
                                         .strong()
                                         .color(Color32::BLACK),
@@ -255,27 +446,69 @@ impl StudioBrowserState {
                             )
                             .clicked()
                         {
-                            actions.push(BrowserAction::SetupAkaiAndDs10Rig);
+                            actions.push(BrowserAction::SetupHardwareRig);
                         }
+                        ui.horizontal(|ui| {
+                            if ui.small_button("MIDI only").clicked() {
+                                actions.push(BrowserAction::SetupHardwareRigPreset(2));
+                            }
+                            if ui.small_button("Line-In only").clicked() {
+                                actions.push(BrowserAction::SetupHardwareRigPreset(3));
+                            }
+                            if ui
+                                .small_button("Keyboard + handheld tip")
+                                .on_hover_text(
+                                    "Same generic MIDI + Line-In tracks — tip naming only, not brand-required.",
+                                )
+                                .clicked()
+                            {
+                                actions.push(BrowserAction::SetupHardwareRigPreset(1));
+                            }
+                        });
                         ui.add_space(4.0);
                         if ui
                             .button(
-                                egui::RichText::new("🔊 Fix: Force Speakers + Line-In (DS Mute Fix)")
+                                egui::RichText::new("🔊 Fix: Force Speakers + Line-In")
                                     .size(11.0)
                                     .strong(),
                             )
                             .on_hover_text(
-                                "Plugging the DS into a Realtek combo jack often switches Windows to Headphones and mutes Speakers. This locks Out=Speakers and In=External Microphone.",
+                                "Combo jacks often switch Windows to Headphones and mute Speakers. This locks Out=Speakers and In=External Microphone / Line-In.",
                             )
                             .clicked()
                         {
-                            actions.push(BrowserAction::FixDs10ComboJackRouting);
+                            actions.push(BrowserAction::FixLineInComboJackRouting);
+                        }
+                        ui.add_space(4.0);
+                        if ui
+                            .button(
+                                egui::RichText::new("⌨️ Spawn Dual Keyboard Studio (Prism + Kit)")
+                                    .size(11.0)
+                                    .strong(),
+                            )
+                            .on_hover_text(
+                                "Creates Ferric Prism on Pad A and a Drum Kit on Pad B, then enables dual keyboard MIDI pads.",
+                            )
+                            .clicked()
+                        {
+                            actions.push(BrowserAction::SpawnDualKeyboardStudio);
                         }
                     });
 
                 ui.add_space(6.0);
 
-                // USB MIDI Status (Akai LPK25 Live Monitor)
+                egui::Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.0_f32, ACCENT_AMBER))
+                    .corner_radius(6)
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        keyboard_pads.render_panel(ui, pad_tracks, selected_track);
+                    });
+
+                ui.add_space(6.0);
+
+                // USB MIDI Status
                 egui::Frame::new()
                     .fill(BG_ELEVATED)
                     .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -290,7 +523,7 @@ impl StudioBrowserState {
                             );
                             if ui
                                 .small_button("⟳ Rescan USB")
-                                .on_hover_text("Hot-plug detect Akai LPK25 or other USB MIDI gear")
+                                .on_hover_text("Hot-plug detect any USB MIDI controller")
                                 .clicked()
                             {
                                 actions.push(BrowserAction::RescanMidi);
@@ -300,7 +533,7 @@ impl StudioBrowserState {
                         if midi_ports.is_empty() {
                             ui.label(
                                 egui::RichText::new(
-                                    "No USB MIDI plugged in yet — plug in your Akai LPK25 & click '⟳ Rescan USB'!",
+                                    "No USB MIDI plugged in yet — connect a controller and click Rescan USB.",
                                 )
                                 .size(10.5)
                                 .color(ACCENT_AMBER),
@@ -340,7 +573,7 @@ impl StudioBrowserState {
 
                 ui.add_space(6.0);
 
-                // Audio Line-In / Output Selector + DS-10 Input Trim & Live Peak Meter!
+                // Audio Line-In / Output Selector + Input Trim & Live Peak Meter
                 egui::Frame::new()
                     .fill(BG_ELEVATED)
                     .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -348,7 +581,7 @@ impl StudioBrowserState {
                     .inner_margin(8.0)
                     .show(ui, |ui| {
                         ui.label(
-                            egui::RichText::new("🔌 Audio Interface / DS-10 Line-In")
+                            egui::RichText::new("Audio Interface / Line-In")
                                 .size(11.5)
                                 .strong(),
                         );
@@ -546,7 +779,7 @@ impl StudioBrowserState {
                                         .suffix(" smp"),
                                 )
                                 .on_hover_text(
-                                    "Automatically trims round-trip ADC+DAC latency from recorded overdubs so DS-10 & guitars align sample-tight!",
+                                    "Trims round-trip ADC+DAC latency from recorded overdubs so Line-In / mics / guitars align sample-tight.",
                                 )
                                 .changed()
                             {
@@ -558,14 +791,14 @@ impl StudioBrowserState {
 
                         ui.horizontal(|ui| {
                             let ping_lbl = if telem.ping_in_progress {
-                                "📡 Listening..."
+                                "Listening..."
                             } else {
-                                "📡 Loopback Ping"
+                                "Loopback Ping"
                             };
                             if ui
                                 .small_button(ping_lbl)
                                 .on_hover_text(
-                                    "Connect Headphone/Line-Out -> Line-In (or hold mic near speaker) & click to measure exact round-trip hardware latency!",
+                                    "Route Out → Line-In (or mic near speaker) and measure round-trip hardware latency.",
                                 )
                                 .clicked()
                             {
@@ -583,6 +816,23 @@ impl StudioBrowserState {
                                 }
                             }
                         });
+                        let ping_ms = telem
+                            .measured_loopback_samples
+                            .map(|s| (s as f32 * 1000.0) / (telem.sample_rate.max(8_000) as f32));
+                        ui.label(
+                            egui::RichText::new(match ping_ms {
+                                Some(ms) => format!(
+                                    "Latency: {} frames ({:.2} ms buffer) · last ping {:.1} ms",
+                                    telem.buffer_size_frames, buf_ms, ms
+                                ),
+                                None => format!(
+                                    "Latency: {} frames ({:.2} ms buffer) · ping not measured yet",
+                                    telem.buffer_size_frames, buf_ms
+                                ),
+                            })
+                            .size(10.5)
+                            .color(ACCENT_TEAL),
+                        );
 
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Line-In Gain:").size(10.5));
@@ -609,7 +859,7 @@ impl StudioBrowserState {
                             }
                         });
 
-                        // Live Hardware Line-In Meter (perfect for gain-staging Nintendo DS headphone out!)
+                        // Live hardware Line-In meter (gain-stage headphone / line outs)
                         let (mrect, _) =
                             ui.allocate_exact_size(Vec2::new(210.0, 8.0), Sense::hover());
                         ui.painter().rect_filled(mrect, 2, BG_DEEP);
@@ -641,7 +891,7 @@ impl StudioBrowserState {
                             ui.colored_label(
                                 ACCENT_AMBER,
                                 egui::RichText::new(
-                                    "No usable input. Set Windows Recording → External Microphone (Realtek) as Default, enable Mic Boost, max DS volume, use a TRS cable into the mic/combo jack — not Steam/AMD Array.",
+                                    "No usable input. Set Windows Recording → External Microphone / Line-In as Default, Mic Boost = 0%, raise Ferric Line-In Gain, use a TRS cable into the mic/combo jack — not Steam/AMD Array.",
                                 )
                                 .size(10.0),
                             );
@@ -660,7 +910,7 @@ impl StudioBrowserState {
                                 if ui
                                     .small_button("⚡ Lock BPM")
                                     .on_hover_text(
-                                        "Sync FerricDAW project BPM to the beat detected on Nintendo DS / Line-In!",
+                                        "Sync project BPM to the beat detected on Line-In",
                                     )
                                     .clicked()
                                 {
@@ -670,7 +920,7 @@ impl StudioBrowserState {
                         } else {
                             ui.label(
                                 egui::RichText::new(
-                                    "Play a 4-bar beat on your KORG DS-10 over Line-In for automatic BPM detection (or click TAP)!",
+                                    "Play a 4-bar beat over Line-In for automatic BPM detection (or click TAP)",
                                 )
                                 .size(9.5)
                                 .color(TEXT_DIM),
@@ -835,6 +1085,20 @@ impl StudioBrowserState {
                 }
 
                 ui.separator();
+                ui.label(
+                    egui::RichText::new("🛡 Plugin Playground (sandbox audition → insert)")
+                        .size(11.0)
+                        .strong()
+                        .color(ACCENT_TEAL),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Audition runs sandboxed. Crash quarantines the plugin. Survive → Insert into selected track.",
+                    )
+                    .size(10.0)
+                    .color(TEXT_DIM),
+                );
+                ui.separator();
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
@@ -944,7 +1208,18 @@ impl StudioBrowserState {
                 } else {
                     for plug in filtered {
                         ui.horizontal(|ui| {
-                            if ui.small_button("+ Insert").clicked() {
+                            if ui
+                                .small_button("▶ Audition")
+                                .on_hover_text("Sandbox audition in Plugin Playground")
+                                .clicked()
+                            {
+                                actions.push(BrowserAction::AuditionPlugin(plug.clone()));
+                            }
+                            if ui
+                                .small_button("+ Insert")
+                                .on_hover_text("Insert sandboxed plugin on selected track")
+                                .clicked()
+                            {
                                 actions.push(BrowserAction::LoadExternalPlugin(plug.clone()));
                             }
                             let badge_col = match plug.format {
@@ -971,10 +1246,9 @@ impl StudioBrowserState {
     }
 }
 
-/// KORG DS-10 Inspired Interactive Touch KAOSS X-Y Pad!
-/// Drag horizontally/vertically with the mouse (just like the Nintendo DS stylus!) to:
-/// 1) Morph Filter Cutoff & Resonance / Delay Feedback on any selected Synth/Audio track in real-time
-/// 2) Optionally trigger scale-locked KAOSSilator notes in the project's Musical Key & Scale!
+/// Interactive Kaoss / XY performance pad.
+/// Drag sculpts the selected track's instrument (and insert FX) live — cutoff, resonance, morph, space.
+/// Optional scale-locked note trigger rides on top of that effect morph.
 pub struct KaossPadState {
     pub x: f32,
     pub y: f32,
@@ -989,12 +1263,110 @@ impl Default for KaossPadState {
         Self {
             x: 0.5,
             y: 0.5,
-            note_trigger_mode: true,
+            note_trigger_mode: false,
             octave: 4,
             active_note: None,
             trail: Vec::with_capacity(24),
         }
     }
+}
+
+/// Apply Kaoss XY as a live effect on the track instrument + insert FX chain.
+fn apply_kaoss_xy_to_track(track: &mut ferric_model::Track, x: f32, y: f32) -> bool {
+    let mut touched = false;
+    for fx in &mut track.fx_chain {
+        match fx.kind {
+            FxKind::PolySynth => {
+                fx.set_param(2, 120.0 * (100.0_f32).powf(x));
+                fx.set_param(3, 0.12 + y * 0.72);
+                fx.set_param(1, y * 70.0);
+                touched = true;
+            }
+            FxKind::MonoBass => {
+                fx.set_param(2, 40.0 * (200.0_f32).powf(x));
+                fx.set_param(3, 0.08 + y * 0.82);
+                fx.set_param(4, y * 95.0);
+                touched = true;
+            }
+            FxKind::PrismSynth | FxKind::HostDna => {
+                fx.set_param(0, x * 100.0);
+                fx.set_param(1, y * 85.0);
+                fx.set_param(4, 180.0 * (90.0_f32).powf(x));
+                fx.set_param(5, 0.08 + y * 0.7);
+                touched = true;
+            }
+            FxKind::WavetableSynth => {
+                fx.set_param(1, x * 100.0);
+                fx.set_param(4, y * 80.0);
+                fx.set_param(6, 120.0 * (150.0_f32).powf(x));
+                fx.set_param(7, 0.08 + y * 0.72);
+                touched = true;
+            }
+            FxKind::SamplePlayer => {
+                fx.set_param(3, 180.0 * (85.0_f32).powf(x));
+                fx.set_param(4, 0.10 + y * 0.72);
+                touched = true;
+            }
+            FxKind::DrumKit => {
+                fx.set_param(0, 35.0 + x * 65.0);
+                fx.set_param(4, y * 90.0);
+                touched = true;
+            }
+            FxKind::ParametricEq => {
+                fx.set_param(6, 800.0 * (12.0_f32).powf(x));
+                fx.set_param(7, -6.0 + y * 14.0);
+                fx.set_param(8, 0.5 + y * 4.0);
+                touched = true;
+            }
+            FxKind::StereoDelay => {
+                fx.set_param(2, y * 82.0);
+                fx.set_param(4, 900.0 + x * 9000.0);
+                touched = true;
+            }
+            FxKind::PlateHallReverb => {
+                fx.set_param(1, 18.0 + y * 78.0);
+                fx.set_param(2, x * 90.0);
+                touched = true;
+            }
+            FxKind::TapeSaturator => {
+                fx.set_param(0, x * 18.0);
+                fx.set_param(1, y * 90.0);
+                touched = true;
+            }
+            FxKind::AmpCabSim => {
+                fx.set_param(0, x * 30.0);
+                fx.set_param(5, y * 100.0);
+                touched = true;
+            }
+            FxKind::Compressor => {
+                fx.set_param(0, -42.0 + x * 36.0);
+                fx.set_param(1, 1.5 + y * 12.0);
+                touched = true;
+            }
+            FxKind::MultibandOtt => {
+                fx.set_param(0, x * 100.0);
+                fx.set_param(1, 10.0 + y * 240.0);
+                touched = true;
+            }
+            FxKind::ExternalClap => {
+                fx.set_param(0, x * 100.0);
+                fx.set_param(1, y * 100.0);
+                touched = true;
+            }
+            _ => {}
+        }
+    }
+
+    // Audio / empty racks: insert a performable EQ so Kaoss always has an effect target.
+    if !touched {
+        let mut eq = FxSlot::new(FxKind::ParametricEq);
+        eq.set_param(6, 800.0 * (12.0_f32).powf(x));
+        eq.set_param(7, -6.0 + y * 14.0);
+        eq.set_param(8, 0.5 + y * 4.0);
+        track.fx_chain.push(eq);
+        touched = true;
+    }
+    touched
 }
 
 impl KaossPadState {
@@ -1007,13 +1379,18 @@ impl KaossPadState {
     ) {
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("🎮 KORG DS-10 Style KAOSS X-Y Pad")
+                egui::RichText::new("Kaoss / XY Pad")
                     .strong()
                     .color(ACCENT_FERRIC),
             );
+            ui.label(
+                egui::RichText::new("Sculpts selected track instrument + FX")
+                    .size(11.0)
+                    .color(TEXT_DIM),
+            );
             ui.checkbox(
                 &mut self.note_trigger_mode,
-                "KAOSSilator Scale-Note Synth Trigger (Stylus Drag)",
+                "Also trigger scale notes",
             );
             ui.label(egui::RichText::new("Octave:").size(11.0).color(TEXT_DIM));
             ui.add(egui::DragValue::new(&mut self.octave).range(2..=6));
@@ -1048,7 +1425,6 @@ impl KaossPadState {
             StrokeKind::Inside,
         );
 
-        // Draw DS-10 grid lines
         for g in 1..8 {
             let gx = rect.left() + rect.width() * (g as f32 / 8.0);
             let gy = rect.top() + rect.height() * (g as f32 / 8.0);
@@ -1072,34 +1448,14 @@ impl KaossPadState {
                 }
                 self.trail.push(pos);
 
-                // Morph Selected Track's Synth/Sampler/EQ/Delay Filter X-Y in real-time!
                 if let Some(tid) = selected_track {
                     if let Some(trk) = project.find_track_mut(tid) {
-                        for fx in &mut trk.fx_chain {
-                            match fx.kind {
-                                FxKind::PolySynth => {
-                                    // X = Filter Cutoff (120Hz..12kHz), Y = Resonance + Detune!
-                                    let cutoff = 120.0 * (100.0_f32).powf(self.x);
-                                    fx.set_param(2, cutoff);
-                                    fx.set_param(3, 0.12 + self.y * 0.72);
-                                }
-                                FxKind::SamplePlayer => {
-                                    let cutoff = 180.0 * (85.0_f32).powf(self.x);
-                                    fx.set_param(3, cutoff);
-                                    fx.set_param(4, 0.10 + self.y * 0.72);
-                                }
-                                FxKind::StereoDelay => {
-                                    fx.set_param(2, self.y * 82.0);
-                                    fx.set_param(4, 900.0 + self.x * 9000.0);
-                                }
-                                _ => {}
-                            }
+                        if apply_kaoss_xy_to_track(trk, self.x, self.y) {
+                            actions.push(BrowserAction::ProjectMutated);
                         }
                     }
-                    actions.push(BrowserAction::ProjectMutated);
                 }
 
-                // Trigger Scale-Quantized KAOSSilator notes!
                 if self.note_trigger_mode {
                     let base_midi = ((self.octave as i32 + 1) * 12).clamp(24, 84) as u8;
                     let raw_pitch = base_midi + (self.x * 24.0).round() as u8;
@@ -1133,7 +1489,6 @@ impl KaossPadState {
             }
         }
 
-        // Render glowing DS-10 stylus trail & crosshair!
         for (i, &pt) in self.trail.iter().enumerate() {
             let alpha = ((i + 1) as f32 / 22.0) * 0.65;
             p.circle_filled(pt, 3.0 + i as f32 * 0.35, ACCENT_TEAL.gamma_multiply(alpha));
@@ -1152,17 +1507,26 @@ impl KaossPadState {
         p.circle_filled(Pos2::new(cx, cy), 8.0, ACCENT_FERRIC);
         p.circle_stroke(Pos2::new(cx, cy), 12.0, Stroke::new(1.5_f32, ACCENT_TEAL));
 
+        let track_hint = selected_track
+            .and_then(|tid| project.find_track(tid))
+            .map(|t| t.name.as_str())
+            .unwrap_or("(select a track)");
         p.text(
             Pos2::new(rect.left() + 10.0, rect.bottom() - 10.0),
             Align2::LEFT_BOTTOM,
-            format!("X (Pitch / Cutoff): {:03.0}%   Y (Resonance / Feedback): {:03.0}%", self.x * 100.0, self.y * 100.0),
+            format!(
+                "X brightness/cutoff {:03.0}% · Y resonance/space {:03.0}%  →  {}",
+                self.x * 100.0,
+                self.y * 100.0,
+                track_hint
+            ),
             FontId::monospace(10.5),
             TEXT_MAIN,
         );
     }
 }
 
-/// Tap-Tempo Averager so you can tap along to your Nintendo DS KORG DS-10 beat in 4 clicks!
+/// Tap-tempo averager — tap along to a Line-In beat in 4 clicks.
 #[derive(Default)]
 pub struct TapTempoTracker {
     taps: Vec<Instant>,

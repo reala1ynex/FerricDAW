@@ -21,13 +21,28 @@ impl InputSource {
             InputSource::AudioAndMidi { stereo_pair } => {
                 let a = stereo_pair as u16 * 2 + 1;
                 let b = a + 1;
-                format!("In {a}/{b} + MIDI")
+                format!("Mic/Line {a}/{b} + MIDI")
             }
             InputSource::AudioMono { channel } => {
-                format!("In {} (Mono)", channel as u16 + 1)
+                format!("Mic/Line {} (Mono)", channel as u16 + 1)
             }
-            InputSource::MidiAll => "All MIDI Inputs".into(),
+            InputSource::MidiAll => "MIDI only (no mic)".into(),
             InputSource::ResampleTrackOutput => "Resample Track Out".into(),
+        }
+    }
+
+    /// Compact label for cramped track headers.
+    pub fn short_label(self) -> String {
+        match self {
+            InputSource::AudioAndMidi { stereo_pair } => {
+                let a = stereo_pair as u16 * 2 + 1;
+                format!("In{a}/{}+MIDI", a + 1)
+            }
+            InputSource::AudioMono { channel } => {
+                format!("Mic {}", channel as u16 + 1)
+            }
+            InputSource::MidiAll => "MIDI".into(),
+            InputSource::ResampleTrackOutput => "Resample".into(),
         }
     }
 
@@ -279,7 +294,7 @@ impl ArpMode {
     }
 }
 
-/// Built-in Tempo-Synced MIDI Arpeggiator / Note-Repeat per Track (pairs great with Akai LPK25!).
+/// Built-in tempo-synced MIDI arpeggiator / note-repeat per track.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TrackArpeggiator {
     pub enabled: bool,
@@ -430,6 +445,72 @@ fn default_groove_amount() -> f32 {
     1.0
 }
 
+/// Accent shapes for Velocity DNA (deterministic pocket accents).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum VelocityAccentShape {
+    #[default]
+    Flat,
+    OffbeatLift,
+    DownbeatPunch,
+    HatChatter,
+}
+
+impl VelocityAccentShape {
+    pub const ALL: &'static [VelocityAccentShape] = &[
+        Self::Flat,
+        Self::OffbeatLift,
+        Self::DownbeatPunch,
+        Self::HatChatter,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Flat => "Flat",
+            Self::OffbeatLift => "Offbeat Lift",
+            Self::DownbeatPunch => "Downbeat Punch",
+            Self::HatChatter => "Hat Chatter",
+        }
+    }
+
+    /// Returns a velocity scale factor for a note at `beat` given DNA depth `0..=1`.
+    /// Blends toward accents; depth 0 leaves velocity unchanged (factor 1.0).
+    #[inline]
+    pub fn velocity_scale(self, beat: f64, depth: f32, seed: u32) -> f32 {
+        let d = depth.clamp(0.0, 1.0);
+        if d < 1e-4 || self == Self::Flat {
+            return 1.0;
+        }
+        let pos16 = ((beat.rem_euclid(4.0) / 0.25).floor() as i32).rem_euclid(16);
+        let accent = match self {
+            Self::Flat => 1.0,
+            Self::OffbeatLift => {
+                if pos16 % 2 == 1 {
+                    1.12
+                } else {
+                    0.92
+                }
+            }
+            Self::DownbeatPunch => {
+                if pos16 == 0 || pos16 == 8 {
+                    1.18
+                } else if pos16 % 4 == 0 {
+                    1.06
+                } else {
+                    0.90
+                }
+            }
+            Self::HatChatter => {
+                let h = seed
+                    .wrapping_mul(0x9E37_79B9)
+                    .wrapping_add(pos16 as u32 * 0x85EB_CA6B);
+                let micro = ((h >> 8) & 0xFF) as f32 / 255.0;
+                0.88 + micro * 0.28
+            }
+        };
+        1.0 + (accent - 1.0) * d
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
@@ -514,7 +595,7 @@ impl Track {
             show_automation: false,
             frozen: false,
             frozen_buffer: None,
-            height_px: 84.0,
+            height_px: 108.0,
         }
     }
 

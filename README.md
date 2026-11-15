@@ -1,69 +1,72 @@
-# FerricDAW v1.1.1
+# FerricDAW
 
-**Full-Fledged, Ultra-Lightweight Open-Source Hybrid Digital Audio Workstation in 100% Pure Rust.**
+A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX. Session clips, CLAP/VST3 plugins (crash-isolated), and a portable Windows build you can unzip and run.
 
-FerricDAW combines **REAPER's** universal *"Track = Anything"* architecture, multi-take swipe comping, and a tiny native standalone binary with **Bitwig/Ableton** hybrid session clip launching, modulators, **WSOLA time-stretching**, **Scale-Aware Vocal Auto-Pitch**, **Bezier automation**, **full `.CLAP` + `.VST3` plugin hosting** (in-process editors + **out-of-process sandbox**), **Lossless `FLAC` / Lossy `MP3`/`OGG` + `-14 LUFS` Mastering**, **VCA console groups**, **Chord Lane songwriter**, **Dynamic Tempo/Meter Conductor Maps**, and dedicated **Akai LPK25 + Nintendo DS (KORG DS-10)** hardware integration.
-
-**Tutorial song:** **Night Current** — in-app **🎓 Tutorial** coach (also Ferric menu / Ctrl+K). Written twin: `docs/BEGINNER_GUIDE.md`. Finish line: `demo/NightCurrent-Demo.wav` (128 BPM dark techno, Cm–Ab–Eb–Bb). Factory session **Afterglow Copper** is a separate playground.
+**Current version:** 1.1.1
 
 ---
 
-## Windows portable (send this out)
+## Get the app (Windows)
 
-Unzip `FerricDAW-v1.1.1-win-x64.zip` and run **`ferricdaw.exe`**. Keep `ferric-plugin-bridge.exe` next to it — **plugins that crash run in a worker, not the DAW**. First launch offers **Night Current Tutorial / Afterglow playground / Empty**. Play **`demo/NightCurrent-Demo.wav`** (or **A/B vs demo** after bounce) — that’s the tutorial finish line.
+1. Grab the latest zip from [Releases](https://github.com/reala1ynex/FerricDAW/releases).
+2. Unzip somewhere permanent.
+3. Run `ferricdaw.exe`.
+4. Keep `ferric-plugin-bridge.exe` next to it — that’s the plugin sandbox.
 
-Optional DS Line-In helper (Realtek External Mic, Mic Boost off):
+On first launch you’ll get three choices: **Night Current** tutorial, **Afterglow Copper** playground, or an empty session.
+
+Updates: in the app, **Ferric → Check for Updates**. It downloads the portable zip and applies it on the next restart.
+
+---
+
+## Try the tutorial first
+
+**Night Current** is a short dark-techno track (128 BPM, Cm–Ab–Eb–Bb).
+
+- In the app: **🎓 Tutorial** (or Ctrl+K → Night Current)
+- Written steps: [`docs/BEGINNER_GUIDE.md`](docs/BEGINNER_GUIDE.md)
+- Target bounce: `demo/NightCurrent-Demo.wav`
+
+Play the demo WAV once so you know what you’re aiming for.
+
+Everything else (DNA groove, HostDNA, Launch Pad, plugin audition, hardware rig, etc.) is in [`docs/FEATURE_GUIDE.md`](docs/FEATURE_GUIDE.md) and **F1** inside the app.
+
+---
+
+## What you can do
+
+- **Tracks** — audio, MIDI, instruments, folders, session slots on the same track
+- **Plugins** — CLAP and VST3 with floating UIs; bad plugins die in the bridge, not the DAW
+- **Editing** — piano roll, drum grid, warp/stretch, chord lane, tempo/meter map
+- **Mixing** — mixer, VCA groups, Mix A/B/C/D, sidechain, freeze, PDC
+- **Bounce** — WAV / FLAC / MP3 / OGG with −14 LUFS and true-peak limiting
+- **Hardware** — USB MIDI + Line-In, Kaoss/XY pad, dual keyboard pads
+- **Extras** — Groove/Velocity DNA, HostDNA synth, scene Launch Pad, Golden Bounce A/B
+
+---
+
+## Line-In tips
+
+Speakers out, External Mic / Line-In in. Set Windows **Mic Boost to 0%** and use Ferric’s input trim instead — Mic Boost adds hiss.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\SetDs10Capture.ps1
+powershell -ExecutionPolicy Bypass -File tools\SetLineInCapture.ps1
 ```
 
-**DS tip:** Speakers out + External Microphone in. Windows **Mic Boost = 0%**. Turn up the DS headphone volume; use Ferric **+6 dB** trim — Mic Boost causes hiss.
-
 ---
 
-## Complete v1.1 Studio Feature Set
-
-1. **REAPER Universal Track Graph & Pro Mixing (`ferric-model` & `ferric-engine`):**
-   - Every track simultaneously supports Audio clips, MIDI clips, Folder Submix children, Session Launcher loops, Instruments, Audio FX, Modulators, and Pre-FX / Pre-Fader / Post-Fader Aux Sends.
-   - **True External Sidechain Routing** (`Compressor` & `Noise Gate` keyed off any track with topological DAG cycle protection).
-   - **1-Click Reversible Track Freeze (`❄` / `Ctrl+F`)** & **Automatic Plugin Delay Compensation (PDC)**.
-   - **Equal-Power Auto-Crossfades** whenever audio clips overlap + **Rubber-Band Marquee Multi-Clip Selection** (`Shift+Click` or drag box to group-move, duplicate, or delete).
-2. **Dynamic Song Conductor (`🎼 Tempo / Meter Map`):**
-   - Foldable Master Conductor Lane supporting stepped & linear **Accelerando / Ritardando Tempo Ramps** (with exact closed-form logarithmic beat↔second integration) and mid-song **Time Signature Changes** (`4/4`, `3/4`, `6/8`, `7/8`, `5/4`, `12/8`).
-3. **Full `.CLAP` & `.VST3` Plugin Ecosystem (`clap_host.rs`, `vst3_host.rs`, `plugin_window.rs`):**
-   - Battle-tested pure-Rust C-ABI `.clap` and COM `.vst3` scanners & multi-bus real-time hosts (verified end-to-end against **Dexed** and **Six Sines** in both `.clap` and `.vst3`).
-   - Real plugin parameter discovery (`clap.params` / `IEditController`), Base64 binary patch state save/reload (`clap.state` / `IBStream`), floating native Win32 **`HWND` Graphical Editors (`🗔 Open UI`)**, and automatic **Crash Quarantine**.
-4. **WSOLA Warp, Vocal Auto-Pitch & 16-Voice Slice Sampler (`ferric-dsp`):**
-   - Decoupled WSOLA time-stretch (`0.25x`–`4.0x`) & pitch-shift (`±24 st`), automatic transient detection, and draggable **Stretch/Warp Markers**.
-   - **Scale-Aware Vocal Auto-Pitch Corrector**, **Chromatic & Transient-Slice Sampler**, `PolySynth`, `8-Pad Studio Drum Kit`, `Chromatic Strobe Tuner`, `Tube Amp & Cab Modeler`, `4-Band Parametric EQ + 64-Band FFT`, `Compressor`, `Noise Gate`, `Oxide Tape Saturator`, `Ping-Pong Delay`, and `Lush Plate Reverb`.
-5. **Curved Bezier Automation, 16-Step Drum Grid, Arpeggiator & SMF `.MID`:**
-   - Foldable Bezier automation lanes (`Read / Touch / Latch / Write`), 1-Click **MIDI CC Learn**, **Track MIDI Arpeggiator (`🎹 ARP`)**, **TR-808 / DS-10 16-Step Drum Grid**, Piano Roll **Scale Lock & Chord Stamps**, and `.MID` Import/Export.
-6. **Low-Latency Calibration & Mastering Suite (`flac_enc.rs`, `wav_io.rs`):**
-   - Selectable hardware buffer sizes (`64`–`1024` samples), **1-Click `📡 Loopback Ping` Round-Trip Latency Calibrator** + automatic overdub trim.
-   - Pure-Rust RFC 9639 **Lossless Stereo `FLAC` (16/24-bit + MD5)** & **`WAV` (16/24/32f)** export with **ITU-R BS.1770-4 Integrated `-14 LUFS` Normalization**, **4x True-Peak (`dBTP`) Lookahead Limiter**, and **Triangular `TPDF` Dither**.
-7. **Akai LPK25 + Nintendo DS (KORG DS-10) Hardware Rig:**
-   - Multi-port USB MIDI hot-plugging (`CC64` Sustain, Pitch-Bend, Mod Wheel), simultaneous LPK25 MIDI + DS-10 Stereo Line-In multitrack recording, automatic Line-In BPM detector, **Tap Tempo**, and an interactive **KORG DS-10 KAOSS X-Y Pad**.
-8. **Milestone 9 — Studio Console & Harmony Arranger:**
-   - **VCA Groups** (engine-wired gain/mute/solo) + **Mix A/B/C/D** recall, interactive **Chord Lane** + Circle of Fifths / Progression presets, **Generate Arrangement**, **Chord-Follow** MIDI snap, and offline **4-stem HPSS split**.
-9. **Milestone 10 — Pro I/O & Crash-Safe Plugins:**
-   - **WASAPI Shared / Exclusive / ASIO** driver selector, **16-channel hardware I/O matrix**, default **out-of-process `ferric-plugin-bridge` sandbox** for CLAP/VST3, and **MP3 / OGG** mastering bounce.
-10. **v1.1.1 polish:** Stable maximized window, sticky resizable lower dock, DS capture gain staging (Mic Boost off / +6 dB), and UI FPS fix (no per-frame WASAPI device scans).
-
----
-
-## Build & Run
+## Build from source
 
 ```powershell
 cargo run --release
-# Optional: place the sandboxed plugin worker next to the DAW binary
 cargo build --release -p ferric-engine --bin ferric-plugin-bridge
 
-# Package portable zip
+# Portable zip + latest.json for the updater
 powershell -ExecutionPolicy Bypass -File tools\Package-WindowsRelease.ps1
-```
 
-### Run Full Workspace & Real Plugin Verification Suite
+# Optional: GitHub release upload
+powershell -ExecutionPolicy Bypass -File tools\Publish-GitHubRelease.ps1
+```
 
 ```powershell
 cargo test --workspace
@@ -71,6 +74,17 @@ cargo test --workspace
 
 ---
 
+## Docs
+
+| File | What’s in it |
+|------|----------------|
+| [`docs/BEGINNER_GUIDE.md`](docs/BEGINNER_GUIDE.md) | Build Night Current step by step |
+| [`docs/FEATURE_GUIDE.md`](docs/FEATURE_GUIDE.md) | Full feature map |
+| [`docs/NIGHT_CURRENT_DEMO.md`](docs/NIGHT_CURRENT_DEMO.md) | Notes on the demo WAV |
+| In-app **F1** | Quickstart, feature guide, shortcuts |
+
+---
+
 ## License
 
-Dual-licensed under either **MIT** ([LICENSE-MIT](LICENSE-MIT)) or **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)) at your option.
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)), your choice.

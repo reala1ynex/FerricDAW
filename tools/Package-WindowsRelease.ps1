@@ -1,4 +1,10 @@
 ﻿# Build + package FerricDAW portable Windows x64 zip.
+# Optional: .\Package-WindowsRelease.ps1 -GitHubOwner youruser
+param(
+    [string]$GitHubOwner = $env:FERRIC_GITHUB_OWNER,
+    [string]$GitHubRepo = $(if ($env:FERRIC_GITHUB_REPO) { $env:FERRIC_GITHUB_REPO } else { 'FerricDAW' })
+)
+
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
@@ -42,6 +48,7 @@ Copy-ReleaseFile (Join-Path $Root 'target\release\ferric-plugin-bridge.exe') (Jo
 Copy-Item (Join-Path $Root 'README.md') (Join-Path $StageDir 'README.md') -Force
 Copy-Item (Join-Path $Root 'LICENSE-MIT') (Join-Path $StageDir 'LICENSE-MIT') -Force
 Copy-Item (Join-Path $Root 'LICENSE-APACHE') (Join-Path $StageDir 'LICENSE-APACHE') -Force
+Copy-Item (Join-Path $Root 'tools\SetLineInCapture.ps1') (Join-Path $StageDir 'SetLineInCapture.ps1') -Force
 Copy-Item (Join-Path $Root 'tools\SetDs10Capture.ps1') (Join-Path $StageDir 'SetDs10Capture.ps1') -Force
 
 $DemoDir = Join-Path $StageDir 'demo'
@@ -52,7 +59,7 @@ if (Test-Path $DemoWav) {
 }
 $DocsOut = Join-Path $StageDir 'docs'
 New-Item -ItemType Directory -Force -Path $DocsOut | Out-Null
-foreach ($doc in @('BEGINNER_GUIDE.md', 'NIGHT_CURRENT_DEMO.md')) {
+foreach ($doc in @('BEGINNER_GUIDE.md', 'FEATURE_GUIDE.md', 'NIGHT_CURRENT_DEMO.md')) {
     $src = Join-Path $Root "docs\$doc"
     if (Test-Path $src) { Copy-Item $src (Join-Path $DocsOut $doc) -Force }
 }
@@ -64,12 +71,13 @@ Plugins that crash run in a worker process — not the DAW. Keep ferric-plugin-b
 
 1. Double-click ferricdaw.exe
 2. First launch: choose Night Current Tutorial / Afterglow playground / Empty
-3. Later: 🎓 Tutorial (or Ferric menu → Night Current Tutorial) — Esc closes the coach
-4. Finish line: demo\NightCurrent-Demo.wav — Play demo WAV in the coach, or A/B after bounce
-5. Written twin: docs\BEGINNER_GUIDE.md
-6. Optional DS Line-In: run SetDs10Capture.ps1 (Mic Boost stays OFF)
+3. Later: Tutorial (Ferric menu / Ctrl+K) — Esc closes the coach
+4. Finish line: demo\NightCurrent-Demo.wav — Play demo WAV / Golden Bounce A/B after bounce
+5. Docs: docs\BEGINNER_GUIDE.md (song) · docs\FEATURE_GUIDE.md (full feature map) · F1 in-app
+6. Hardware Rig Theater: USB MIDI + Line-In (tip skins optional). Dual keyboard pads in transport.
+7. Optional Line-In helper: SetLineInCapture.ps1 (Mic Boost stays OFF)
 
-Shortcuts: Space = Play/Stop · Ctrl+K = Command Palette · F1 = Help · Esc = close coach
+Shortcuts: Space = Play/Stop · Ctrl+K = Palette · F1 = Help / Feature Guide · Esc = close coach
 "@ | Set-Content -Path (Join-Path $StageDir 'START_HERE.txt') -Encoding UTF8
 
 @"
@@ -83,10 +91,32 @@ docs\BEGINNER_GUIDE.md (build_tutorial_project).
 In Ferric: Tutorial → Play demo WAV to A/B without leaving the app.
 "@ | Set-Content -Path (Join-Path $DemoDir 'README.txt') -Encoding UTF8
 
+if ($GitHubOwner) {
+    $FeedUrl = "https://github.com/$GitHubOwner/$GitHubRepo/releases/latest/download/latest.json"
+    Set-Content -Path (Join-Path $StageDir 'update_feed.url') -Value $FeedUrl -Encoding ascii
+    Write-Host "Update feed: $FeedUrl" -ForegroundColor Cyan
+}
+
 $ZipName = "FerricDAW-v$Version-win-x64.zip"
 $ZipPath = Join-Path $Root "dist\$ZipName"
 if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 Compress-Archive -Path (Join-Path $StageDir '*') -DestinationPath $ZipPath -Force
+
+# latest.json for GitHub Releases auto-update (sha256 of the zip)
+$Hash = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash.ToLowerInvariant()
+$DownloadUrl = if ($GitHubOwner) {
+    "https://github.com/$GitHubOwner/$GitHubRepo/releases/download/v$Version/$ZipName"
+} else {
+    "file:///$($ZipPath -replace '\\','/')"
+}
+$Latest = [ordered]@{
+    version = $Version
+    url     = $DownloadUrl
+    sha256  = $Hash
+    notes   = "FerricDAW v$Version portable Windows x64"
+}
+$LatestPath = Join-Path $Root 'dist\latest.json'
+$Latest | ConvertTo-Json -Compress | Set-Content -Path $LatestPath -Encoding utf8
 
 # Refresh stable dist\FerricDAW folder for local runs (best-effort if unlocked)
 $DistDir = Join-Path $Root 'dist\FerricDAW'
@@ -108,4 +138,5 @@ Write-Host ""
 Write-Host "Packaged:" -ForegroundColor Green
 Write-Host "  $ZipPath"
 Write-Host "  $DesktopZip"
-Get-Item $ZipPath, $DesktopZip | Format-Table FullName, Length, LastWriteTime -AutoSize
+Write-Host "  $LatestPath"
+Get-Item $ZipPath, $DesktopZip, $LatestPath | Format-Table FullName, Length, LastWriteTime -AutoSize

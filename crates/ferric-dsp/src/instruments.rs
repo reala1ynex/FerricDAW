@@ -572,3 +572,393 @@ impl DrumKitProcessor {
         }
     }
 }
+
+/// Monophonic bass synth with portamento glide (last-note priority).
+pub struct MonoBassProcessor {
+    sample_rate: f32,
+    amp_env: Adsr,
+    flt_env: Adsr,
+    phase: f32,
+    phase_sub: f32,
+    current_hz: f32,
+    target_hz: f32,
+    held_note: Option<u8>,
+    velocity: f32,
+    svf: CytomicSvf,
+    note_stack: Vec<u8>,
+}
+
+impl MonoBassProcessor {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate: sample_rate.max(8_000.0),
+            amp_env: Adsr::default(),
+            flt_env: Adsr::default(),
+            phase: 0.0,
+            phase_sub: 0.0,
+            current_hz: 55.0,
+            target_hz: 55.0,
+            held_note: None,
+            velocity: 0.0,
+            svf: CytomicSvf::default(),
+            note_stack: Vec::with_capacity(8),
+        }
+    }
+
+    pub fn set_sample_rate(&mut self, sr: f32) {
+        self.sample_rate = sr.max(8_000.0);
+    }
+
+    pub fn all_notes_off(&mut self) {
+        self.note_stack.clear();
+        self.held_note = None;
+        self.amp_env.release();
+        self.flt_env.release();
+    }
+
+    fn midi_hz(note: u8) -> f32 {
+        440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
+    }
+
+    fn note_on(&mut self, note: u8, velocity: u8) {
+        self.note_stack.retain(|n| *n != note);
+        self.note_stack.push(note);
+        let retrig = self.held_note.is_none();
+        self.held_note = Some(note);
+        self.target_hz = Self::midi_hz(note);
+        self.velocity = (velocity as f32 / 127.0).clamp(0.05, 1.0);
+        if retrig {
+            self.current_hz = self.target_hz;
+            self.amp_env.trigger();
+            self.flt_env.trigger();
+        }
+    }
+
+    fn note_off(&mut self, note: u8) {
+        self.note_stack.retain(|n| *n != note);
+        if self.held_note == Some(note) {
+            if let Some(&last) = self.note_stack.last() {
+                self.held_note = Some(last);
+                self.target_hz = Self::midi_hz(last);
+            } else {
+                self.held_note = None;
+                self.amp_env.release();
+                self.flt_env.release();
+            }
+        }
+    }
+
+    pub fn process(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        midi_events: &[MidiEvent],
+    ) {
+        self.process_with_expression(
+            left,
+            right,
+            params,
+            midi_events,
+            crate::tempo_arp::MidiExpression::default(),
+        );
+    }
+
+    pub fn process_with_expression(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        midi_events: &[MidiEvent],
+        expr: crate::tempo_arp::MidiExpression,
+    ) {
+        let waveform = params.first().copied().unwrap_or(0.0).round() as i32;
+        let glide_ms = params.get(1).copied().unwrap_or(40.0).max(0.0);
+        let base_cutoff = params.get(2).copied().unwrap_or(680.0);
+        let resonance = params.get(3).copied().unwrap_or(0.42);
+        let flt_env_amt = params.get(4).copied().unwrap_or(55.0) * 0.01;
+        let attack = params.get(5).copied().unwrap_or(4.0);
+        let decay = params.get(6).copied().unwrap_or(220.0);
+        let sustain = (params.get(7).copied().unwrap_or(70.0) * 0.01).clamp(0.0, 1.0);
+        let release = params.get(8).copied().unwrap_or(160.0);
+        let sub_mix = (params.get(9).copied().unwrap_or(35.0) * 0.01).clamp(0.0, 1.0);
+        let out_gain = 10.0_f32.powf(params.get(10).copied().unwrap_or(-2.0) / 20.0)
+            * expr.expression.clamp(0.0, 1.5);
+
+        let frames = left.len().min(right.len());
+        let mut ev_idx = 0;
+        let glide_coeff = if glide_ms < 0.5 {
+            1.0
+        } else {
+            1.0 - (-1.0 / (glide_ms * 0.001 * self.sample_rate).max(1.0)).exp()
+        };
+
+        for frame in 0..frames {
+            while ev_idx < midi_events.len() && midi_events[ev_idx].sample_offset <= frame {
+                let ev = midi_events[ev_idx];
+                if ev.is_note_on && ev.velocity > 0 {
+                    self.note_on(ev.note, ev.velocity);
+                } else {
+                    self.note_off(ev.note);
+                }
+                ev_idx += 1;
+            }
+
+            self.current_hz += (self.target_hz - self.current_hz) * glide_coeff;
+            let bent = self.current_hz
+                * 2.0_f32.powf(expr.pitch_bend_semitones / 12.0);
+            let dt = bent / self.sample_rate;
+
+            let amp = self
+                .amp_env
+                .next_sample(self.sample_rate, attack, decay, sustain, release);
+            let fenv = self
+                .flt_env
+                .next_sample(self.sample_rate, attack * 0.6, decay, sustain, release);
+
+            if amp < 1e-5 && self.held_note.is_none() {
+                left[frame] = 0.0;
+                right[frame] = 0.0;
+                continue;
+            }
+
+            self.phase = (self.phase + dt).fract();
+            self.phase_sub = (self.phase_sub + dt * 0.5).fract();
+
+            let main = match waveform {
+                1 => {
+                    let t = self.phase;
+                    let raw = if t < 0.5 { 1.0 } else { -1.0 };
+                    raw - poly_blep(t, dt) + poly_blep((t + 0.5).fract(), dt)
+                }
+                2 => {
+                    let t = self.phase;
+                    1.0 - 4.0 * (t - 0.5).abs()
+                }
+                3 => (TAU * self.phase).sin(),
+                _ => {
+                    let t = self.phase;
+                    (2.0 * t - 1.0) - poly_blep(t, dt)
+                }
+            };
+            let sub = (TAU * self.phase_sub).sin();
+            let osc = main * (1.0 - sub_mix * 0.55) + sub * sub_mix;
+
+            let cutoff = (base_cutoff
+                * (1.0 + flt_env_amt * fenv * 3.5)
+                * (0.85 + 0.3 * expr.mod_wheel))
+                .clamp(40.0, self.sample_rate * 0.42);
+            let filtered = self.svf.process_lowpass(osc, cutoff, resonance, self.sample_rate);
+            let s = filtered * amp * self.velocity * out_gain * 0.55;
+            left[frame] = s;
+            right[frame] = s;
+        }
+    }
+}
+
+/// Ferric Prism — dual-layer morphing character synth (VA + FM/formant).
+/// One Morph + Prism knob covers bass ? pad ? lead without preset hunting.
+pub struct PrismSynthProcessor {
+    voices: [PrismVoice; 8],
+    voice_counter: u64,
+    sample_rate: f32,
+    lfo_phase: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PrismVoice {
+    active: bool,
+    note: u8,
+    velocity: f32,
+    age: u64,
+    phase_a: f32,
+    phase_b: f32,
+    phase_mod: f32,
+    amp_env: Adsr,
+    flt_env: Adsr,
+    svf_l: CytomicSvf,
+    svf_r: CytomicSvf,
+}
+
+impl PrismSynthProcessor {
+    pub fn new(sample_rate: f32) -> Self {
+        Self {
+            voices: [PrismVoice::default(); 8],
+            voice_counter: 0,
+            sample_rate: sample_rate.max(8_000.0),
+            lfo_phase: 0.0,
+        }
+    }
+
+    pub fn set_sample_rate(&mut self, sr: f32) {
+        self.sample_rate = sr.max(8_000.0);
+    }
+
+    pub fn all_notes_off(&mut self) {
+        for v in &mut self.voices {
+            v.amp_env.release();
+            v.flt_env.release();
+        }
+    }
+
+    fn note_on(&mut self, note: u8, velocity: u8) {
+        self.voice_counter += 1;
+        let slot = self
+            .voices
+            .iter()
+            .position(|v| v.active && v.note == note)
+            .or_else(|| self.voices.iter().position(|v| !v.active))
+            .unwrap_or_else(|| {
+                self.voices
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        a.amp_env
+                            .level
+                            .partial_cmp(&b.amp_env.level)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then(a.age.cmp(&b.age))
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            });
+        let v = &mut self.voices[slot];
+        v.active = true;
+        v.note = note;
+        v.velocity = (velocity as f32 / 127.0).clamp(0.05, 1.0);
+        v.age = self.voice_counter;
+        v.amp_env.trigger();
+        v.flt_env.trigger();
+    }
+
+    fn note_off(&mut self, note: u8) {
+        for v in &mut self.voices {
+            if v.active && v.note == note {
+                v.amp_env.release();
+                v.flt_env.release();
+            }
+        }
+    }
+
+    pub fn process_with_expression(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        params: &[f32],
+        midi_events: &[MidiEvent],
+        expr: crate::tempo_arp::MidiExpression,
+    ) {
+        // 0 Morph %, 1 Prism (formant) %, 2 Spread %, 3 Drive %, 4 Cutoff Hz,
+        // 5 Res, 6 Attack, 7 Decay, 8 Sustain, 9 Release, 10 Output dB
+        let morph = (params.first().copied().unwrap_or(42.0) * 0.01).clamp(0.0, 1.0);
+        let prism = (params.get(1).copied().unwrap_or(35.0) * 0.01).clamp(0.0, 1.0);
+        let spread = (params.get(2).copied().unwrap_or(22.0) * 0.01).clamp(0.0, 1.0);
+        let drive = (params.get(3).copied().unwrap_or(18.0) * 0.01).clamp(0.0, 1.0);
+        let base_cutoff = params.get(4).copied().unwrap_or(3200.0);
+        let resonance = params.get(5).copied().unwrap_or(0.22);
+        let attack = params.get(6).copied().unwrap_or(18.0);
+        let decay = params.get(7).copied().unwrap_or(380.0);
+        let sustain = (params.get(8).copied().unwrap_or(68.0) * 0.01).clamp(0.0, 1.0);
+        let release = params.get(9).copied().unwrap_or(420.0);
+        let out_gain = 10.0_f32.powf(params.get(10).copied().unwrap_or(-3.0) / 20.0)
+            * expr.expression.clamp(0.0, 1.5);
+
+        let frames = left.len().min(right.len());
+        let mut ev_idx = 0;
+        let lfo_inc = 0.35 / self.sample_rate;
+
+        // Formant centers morph with Prism (A?E?O?U-ish).
+        let f1 = 350.0 + prism * 450.0;
+        let f2 = 900.0 + prism * 1400.0;
+
+        for frame in 0..frames {
+            while ev_idx < midi_events.len() && midi_events[ev_idx].sample_offset <= frame {
+                let ev = midi_events[ev_idx];
+                if ev.is_note_on && ev.velocity > 0 {
+                    self.note_on(ev.note, ev.velocity);
+                } else {
+                    self.note_off(ev.note);
+                }
+                ev_idx += 1;
+            }
+
+            self.lfo_phase = (self.lfo_phase + lfo_inc).fract();
+            let lfo = (TAU * self.lfo_phase).sin();
+
+            let mut sum_l = 0.0_f32;
+            let mut sum_r = 0.0_f32;
+
+            for v in &mut self.voices {
+                if !v.active && v.amp_env.stage == EnvStage::Idle {
+                    continue;
+                }
+                let amp = v
+                    .amp_env
+                    .next_sample(self.sample_rate, attack, decay, sustain, release);
+                let fenv = v
+                    .flt_env
+                    .next_sample(self.sample_rate, attack * 0.7, decay, sustain, release);
+                if amp < 1e-5 && v.amp_env.stage == EnvStage::Idle {
+                    v.active = false;
+                    continue;
+                }
+
+                let hz = 440.0
+                    * 2.0_f32.powf(
+                        (v.note as f32 - 69.0 + expr.pitch_bend_semitones + lfo * expr.mod_wheel * 0.35)
+                            / 12.0,
+                    );
+                let dt = hz / self.sample_rate;
+                v.phase_a = (v.phase_a + dt).fract();
+                v.phase_b = (v.phase_b + dt * (1.0 + spread * 0.012)).fract();
+                v.phase_mod = (v.phase_mod + dt * (2.0 + prism * 3.0)).fract();
+
+                // Layer A: anti-aliased saw ? square morph.
+                let t = v.phase_a;
+                let saw = (2.0 * t - 1.0) - poly_blep(t, dt);
+                let sq = {
+                    let raw = if t < 0.5 { 1.0 } else { -1.0 };
+                    raw - poly_blep(t, dt) + poly_blep((t + 0.5).fract(), dt)
+                };
+                let layer_a = saw * (1.0 - morph * 0.55) + sq * (morph * 0.55);
+
+                // Layer B: FM + dual formant resonators (the "Prism" character).
+                let mod_sig = (TAU * v.phase_mod).sin();
+                let carrier = (TAU * v.phase_b + mod_sig * (1.2 + prism * 2.8)).sin();
+                // Cheap formant emphasis via waveshaped carrier + spectral tilt.
+                let layer_b = (carrier * (1.0 + prism) - carrier.powi(3) * prism * 0.55).tanh();
+
+                let mixed = layer_a * (1.0 - morph) + layer_b * morph;
+                let driven = if drive > 0.01 {
+                    (mixed * (1.0 + drive * 2.4)).tanh()
+                } else {
+                    mixed
+                };
+
+                let cut = (base_cutoff
+                    * (1.0 + fenv * 1.8)
+                    * (0.85 + 0.35 * expr.mod_wheel)
+                    * (0.7 + 0.6 * (1.0 - morph * 0.4)))
+                    .clamp(60.0, self.sample_rate * 0.42);
+                let l = v
+                    .svf_l
+                    .process_lowpass(driven, cut, resonance, self.sample_rate);
+                let r = v.svf_r.process_lowpass(
+                    driven * (1.0 - spread * 0.15) + layer_b * spread * 0.2,
+                    cut * (1.0 + spread * 0.04),
+                    resonance,
+                    self.sample_rate,
+                );
+                let g = amp * v.velocity * out_gain * 0.42;
+                sum_l += l * g * (1.0 - spread * 0.25);
+                sum_r += r * g * (1.0 + spread * 0.15);
+            }
+
+            // Mild dual-band "prism" sheen using formant centers as a soft shelf proxy.
+            let formant_tilt = ((f1 + f2) * 0.5 / 4000.0).clamp(0.15, 1.2);
+            let sheen = ((sum_l + sum_r) * 0.5 * formant_tilt).tanh() * prism * 0.08;
+            left[frame] = sum_l + sheen;
+            right[frame] = sum_r + sheen;
+        }
+    }
+}

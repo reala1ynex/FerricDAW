@@ -30,3 +30,4 @@ env_logger.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+windows.workspace = true

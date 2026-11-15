@@ -11,7 +11,8 @@ pub use clip::{
     TimeStretchMode, TimelineClip,
 };
 pub use fx::{
-    ExternalPluginFormat, FactoryPreset, FxId, FxKind, FxSlot, LfoShape, ModRouting, ModTarget,
+    host_dna_params_from_seed, ExternalPluginFormat, FactoryPreset, FxId, FxKind, FxSlot, LfoShape,
+    ModRouting, ModTarget,
     ModulatorId, ModulatorKind, ModulatorSlot, ParamSpec, PluginParamDescriptor, FACTORY_PRESETS,
 };
 pub use project::{
@@ -29,7 +30,7 @@ pub use theory::{
 pub use track::{
     apply_curve_tension, ArpMode, AutomationLane, AutomationMode, AutomationPoint,
     AutomationTarget, GrooveTemplate, InputSource, SendTap, Track, TrackArpeggiator, TrackId,
-    TrackSend, STUDIO_TRACK_COLORS,
+    TrackSend, VelocityAccentShape, STUDIO_TRACK_COLORS,
 };
 
 #[cfg(test)]

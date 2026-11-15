@@ -1,8 +1,8 @@
 use crate::piano_roll::DockAction;
 use crate::theme::{
-    pill_toggle, stereo_level_meter, studio_knob, track_color32, vertical_fader, ACCENT_AMBER,
-    ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM,
-    TEXT_MAIN,
+    pill_toggle, section_label, stereo_level_meter, studio_knob, track_color32, vertical_fader,
+    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
+    TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Color32, Stroke, Ui};
 use ferric_engine::EngineTelemetry;
@@ -19,12 +19,7 @@ pub fn render_mixer_console(
 ) {
     // Mix A/B/C/D recall strip — instant console snapshot compare!
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("MIX RECALL")
-                .size(11.0)
-                .strong()
-                .color(ACCENT_TEAL),
-        );
+        section_label(ui, "MIX RECALL");
         for slot in 0..4 {
             let letter = ['A', 'B', 'C', 'D'][slot];
             let occupied = project
@@ -46,17 +41,14 @@ pub fn render_mixer_console(
                     if occupied { ACCENT_FERRIC } else { TEXT_DIM },
                 )
                 .on_hover_text(format!(
-                    "Left-click: recall {snap_name} • Right-click / Store: capture current console"
+                    "Click filled Mix {letter} to recall '{snap_name}' · empty slot or ⬇ stores current mix"
                 ))
                 .clicked()
                 {
                     if occupied {
-                        if project.recall_mix_snapshot(slot) {
-                            actions.push(DockAction::ProjectMutated("Recall Mix Snapshot"));
-                        }
+                        actions.push(DockAction::RecallMix(slot));
                     } else {
-                        project.capture_mix_snapshot(slot, format!("Mix {letter}"));
-                        actions.push(DockAction::ProjectMutated("Store Mix Snapshot"));
+                        actions.push(DockAction::StoreMix(slot));
                     }
                 }
                 if ui
@@ -64,8 +56,7 @@ pub fn render_mixer_console(
                     .on_hover_text(format!("Store current mix into Mix {letter}"))
                     .clicked()
                 {
-                    project.capture_mix_snapshot(slot, format!("Mix {letter}"));
-                    actions.push(DockAction::ProjectMutated("Store Mix Snapshot"));
+                    actions.push(DockAction::StoreMix(slot));
                 }
             });
         }
@@ -75,9 +66,7 @@ pub fn render_mixer_console(
             .on_hover_text("Add a VCA Master Group (scales member track faders + mute/solo)")
             .clicked()
         {
-            let n = project.vca_groups.len() + 1;
-            project.add_vca_group(format!("VCA {n}"));
-            actions.push(DockAction::ProjectMutated("Add VCA Group"));
+            actions.push(DockAction::AddVcaGroup);
         }
     });
     ui.add_space(4.0);
@@ -161,15 +150,24 @@ pub fn render_mixer_console(
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
                                     let trk = &mut project.tracks[idx];
-                                    if pill_toggle(ui, "M", trk.mute, ACCENT_AMBER).clicked() {
+                                    if pill_toggle(ui, "M", trk.mute, ACCENT_AMBER)
+                                        .on_hover_text("Mute")
+                                        .clicked()
+                                    {
                                         trk.mute = !trk.mute;
                                         actions.push(DockAction::ProjectMutated("Mixer Mute"));
                                     }
-                                    if pill_toggle(ui, "S", trk.solo, Color32::from_rgb(92, 200, 242)).clicked() {
+                                    if pill_toggle(ui, "S", trk.solo, Color32::from_rgb(92, 200, 242))
+                                        .on_hover_text("Solo")
+                                        .clicked()
+                                    {
                                         trk.solo = !trk.solo;
                                         actions.push(DockAction::ProjectMutated("Mixer Solo"));
                                     }
-                                    if pill_toggle(ui, "R", trk.record_arm, ACCENT_RED).clicked() {
+                                    if pill_toggle(ui, "R", trk.record_arm, ACCENT_RED)
+                                        .on_hover_text("Record arm")
+                                        .clicked()
+                                    {
                                         trk.record_arm = !trk.record_arm;
                                         actions.push(DockAction::ProjectMutated("Mixer Arm"));
                                     }
@@ -581,7 +579,7 @@ pub fn render_routing_matrix(
 ) {
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("REAPER-Style Universal Routing Matrix")
+            egui::RichText::new("Track Routing Matrix")
                 .strong()
                 .color(ACCENT_FERRIC),
         );

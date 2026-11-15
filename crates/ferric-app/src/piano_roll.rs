@@ -2,7 +2,7 @@ use crate::theme::{
     pill_toggle, studio_knob, track_color32, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL,
     BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_dsp::{
     analyze_audio_pitch_blobs, ParametricEqProcessor, WavetableSynthProcessor, SPECTRUM_BANDS,
 };
@@ -16,6 +16,14 @@ use uuid::Uuid;
 
 pub enum DockAction {
     ProjectMutated(&'static str),
+    /// Discrete undoable mix ops — main snapshots then applies.
+    RecallMix(usize),
+    StoreMix(usize),
+    AddVcaGroup,
+    HostDnaReseed(ferric_model::FxId),
+    HostDnaRandomize(ferric_model::FxId),
+    HostDnaSibling(ferric_model::FxId, u8),
+    HostDnaPaste(ferric_model::FxId, u64),
     AuditionMidi {
         track_id: TrackId,
         note: u8,
@@ -47,7 +55,11 @@ pub struct PianoRollState {
     pub audio_pitch_blob_view: bool,
     pub chord_stamp: ChordStamp,
     pub active_cc_lane: Option<MidiCcTarget>,
+    /// Selected MIDI note tile IDs (Backspace / Delete removes these).
+    pub selected_notes: Vec<Uuid>,
+    h_scroll_px: f32,
     drag_note: Option<(Uuid, bool)>,
+    drag_pitch_accum: f32,
     drag_warp: Option<Uuid>,
     drag_blob: Option<Uuid>,
     auditioning_pitch: Option<u8>,
@@ -66,7 +78,10 @@ impl Default for PianoRollState {
             audio_pitch_blob_view: false,
             chord_stamp: ChordStamp::SingleNote,
             active_cc_lane: None,
+            selected_notes: Vec::new(),
+            h_scroll_px: 0.0,
             drag_note: None,
+            drag_pitch_accum: 0.0,
             drag_warp: None,
             drag_blob: None,
             auditioning_pitch: None,
@@ -85,12 +100,21 @@ impl PianoRollState {
     ) {
         let Some((track_id, clip_id)) = selected_clip else {
             ui.centered_and_justified(|ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "Select or double-click any Clip on the timeline to edit MIDI Notes, Scales/Chords, CC Lanes, WSOLA Warp Markers & Per-Clip FX.",
-                    )
-                    .color(TEXT_DIM),
-                );
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Double-click a clip on the timeline to edit it here.")
+                            .size(14.0)
+                            .strong()
+                            .color(TEXT_MAIN),
+                    );
+                    ui.label(
+                        egui::RichText::new(
+                            "MIDI clips → piano roll · Audio clips → warp / fades / clip FX",
+                        )
+                        .size(12.0)
+                        .color(TEXT_DIM),
+                    );
+                });
             });
             return;
         };
@@ -125,113 +149,152 @@ impl PianoRollState {
         let root_pc = project.root_pitch_class;
         let scale = project.musical_scale;
 
-        // Top Pro MIDI Toolbar: 16-Step Drum Grid toggle, Scale Lock, Chord Stamp, Quantize, Humanize, CC Lane, SMF Export!
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            if let Some(clip) = project
-                .find_track_mut(track_id)
-                .and_then(|t| t.find_clip_mut(clip_id))
-            {
-                ui.add(egui::TextEdit::singleline(&mut clip.name).desired_width(105.0));
-            }
-
-            if pill_toggle(ui, "🥁 16-Step Grid", self.drum_step_view, ACCENT_AMBER)
-                .on_hover_text("Toggle TR-808 / DS-10 Style 16-Step Drum Pattern Sequencer!")
-                .clicked()
-            {
-                self.drum_step_view = !self.drum_step_view;
-            }
-
-            if pill_toggle(ui, "Scale Lock", self.scale_lock, ACCENT_TEAL)
-                .on_hover_text("Highlight & snap drawn notes to Session Key & Scale")
-                .clicked()
-            {
-                self.scale_lock = !self.scale_lock;
-            }
-            egui::ComboBox::from_id_salt("pr_root")
-                .selected_text(NOTE_PITCH_CLASSES[(project.root_pitch_class as usize) % 12])
-                .width(48.0)
-                .show_ui(ui, |ui| {
-                    for (i, &nm) in NOTE_PITCH_CLASSES.iter().enumerate() {
-                        ui.selectable_value(&mut project.root_pitch_class, i as u8, nm);
-                    }
-                });
-            egui::ComboBox::from_id_salt("pr_scale")
-                .selected_text(project.musical_scale.label())
-                .width(128.0)
-                .show_ui(ui, |ui| {
-                    for &sc in MusicalScale::ALL {
-                        ui.selectable_value(&mut project.musical_scale, sc, sc.label());
-                    }
-                });
-
-            egui::ComboBox::from_id_salt("pr_chord_stamp")
-                .selected_text(self.chord_stamp.label())
-                .width(115.0)
-                .show_ui(ui, |ui| {
-                    for &cs in ChordStamp::ALL {
-                        ui.selectable_value(&mut self.chord_stamp, cs, cs.label());
-                    }
-                });
-
-            if ui.small_button("Q 1/16").clicked() {
-                project.quantize_midi_clip(track_id, clip_id, 0.25);
-                actions.push(DockAction::ProjectMutated("Quantize 1/16"));
-            }
-            if ui
-                .small_button("Humanize")
-                .on_hover_text("Add subtle organic studio timing & velocity groove")
-                .clicked()
-            {
-                project.humanize_midi_clip(track_id, clip_id);
-                actions.push(DockAction::ProjectMutated("Humanize MIDI"));
-            }
-
-            // Velocity / CC Lane Selector
-            let lane_lbl = self
-                .active_cc_lane
-                .map(|c| c.label())
-                .unwrap_or("Velocity Stalks");
-            egui::ComboBox::from_id_salt("pr_cc_lane_sel")
-                .selected_text(lane_lbl)
-                .width(115.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.active_cc_lane, None, "Velocity Stalks");
-                    for &tgt in MidiCcTarget::ALL {
-                        ui.selectable_value(&mut self.active_cc_lane, Some(tgt), tgt.label());
-                    }
-                });
-
-            if ui
-                .small_button("💾 .MID")
-                .on_hover_text("Export Clip as Standard MIDI File (.mid)")
-                .clicked()
-            {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Standard MIDI", &["mid"])
-                    .set_file_name("clip.mid")
-                    .save_file()
-                {
+        // MIDI toolbar — horizontally scrollable so nothing clips on narrow docks
+        egui::ScrollArea::horizontal()
+            .id_salt("piano_roll_toolbar_scroll")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
                     if let Some(clip) = project
-                        .find_track(track_id)
-                        .and_then(|t| t.find_clip(clip_id))
+                        .find_track_mut(track_id)
+                        .and_then(|t| t.find_clip_mut(clip_id))
                     {
-                        if let Some(TakeContent::Midi { notes, cc_points }) =
-                            clip.takes.get(clip.active_take).map(|t| &t.content)
+                        ui.add(
+                            egui::TextEdit::singleline(&mut clip.name)
+                                .desired_width(100.0)
+                                .hint_text("Clip name"),
+                        );
+                    }
+
+                    if pill_toggle(ui, "16-Step", self.drum_step_view, ACCENT_AMBER)
+                        .on_hover_text("16-step drum pattern grid")
+                        .clicked()
+                    {
+                        self.drum_step_view = !self.drum_step_view;
+                    }
+
+                    if pill_toggle(ui, "Scale Lock", self.scale_lock, ACCENT_TEAL)
+                        .on_hover_text("Snap drawn notes to session key & scale")
+                        .clicked()
+                    {
+                        self.scale_lock = !self.scale_lock;
+                    }
+                    egui::ComboBox::from_id_salt("pr_root")
+                        .selected_text(
+                            NOTE_PITCH_CLASSES[(project.root_pitch_class as usize) % 12],
+                        )
+                        .width(44.0)
+                        .show_ui(ui, |ui| {
+                            for (i, &nm) in NOTE_PITCH_CLASSES.iter().enumerate() {
+                                ui.selectable_value(&mut project.root_pitch_class, i as u8, nm);
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("pr_scale")
+                        .selected_text(project.musical_scale.label())
+                        .width(110.0)
+                        .show_ui(ui, |ui| {
+                            for &sc in MusicalScale::ALL {
+                                ui.selectable_value(&mut project.musical_scale, sc, sc.label());
+                            }
+                        });
+
+                    egui::ComboBox::from_id_salt("pr_chord_stamp")
+                        .selected_text(self.chord_stamp.label())
+                        .width(100.0)
+                        .show_ui(ui, |ui| {
+                            for &cs in ChordStamp::ALL {
+                                ui.selectable_value(&mut self.chord_stamp, cs, cs.label());
+                            }
+                        })
+                        .response
+                        .on_hover_text("Click empty grid to stamp this chord/interval");
+
+                    if ui
+                        .small_button("Q 1/16")
+                        .on_hover_text("Quantize notes to 16ths")
+                        .clicked()
+                    {
+                        project.quantize_midi_clip(track_id, clip_id, 0.25);
+                        actions.push(DockAction::ProjectMutated("Quantize 1/16"));
+                    }
+                    if ui
+                        .small_button("Humanize")
+                        .on_hover_text("Subtle timing & velocity groove")
+                        .clicked()
+                    {
+                        project.humanize_midi_clip(track_id, clip_id);
+                        actions.push(DockAction::ProjectMutated("Humanize MIDI"));
+                    }
+
+                    let lane_lbl = self
+                        .active_cc_lane
+                        .map(|c| c.label())
+                        .unwrap_or("Velocity");
+                    egui::ComboBox::from_id_salt("pr_cc_lane_sel")
+                        .selected_text(lane_lbl)
+                        .width(96.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.active_cc_lane, None, "Velocity");
+                            for &tgt in MidiCcTarget::ALL {
+                                ui.selectable_value(
+                                    &mut self.active_cc_lane,
+                                    Some(tgt),
+                                    tgt.label(),
+                                );
+                            }
+                        });
+
+                    if ui
+                        .small_button("Export .mid")
+                        .on_hover_text("Export clip as Standard MIDI File")
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Standard MIDI", &["mid"])
+                            .set_file_name("clip.mid")
+                            .save_file()
                         {
-                            let _ = export_smf_clip(&path, project.bpm, notes, cc_points);
+                            if let Some(clip) = project
+                                .find_track(track_id)
+                                .and_then(|t| t.find_clip(clip_id))
+                            {
+                                if let Some(TakeContent::Midi { notes, cc_points }) =
+                                    clip.takes.get(clip.active_take).map(|t| &t.content)
+                                {
+                                    let _ = export_smf_clip(&path, project.bpm, notes, cc_points);
+                                }
+                            }
                         }
                     }
-                }
-            }
 
-            if ui.small_button("▼Oct").clicked() {
-                self.lowest_pitch = self.lowest_pitch.saturating_sub(12).max(12);
-            }
-            if ui.small_button("▲Oct").clicked() {
-                self.lowest_pitch = (self.lowest_pitch + 12).min(84);
-            }
-        });
+                    if ui
+                        .small_button("▼Oct")
+                        .on_hover_text("Scroll piano roll down one octave")
+                        .clicked()
+                    {
+                        self.lowest_pitch = self.lowest_pitch.saturating_sub(12).max(12);
+                    }
+                    if ui
+                        .small_button("▲Oct")
+                        .on_hover_text("Scroll piano roll up one octave")
+                        .clicked()
+                    {
+                        self.lowest_pitch = (self.lowest_pitch + 12).min(84);
+                    }
+
+                    if !self.selected_notes.is_empty() {
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} selected · Backspace deletes · drag to move",
+                                self.selected_notes.len()
+                            ))
+                            .size(10.5)
+                            .color(TEXT_DIM),
+                        );
+                    }
+                });
+            });
 
         let Some(clip_start) = project
             .find_track(track_id)
@@ -253,8 +316,10 @@ impl PianoRollState {
             return;
         }
 
-        egui::ScrollArea::horizontal()
+        let mut zoom_scroll_adjust = 0.0_f32;
+        let scroll_out = egui::ScrollArea::horizontal()
             .id_salt("piano_roll_hscroll")
+            .horizontal_scroll_offset(self.h_scroll_px)
             .show(ui, |ui| {
                 let keys_w = 48.0_f32;
                 let total_w = keys_w + (clip_len as f32 * self.zoom_x).max(ui.available_width());
@@ -275,6 +340,38 @@ impl PianoRollState {
                     Pos2::new(canvas.left() + keys_w, grid_rect.bottom() + 2.0),
                     Vec2::new(total_w - keys_w, vel_h - 2.0),
                 );
+
+                // Scroll-wheel zoom at cursor (beat stays under pointer); Shift+scroll pans pitch rows.
+                if ui.rect_contains_pointer(canvas) {
+                    let (shift, scroll, hover) = ui.input(|i| {
+                        (
+                            i.modifiers.shift,
+                            i.smooth_scroll_delta,
+                            i.pointer.hover_pos(),
+                        )
+                    });
+                    if scroll.y.abs() > 0.1 {
+                        if shift {
+                            let delta_rows = (-scroll.y * 0.08).round() as i32;
+                            if delta_rows != 0 {
+                                let max_low =
+                                    (127i32 - self.visible_semitones as i32).max(0);
+                                self.lowest_pitch = (self.lowest_pitch as i32 + delta_rows)
+                                    .clamp(0, max_low) as u8;
+                            }
+                        } else if let Some(pos) = hover {
+                            let old_zoom = self.zoom_x;
+                            let new_zoom =
+                                (old_zoom * (1.0 + scroll.y * 0.0045)).clamp(12.0, 280.0);
+                            if (new_zoom - old_zoom).abs() > 0.01 {
+                                let beat_under =
+                                    ((pos.x - grid_rect.left()) / old_zoom).max(0.0);
+                                zoom_scroll_adjust = beat_under * (new_zoom - old_zoom);
+                                self.zoom_x = new_zoom;
+                            }
+                        }
+                    }
+                }
 
                 // Piano Keyboard Audition Strip + Scale Highlighting!
                 let keys_resp = ui.interact(
@@ -394,8 +491,9 @@ impl PianoRollState {
                     return;
                 };
 
-                let mut delete_note_id = None;
+                let mut delete_note_ids: Vec<Uuid> = Vec::new();
                 let mut clicked_existing = false;
+                let shift_held = ui.input(|i| i.modifiers.shift);
 
                 for n_idx in 0..notes.len() {
                     let note = notes[n_idx];
@@ -418,13 +516,21 @@ impl PianoRollState {
                         ui.id().with(("midi_note", note.id)),
                         Sense::click_and_drag(),
                     );
+                    let selected = self.selected_notes.contains(&note.id);
                     let vel_alpha = (note.velocity as f32 / 127.0).clamp(0.35, 1.0);
                     ui.painter()
                         .rect_filled(nrect, 2, t_col.gamma_multiply(vel_alpha));
                     ui.painter().rect_stroke(
                         nrect,
                         2,
-                        Stroke::new(1.0_f32, Color32::WHITE.gamma_multiply(0.7)),
+                        Stroke::new(
+                            if selected { 2.0_f32 } else { 1.0_f32 },
+                            if selected {
+                                ACCENT_TEAL
+                            } else {
+                                Color32::WHITE.gamma_multiply(0.7)
+                            },
+                        ),
                         StrokeKind::Inside,
                     );
 
@@ -439,18 +545,85 @@ impl PianoRollState {
                         );
                     }
 
-                    if n_resp.secondary_clicked() {
-                        delete_note_id = Some(note.id);
+                    n_resp.context_menu(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Edit note · {}{}",
+                                NOTE_PITCH_CLASSES[(note.pitch as usize) % 12],
+                                (note.pitch as i32 / 12) - 1
+                            ))
+                            .strong(),
+                        );
+                        ui.separator();
+                        let mut vel = notes[n_idx].velocity as i32;
+                        if ui
+                            .add(egui::Slider::new(&mut vel, 1..=127).text("Velocity"))
+                            .changed()
+                        {
+                            notes[n_idx].velocity = vel as u8;
+                            actions.push(DockAction::ProjectMutated("Edit Note Velocity"));
+                        }
+                        let mut len = notes[n_idx].length_beats as f32;
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut len, 0.0625..=8.0)
+                                    .text("Length (beats)")
+                                    .logarithmic(true),
+                            )
+                            .changed()
+                        {
+                            notes[n_idx].length_beats = len as f64;
+                            self.default_note_len = notes[n_idx].length_beats;
+                            actions.push(DockAction::ProjectMutated("Edit Note Length"));
+                        }
+                        let mut pitch = notes[n_idx].pitch as i32;
+                        if ui
+                            .add(egui::Slider::new(&mut pitch, 0..=127).text("Pitch"))
+                            .changed()
+                        {
+                            let cand = pitch.clamp(0, 127) as u8;
+                            notes[n_idx].pitch = if self.scale_lock {
+                                scale.snap_pitch(root_pc, cand)
+                            } else {
+                                cand
+                            };
+                            actions.push(DockAction::ProjectMutated("Edit Note Pitch"));
+                        }
+                        ui.separator();
+                        if ui.button("Delete note").clicked() {
+                            delete_note_ids.push(note.id);
+                            ui.close_menu();
+                        }
+                    });
+
+                    if n_resp.clicked() {
                         clicked_existing = true;
-                    } else if n_resp.clicked() {
-                        clicked_existing = true;
+                        if shift_held {
+                            if let Some(i) =
+                                self.selected_notes.iter().position(|id| *id == note.id)
+                            {
+                                self.selected_notes.remove(i);
+                            } else {
+                                self.selected_notes.push(note.id);
+                            }
+                        } else {
+                            self.selected_notes.clear();
+                            self.selected_notes.push(note.id);
+                        }
                     } else if n_resp.drag_started() {
                         clicked_existing = true;
+                        if !self.selected_notes.contains(&note.id) {
+                            if !shift_held {
+                                self.selected_notes.clear();
+                            }
+                            self.selected_notes.push(note.id);
+                        }
                         let near_right = n_resp
                             .interact_pointer_pos()
                             .map(|p| (nrect.right() - p.x).abs() < 7.0)
                             .unwrap_or(false);
                         self.drag_note = Some((note.id, near_right));
+                        self.drag_pitch_accum = 0.0;
                     }
 
                     if let Some((did, resize_r)) = self.drag_note {
@@ -462,17 +635,32 @@ impl PianoRollState {
                                         .max(0.125);
                                 self.default_note_len = notes[n_idx].length_beats;
                             } else {
-                                notes[n_idx].start_beat =
-                                    (notes[n_idx].start_beat + (d.x / self.zoom_x) as f64).max(0.0);
-                                if d.y.abs() >= row_h * 0.85 {
-                                    let dp = (-d.y / row_h).round() as i32;
-                                    let cand =
-                                        (notes[n_idx].pitch as i32 + dp).clamp(0, 127) as u8;
-                                    notes[n_idx].pitch = if self.scale_lock {
-                                        scale.snap_pitch(root_pc, cand)
-                                    } else {
-                                        cand
-                                    };
+                                let db = (d.x / self.zoom_x) as f64;
+                                self.drag_pitch_accum += d.y;
+                                let mut dp = 0i32;
+                                if self.drag_pitch_accum.abs() >= row_h * 0.55 {
+                                    dp = (-self.drag_pitch_accum / row_h).trunc() as i32;
+                                    self.drag_pitch_accum += dp as f32 * row_h;
+                                }
+                                let move_ids: Vec<Uuid> = if self.selected_notes.contains(&did)
+                                {
+                                    self.selected_notes.clone()
+                                } else {
+                                    vec![did]
+                                };
+                                for id in move_ids {
+                                    if let Some(n) = notes.iter_mut().find(|n| n.id == id) {
+                                        n.start_beat = (n.start_beat + db).max(0.0);
+                                        if dp != 0 {
+                                            let cand =
+                                                (n.pitch as i32 + dp).clamp(0, 127) as u8;
+                                            n.pitch = if self.scale_lock {
+                                                scale.snap_pitch(root_pc, cand)
+                                            } else {
+                                                cand
+                                            };
+                                        }
+                                    }
                                 }
                             }
                             actions.push(DockAction::ProjectMutated("Edit MIDI Note"));
@@ -528,19 +716,45 @@ impl PianoRollState {
                     }
                 }
 
-                if let Some(del_id) = delete_note_id {
-                    notes.retain(|n| n.id != del_id);
+                if !delete_note_ids.is_empty() {
+                    notes.retain(|n| !delete_note_ids.contains(&n.id));
+                    self.selected_notes
+                        .retain(|id| !delete_note_ids.contains(id));
                     actions.push(DockAction::ProjectMutated("Delete MIDI Note"));
                 }
 
                 if self.drag_note.is_some() && !ui.input(|i| i.pointer.any_down()) {
+                    // Snap dragged notes to 1/16 on drop.
+                    if let Some((_, false)) = self.drag_note {
+                        let ids = self.selected_notes.clone();
+                        for id in ids {
+                            if let Some(n) = notes.iter_mut().find(|n| n.id == id) {
+                                n.start_beat = (n.start_beat * 4.0).round() / 4.0;
+                            }
+                        }
+                        actions.push(DockAction::ProjectMutated("Snap MIDI Note"));
+                    }
                     self.drag_note = None;
+                    self.drag_pitch_accum = 0.0;
+                }
+
+                // Backspace / Delete removes selected note tiles (not the whole clip).
+                if !self.selected_notes.is_empty()
+                    && ui.input(|i| {
+                        i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete)
+                    })
+                {
+                    let kill = self.selected_notes.clone();
+                    notes.retain(|n| !kill.contains(&n.id));
+                    self.selected_notes.clear();
+                    actions.push(DockAction::ProjectMutated("Delete MIDI Notes"));
                 }
 
                 // Click empty grid cell -> Insert Single Note OR Full Chord Stamp (Scale-Aware)!
                 let grid_bg_resp =
                     ui.interact(grid_rect, ui.id().with("midi_grid_bg"), Sense::click());
                 if grid_bg_resp.clicked() && !clicked_existing {
+                    self.selected_notes.clear();
                     if let Some(pos) = grid_bg_resp.interact_pointer_pos() {
                         let raw_b = ((pos.x - grid_rect.left()) / self.zoom_x) as f64;
                         let start_b = (raw_b * 4.0).floor() / 4.0;
@@ -552,10 +766,14 @@ impl PianoRollState {
                             raw_pitch
                         };
 
+                        let mut new_ids = Vec::new();
                         for &semi_offset in self.chord_stamp.intervals() {
                             let p = (base_pitch.saturating_add(semi_offset)).min(127);
-                            notes.push(MidiNote::new(p, 102, start_b, self.default_note_len));
+                            let n = MidiNote::new(p, 102, start_b, self.default_note_len);
+                            new_ids.push(n.id);
+                            notes.push(n);
                         }
+                        self.selected_notes = new_ids;
                         actions.push(DockAction::ProjectMutated("Insert MIDI Note/Chord"));
                     }
                 }
@@ -569,6 +787,7 @@ impl PianoRollState {
                     );
                 }
             });
+        self.h_scroll_px = (scroll_out.state.offset.x + zoom_scroll_adjust).max(0.0);
     }
 
     fn render_audio_clip_inspector(
@@ -1239,7 +1458,7 @@ pub fn render_fx_and_modulators_panel(
                 let mut arp_ch = false;
                 if pill_toggle(ui, "🎹 ARP", trk.arpeggiator.enabled, ACCENT_AMBER)
                     .on_hover_text(
-                        "Enable Tempo-Synced MIDI Arpeggiator / Chord Gate (works live with Akai LPK25 & clips!)",
+                        "Enable tempo-synced MIDI arpeggiator / chord gate (live USB MIDI & clips)",
                     )
                     .clicked()
                 {
@@ -1344,6 +1563,28 @@ pub fn render_fx_and_modulators_panel(
                         telem,
                         actions,
                     );
+                } else {
+                    ui.vertical(|ui| {
+                        ui.add_space(24.0);
+                        ui.label(
+                            egui::RichText::new("No track selected")
+                                .size(14.0)
+                                .strong()
+                                .color(TEXT_MAIN),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Select a track in the arrangement, or switch to Master Bus above.",
+                            )
+                            .size(12.0)
+                            .color(TEXT_DIM),
+                        );
+                        ui.label(
+                            egui::RichText::new("Tip: click FX on a track header to open this panel.")
+                                .size(11.0)
+                                .color(TEXT_DIM),
+                        );
+                    });
                 }
             });
         });
@@ -1445,6 +1686,53 @@ fn render_fx_slot_cards(
                                 fx.sandbox_out_of_process = !fx.sandbox_out_of_process;
                                 actions.push(DockAction::ProjectMutated("Toggle Plugin Sandbox"));
                             }
+                        }
+                        if fx.kind == FxKind::HostDna {
+                            let fx_id = fx.id;
+                            let seed_now = fx.host_dna_seed;
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Seed {}",
+                                    crate::host_fingerprint::format_host_seed(seed_now)
+                                ))
+                                .size(10.0)
+                                .monospace()
+                                .color(ACCENT_TEAL),
+                            );
+                            if ui
+                                .small_button("Reseed PC")
+                                .on_hover_text("Hash this machine's coarse traits into a new Init")
+                                .clicked()
+                            {
+                                actions.push(DockAction::HostDnaReseed(fx_id));
+                            }
+                            if ui.small_button("Randomize").clicked() {
+                                actions.push(DockAction::HostDnaRandomize(fx_id));
+                            }
+                            for (sib, label) in [(0u8, "A"), (1, "B"), (2, "C")] {
+                                if ui
+                                    .small_button(label)
+                                    .on_hover_text("Sibling Init from same seed")
+                                    .clicked()
+                                {
+                                    actions.push(DockAction::HostDnaSibling(fx_id, sib));
+                                }
+                            }
+                            let paste_id = egui::Id::new(("host_dna_paste", fx_id));
+                            let mut paste = ui.data_mut(|d| {
+                                d.get_temp_mut_or_default::<String>(paste_id).clone()
+                            });
+                            ui.add(
+                                egui::TextEdit::singleline(&mut paste)
+                                    .hint_text("Paste seed hex")
+                                    .desired_width(110.0),
+                            );
+                            if ui.small_button("Paste seed").clicked() {
+                                if let Some(s) = crate::host_fingerprint::parse_host_seed(&paste) {
+                                    actions.push(DockAction::HostDnaPaste(fx_id, s));
+                                }
+                            }
+                            ui.data_mut(|d| *d.get_temp_mut_or_default::<String>(paste_id) = paste);
                         }
                         if !fx.kind.is_instrument() {
                             if ui
@@ -2143,7 +2431,7 @@ fn draw_wavetable_3d_scope(
             if ui
                 .small_button("📂 Import WAV as Wavetable...")
                 .on_hover_text(
-                    "Convert any .WAV/.FLAC (even a KORG DS-10 recording!) into a 64-frame Custom Wavetable!",
+                    "Convert any .WAV/.FLAC into a 64-frame custom wavetable",
                 )
                 .clicked()
             {

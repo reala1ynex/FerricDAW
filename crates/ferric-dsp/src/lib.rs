@@ -16,7 +16,9 @@ pub use effects::{
     AmpCabProcessor, CompressorProcessor, NoiseGateProcessor, ParametricEqProcessor,
     PlateReverbProcessor, StereoDelayProcessor, TapeSaturatorProcessor,
 };
-pub use instruments::{DrumKitProcessor, MidiEvent, PolySynthProcessor};
+pub use instruments::{
+    DrumKitProcessor, MidiEvent, MonoBassProcessor, PolySynthProcessor, PrismSynthProcessor,
+};
 pub use metering::{
     db_to_lin, lin_to_db, master_normalize_and_limit_true_peak, measure_integrated_lufs,
     measure_true_peak_dbtp, LoudnessAndSpectrumAnalyzer, MasterMeterSnapshot, TpdfDither,
@@ -75,6 +77,8 @@ impl ExternalPluginAdapter for PassthroughExternalPlugin {
 
 pub enum DspProcessor {
     PolySynth(PolySynthProcessor),
+    MonoBass(MonoBassProcessor),
+    PrismSynth(PrismSynthProcessor),
     WavetableSynth(WavetableSynthProcessor),
     DrumKit(DrumKitProcessor),
     SamplePlayer(SamplePlayerProcessor),
@@ -104,6 +108,10 @@ impl FxRuntimeInstance {
     pub fn new(id: FxId, kind: FxKind, sample_rate: f32, max_block: usize) -> Self {
         let processor = match kind {
             FxKind::PolySynth => DspProcessor::PolySynth(PolySynthProcessor::new(sample_rate)),
+            FxKind::MonoBass => DspProcessor::MonoBass(MonoBassProcessor::new(sample_rate)),
+            FxKind::PrismSynth | FxKind::HostDna => {
+                DspProcessor::PrismSynth(PrismSynthProcessor::new(sample_rate))
+            }
             FxKind::WavetableSynth => {
                 DspProcessor::WavetableSynth(WavetableSynthProcessor::new(sample_rate))
             }
@@ -256,6 +264,12 @@ impl FxRuntimeInstance {
 
         match &mut self.processor {
             DspProcessor::PolySynth(p) => {
+                p.process_with_expression(left, right, params, midi_events, midi_expr)
+            }
+            DspProcessor::MonoBass(p) => {
+                p.process_with_expression(left, right, params, midi_events, midi_expr)
+            }
+            DspProcessor::PrismSynth(p) => {
                 p.process_with_expression(left, right, params, midi_events, midi_expr)
             }
             DspProcessor::WavetableSynth(p) => {

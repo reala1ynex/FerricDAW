@@ -236,6 +236,16 @@ pub fn stereo_level_meter(ui: &mut Ui, peak_l_db: f32, peak_r_db: f32, height: f
     draw_bar(mid + 0.5, rect.right() - 1.0, peak_r_db);
 }
 
+/// Dim section caption used above control clusters (menus, strips, docks).
+pub fn section_label(ui: &mut Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(10.5)
+            .strong()
+            .color(TEXT_DIM),
+    );
+}
+
 pub fn pill_toggle(ui: &mut Ui, text: &str, active: bool, active_color: Color32) -> Response {
     let fill = if active {
         active_color

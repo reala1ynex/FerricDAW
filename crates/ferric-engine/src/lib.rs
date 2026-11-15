@@ -6,6 +6,7 @@ pub mod lossy_enc;
 pub mod plugin_bridge;
 pub mod plugin_window;
 pub mod vst3_host;
+pub mod wasapi_exclusive;
 pub mod wav_io;
 
 pub use clap_host::{
@@ -317,7 +318,7 @@ pub fn preferred_speakers_output_name() -> Option<String> {
     prefer_speakers_output_device(&host).and_then(|d| d.name().ok())
 }
 
-/// Prefer External Microphone / Line In for DS-10 over Steam/NVIDIA virtual mics.
+/// Prefer External Microphone / Line In over Steam/NVIDIA virtual mics.
 pub fn preferred_line_input_name() -> Option<String> {
     let mut ranked: Vec<(i32, String)> = list_audio_input_devices()
         .into_iter()
@@ -391,6 +392,130 @@ impl LoopbackPingDetector {
     }
 }
 
+fn build_cpal_output_stream(
+    out_device: Option<cpal::Device>,
+    out_config_opt: Option<cpal::SupportedStreamConfig>,
+    buf_hint: Option<u32>,
+    process: impl FnMut(&mut [f32], usize) + Send + 'static,
+) -> Option<cpal::Stream> {
+    let (dev, supported_cfg) = match (out_device, out_config_opt) {
+        (Some(d), Some(c)) => (d, c),
+        _ => return None,
+    };
+    let channels = supported_cfg.channels() as usize;
+    let mut stream_cfg: cpal::StreamConfig = supported_cfg.clone().into();
+    if let Some(req_buf) = buf_hint {
+        let clamped = match supported_cfg.buffer_size() {
+            cpal::SupportedBufferSize::Range { min, max } => req_buf.clamp(*min, *max),
+            cpal::SupportedBufferSize::Unknown => req_buf,
+        };
+        stream_cfg.buffer_size = cpal::BufferSize::Fixed(clamped);
+    }
+    let err_fn = |err| log::warn!("Audio output stream error: {err}");
+    let stream_res = match supported_cfg.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let mut process = process;
+            dev.build_output_stream(
+                &stream_cfg,
+                move |data: &mut [f32], _| {
+                    process(data, channels);
+                },
+                err_fn,
+                None,
+            )
+        }
+        cpal::SampleFormat::I16 => {
+            let mut process = process;
+            dev.build_output_stream(
+                &stream_cfg,
+                move |data: &mut [i16], _| {
+                    let frames = data.len() / channels.max(1);
+                    let mut tmp = [0.0_f32; 4096];
+                    let n = (frames * 2).min(tmp.len());
+                    process(&mut tmp[..n], 2);
+                    for f in 0..(n / 2) {
+                        let l = (tmp[f * 2].clamp(-1.0, 1.0) * 32767.0) as i16;
+                        let r = (tmp[f * 2 + 1].clamp(-1.0, 1.0) * 32767.0) as i16;
+                        data[f * channels] = l;
+                        if channels > 1 {
+                            data[f * channels + 1] = r;
+                        }
+                    }
+                },
+                err_fn,
+                None,
+            )
+        }
+        _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
+    };
+    match stream_res {
+        Ok(s) => {
+            let _ = s.play();
+            Some(s)
+        }
+        Err(e) => {
+            log::warn!("Could not open audio stream: {e}");
+            None
+        }
+    }
+}
+
+fn open_engine_output(
+    audio_driver: AudioDriverKind,
+    preferred_out: Option<&str>,
+    sample_rate: u32,
+    buf_hint: Option<u32>,
+    out_device: Option<cpal::Device>,
+    out_config_opt: Option<cpal::SupportedStreamConfig>,
+    mut rt: RtCallbackState,
+    mut driver_status_note: Option<&'static str>,
+) -> (
+    Option<cpal::Stream>,
+    Option<wasapi_exclusive::ExclusiveOutputSession>,
+    Option<&'static str>,
+    bool,
+) {
+    if audio_driver == AudioDriverKind::WasapiExclusive {
+        match wasapi_exclusive::try_start_exclusive_owned(
+            preferred_out,
+            sample_rate,
+            buf_hint.unwrap_or(128),
+            move |data: &mut [f32], channels| {
+                rt.process_interleaved_f32(data, channels);
+            },
+        ) {
+            Ok((session, period)) => {
+                log::info!("WASAPI Exclusive output locked ({period} frames)");
+                return (None, Some(session), None, true);
+            }
+            Err((process, msg)) => {
+                log::warn!("WASAPI Exclusive failed, falling back to Shared: {msg}");
+                let stream = process.and_then(|p| {
+                    build_cpal_output_stream(out_device, out_config_opt, buf_hint, p)
+                });
+                let live = stream.is_some();
+                driver_status_note = Some(if live {
+                    "WASAPI Exclusive unavailable — using Shared. Another app may hold the device, or the format was rejected."
+                } else {
+                    "WASAPI Exclusive failed and the audio callback could not be recovered — switch driver or restart audio."
+                });
+                return (stream, None, driver_status_note, live);
+            }
+        }
+    }
+
+    let stream = build_cpal_output_stream(
+        out_device,
+        out_config_opt,
+        buf_hint,
+        move |data: &mut [f32], channels| {
+            rt.process_interleaved_f32(data, channels);
+        },
+    );
+    let live = stream.is_some();
+    (stream, None, driver_status_note, live)
+}
+
 pub struct EngineHandle {
     pub sample_rate: u32,
     pub requested_buffer_size: Option<u32>,
@@ -415,7 +540,10 @@ pub struct EngineHandle {
     newly_discovered_params: Vec<(FxId, Vec<PluginParamDescriptor>)>,
     pub quarantine: PluginQuarantine,
     pub latest_telemetry: EngineTelemetry,
+    /// True when either Shared (cpal) or Exclusive output is running.
+    pub has_live_output: bool,
     _output_stream: Option<cpal::Stream>,
+    _exclusive_output: Option<wasapi_exclusive::ExclusiveOutputSession>,
     _input_stream: Option<cpal::Stream>,
     _midi_conns: Vec<MidiInputConnection<()>>,
 }
@@ -503,13 +631,13 @@ impl EngineHandle {
         let mut core = AudioGraphCore::new(sample_rate as f32, max_block);
         core.sync_processors_from_project(initial_project);
 
-        // Pre- populate已知 built-in FX IDs; external plugins will be loaded cleanly on first `sync_project`!
+        // Pre-populate built-in FX IDs; external plugins load cleanly on first sync_project.
         let mut known_fx_ids = Vec::new();
         let mut known_mod_ids = Vec::new();
         collect_builtin_ids(initial_project, &mut known_fx_ids, &mut known_mod_ids);
 
         let retro_frames = sample_rate as usize * RETRO_SECONDS;
-        let mut rt = RtCallbackState {
+        let rt = RtCallbackState {
             project: Box::new(initial_project.clone()),
             core,
             is_recording: false,
@@ -559,62 +687,22 @@ impl EngineHandle {
             smoothed_cpu: 0.2,
         };
 
-        let output_stream = if let (Some(dev), Some(supported_cfg)) = (out_device, out_config_opt) {
-            let channels = supported_cfg.channels() as usize;
-            let mut stream_cfg: cpal::StreamConfig = supported_cfg.clone().into();
-            if let Some(req_buf) = buf_hint {
-                let clamped = match supported_cfg.buffer_size() {
-                    cpal::SupportedBufferSize::Range { min, max } => req_buf.clamp(*min, *max),
-                    cpal::SupportedBufferSize::Unknown => req_buf,
-                };
-                stream_cfg.buffer_size = cpal::BufferSize::Fixed(clamped);
-            }
-            let err_fn = |err| log::warn!("Audio output stream error: {}", err);
-
-            let stream_res = match supported_cfg.sample_format() {
-                cpal::SampleFormat::F32 => dev.build_output_stream(
-                    &stream_cfg,
-                    move |data: &mut [f32], _| {
-                        rt.process_interleaved_f32(data, channels);
-                    },
-                    err_fn,
-                    None,
-                ),
-                cpal::SampleFormat::I16 => dev.build_output_stream(
-                    &stream_cfg,
-                    move |data: &mut [i16], _| {
-                        let frames = data.len() / channels.max(1);
-                        let mut tmp = [0.0_f32; 4096];
-                        let n = (frames * 2).min(tmp.len());
-                        rt.process_interleaved_f32(&mut tmp[..n], 2);
-                        for f in 0..(n / 2) {
-                            let l = (tmp[f * 2].clamp(-1.0, 1.0) * 32767.0) as i16;
-                            let r = (tmp[f * 2 + 1].clamp(-1.0, 1.0) * 32767.0) as i16;
-                            data[f * channels] = l;
-                            if channels > 1 {
-                                data[f * channels + 1] = r;
-                            }
-                        }
-                    },
-                    err_fn,
-                    None,
-                ),
-                _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
-            };
-
-            match stream_res {
-                Ok(s) => {
-                    let _ = s.play();
-                    Some(s)
-                }
-                Err(e) => {
-                    log::warn!("Could not open audio stream: {}", e);
-                    None
-                }
-            }
-        } else {
+        let excl_device_name = if device_name.contains("Offline") {
             None
+        } else {
+            Some(device_name.as_str())
         };
+        let (output_stream, exclusive_output, driver_status_note, has_live_output) =
+            open_engine_output(
+                audio_driver,
+                preferred_out.or(excl_device_name),
+                sample_rate,
+                buf_hint,
+                out_device,
+                out_config_opt,
+                rt,
+                driver_status_note,
+            );
 
         let mut latest_telemetry = EngineTelemetry::default();
         latest_telemetry.sample_rate = sample_rate;
@@ -642,13 +730,15 @@ impl EngineHandle {
             newly_discovered_params: Vec::new(),
             quarantine: PluginQuarantine::load_default(),
             latest_telemetry,
+            has_live_output,
             _output_stream: output_stream,
+            _exclusive_output: exclusive_output,
             _input_stream: input_stream,
             _midi_conns: midi_conns,
         }
     }
 
-    /// Hot-plug rescan for USB MIDI controllers (e.g. plugging in the Akai LPK25 while FerricDAW is open!).
+    /// Hot-plug rescan for USB MIDI controllers while FerricDAW is open.
     pub fn rescan_midi_devices(&mut self) {
         self._midi_conns.clear();
         let (conns, names) = Self::connect_all_hardware_midi(self.shared_midi_tx.clone());
@@ -656,14 +746,19 @@ impl EngineHandle {
         self.midi_port_names = names;
     }
 
+    /// Tip-keyboard heuristic for optional UI hints (LPK25 naming only — not brand lock).
     pub fn has_akai_lpk25(&self) -> bool {
-        self.midi_port_names.iter().any(|n| {
-            let up = n.to_uppercase();
-            up.contains("LPK25") || up.contains("AKAI")
-        })
+        self.midi_port_names
+            .iter()
+            .any(|n| n.to_uppercase().contains("LPK25"))
     }
 
-    /// Connects ALL available hardware USB MIDI controllers simultaneously (including Akai LPK25!).
+    /// True when Exclusive output session is currently holding the device.
+    pub fn has_exclusive_output(&self) -> bool {
+        self._exclusive_output.is_some()
+    }
+
+    /// Connects all available hardware USB MIDI controllers simultaneously.
     fn connect_all_hardware_midi(
         shared_tx: Arc<Mutex<Producer<HwMidiPacket>>>,
     ) -> (Vec<MidiInputConnection<()>>, Vec<String>) {
@@ -739,7 +834,7 @@ impl EngineHandle {
     }
 
     /// Universal Hardware Audio Line-In / Mic Input Stream (supports `F32` & `I16`, mono→16-ch,
-    /// AND automatic real-time sample-rate conversion — ideal for Nintendo DS KORG DS-10 3.5mm Line-In!).
+    /// and automatic real-time sample-rate conversion for Line-In sources).
     fn start_hardware_audio_input(
         host: &cpal::Host,
         preferred_in: Option<&str>,
@@ -1276,7 +1371,7 @@ impl RtCallbackState {
             }
         }
 
-        // Drain Hardware USB MIDI Controllers (Akai LPK25 notes, Sustain CC64, CCs!)
+        // Drain hardware USB MIDI (notes, Sustain CC64, CCs)
         while let Ok(pkt) = self.hw_midi_rx.pop() {
             match pkt {
                 HwMidiPacket::Note {
@@ -1300,7 +1395,7 @@ impl RtCallbackState {
                 }
                 HwMidiPacket::ControlChange { channel, cc, value } => {
                     if cc == 64 {
-                        // Akai LPK25 Sustain button!
+                        // Sustain pedal / button (CC64)
                         self.sustain_release_scratch.clear();
                         self.core
                             .set_sustain_pedal(value >= 64, &mut self.sustain_release_scratch);
@@ -1557,7 +1652,7 @@ impl RtCallbackState {
     fn flush_live_recording_at(&mut self, end_beat: f64) {
         let safe_end = end_beat.max(self.record_start_beat + 1.0);
 
-        // 1. Flush MIDI Take (simultaneously alongside Audio if both LPK25 & DS-10 were played!)
+        // 1. Flush MIDI take (alongside audio when both were recorded)
         if !self.rec_midi.is_empty() {
             let midi_target = self
                 .project
@@ -1581,7 +1676,7 @@ impl RtCallbackState {
             });
         }
 
-        // 2. Flush Hardware Line-In / Mic Audio Take (e.g., Nintendo DS KORG DS-10!)
+        // 2. Flush hardware Line-In / mic audio take
         let audio_target = self
             .project
             .tracks
@@ -1917,7 +2012,7 @@ mod tests {
     #[test]
     fn session_bundle_persists_and_reloads_long_recorded_audio() {
         let mut proj = Project::new_empty("Long Recording Persistence Test");
-        let tid = proj.add_track("DS-10 Line-In");
+        let tid = proj.add_track("Line-In");
         // 12 seconds @ 48 kHz = 576,000 samples (exceeds 10-second inline limit!)
         let frames = 48_000 * 12;
         let left = vec![0.25_f32; frames];
@@ -1927,7 +2022,7 @@ mod tests {
             .unwrap()
             .clips
             .push(ferric_model::TimelineClip::new_audio(
-                "12s DS-10 Jam",
+                "12s Line-In Jam",
                 0.0,
                 24.0,
                 long_buf,

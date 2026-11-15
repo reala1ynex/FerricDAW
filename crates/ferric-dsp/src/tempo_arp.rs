@@ -27,7 +27,7 @@ impl Default for MidiExpression {
 }
 
 /// Zero-allocation Real-Time Track Arpeggiator / Note-Repeat engine.
-/// Works both during timeline playback AND while transport is stopped (for jamming on Akai LPK25!).
+/// Works during timeline playback and while transport is stopped (live USB MIDI jamming).
 #[derive(Debug, Clone)]
 pub struct ArpRuntime {
     held_vel: [u8; 128],
@@ -215,7 +215,7 @@ impl ArpRuntime {
 const FLUX_RING_LEN: usize = 512; // ~5.12 seconds @ 100 Hz envelope rate
 
 /// Zero-allocation Real-Time Audio Onset-Flux Autocorrelation Tempo Detector!
-/// Listens to hardware Line-In (such as a Nintendo DS running KORG DS-10) and locks exact BPM.
+/// Listens to hardware Line-In and locks exact BPM.
 pub struct OnsetBpmDetector {
     flux_ring: [f32; FLUX_RING_LEN],
     flux_pos: usize,

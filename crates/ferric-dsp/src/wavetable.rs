@@ -3,7 +3,7 @@
 //!   0) Analog Morph (Sine -> Triangle -> Warm Saw -> PWM Pulse)
 //!   1) Vocal Formant ("Ahh" -> "Eee" -> "Ooo" -> "Yaa" Choir Morph)
 //!   2) Digital FM / Metallic Bell Harmonics
-//!   3) Custom User WAV Import (turns any imported `.wav` or KORG DS-10 snippet into a 64-frame wavetable!)
+//!   3) Custom User WAV Import (turns any imported `.wav` into a 64-frame wavetable)
 //! - Up to 8x Stereo Unison Super-Voices with Equal-Power Panning
 //! - Live Shimmer Granular Cloud Layer (+1 Octave & 5th Hann-Windowed Micro-Grains)
 //! - Zero-Delay-Feedback Cytomic State-Variable Filter per voice
@@ -219,7 +219,7 @@ impl WavetableSynthProcessor {
         }
     }
 
-    /// Converts ANY imported `AudioBuffer` (vocal phrase, guitar pluck, KORG DS-10 wave)
+    /// Converts any imported `AudioBuffer` (vocal phrase, guitar pluck, Line-In wave)
     /// into 64 normalized zero-crossing-aligned 256-sample Wavetable frames in Bank 3!
     pub fn load_custom_wavetable(&mut self, buf: &AudioBuffer) {
         let len = buf.len_frames();

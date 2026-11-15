@@ -7,8 +7,8 @@ use egui::{
 };
 use ferric_engine::EngineTelemetry;
 use ferric_model::{
-    ChordQuality, ClipId, MidiNote, ProgressionPreset, Project, SessionSlot, SnapGrid, Take,
-    TakeContent, TimelineClip, TrackId, VoicingStyle, CIRCLE_OF_FIFTHS_MAJOR,
+    ChordQuality, ClipId, InputSource, MidiNote, ProgressionPreset, Project, SessionSlot, SnapGrid,
+    Take, TakeContent, TimelineClip, TrackId, VoicingStyle, CIRCLE_OF_FIFTHS_MAJOR,
     CIRCLE_OF_FIFTHS_MINOR, NOTE_PITCH_CLASSES,
 };
 
@@ -23,8 +23,8 @@ impl EditTool {
     pub fn label(self) -> &'static str {
         match self {
             EditTool::SmartPointer => "Pointer",
-            EditTool::SplitRazor => "Razor Split",
-            EditTool::DrawPencil => "Draw Clip",
+            EditTool::SplitRazor => "Razor",
+            EditTool::DrawPencil => "Draw",
         }
     }
 }
@@ -36,6 +36,14 @@ pub enum ArrangementAction {
         track_id: TrackId,
         clip_id: ClipId,
     },
+    /// Chord Storyboard generate — main snapshots first, then applies.
+    GenerateArr {
+        spawn_pad: bool,
+        spawn_bass: bool,
+        spawn_arp: bool,
+        section_idx: Option<usize>,
+    },
+    UndoGenerateArr,
     ProjectMutated(&'static str),
     SplitClip {
         track_id: TrackId,
@@ -59,6 +67,8 @@ pub enum ArrangementAction {
         track_id: TrackId,
         clip_id: ClipId,
     },
+    /// Select track and jump lower dock to FX / modulators.
+    OpenFxPanel(TrackId),
     ImportAudioToTrack(TrackId),
     ToggleFreezeTrack(TrackId),
     SplitAudioToStems {
@@ -71,7 +81,47 @@ pub enum ArrangementAction {
         track_id: TrackId,
         delta: isize,
     },
-    AddTrack,
+    AddTrack(NewTrackKind),
+}
+
+/// First-class track presets — pick what you want to record / play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewTrackKind {
+    Vocal,
+    Midi,
+    Instrument,
+    AudioInterface,
+    Universal,
+}
+
+impl NewTrackKind {
+    pub const ALL: &'static [NewTrackKind] = &[
+        NewTrackKind::Vocal,
+        NewTrackKind::Midi,
+        NewTrackKind::Instrument,
+        NewTrackKind::AudioInterface,
+        NewTrackKind::Universal,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NewTrackKind::Vocal => "Vocal (Mic)",
+            NewTrackKind::Midi => "MIDI",
+            NewTrackKind::Instrument => "Instrument (Synth)",
+            NewTrackKind::AudioInterface => "Audio Interface",
+            NewTrackKind::Universal => "Universal (Audio + MIDI)",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            NewTrackKind::Vocal => "Mono mic input · gate · vocal pitch · compressor · armed",
+            NewTrackKind::Midi => "MIDI-only input · no mic · ready to record notes",
+            NewTrackKind::Instrument => "MIDI + PolySynth · no mic bleed · armed for notes",
+            NewTrackKind::AudioInterface => "Mono line/mic input · EQ · compressor · armed",
+            NewTrackKind::Universal => "Stereo in + MIDI — catch anything on one track",
+        }
+    }
 }
 
 pub struct ArrangementState {
@@ -80,6 +130,10 @@ pub struct ArrangementState {
     pub tool: EditTool,
     pub ripple_edit: bool,
     pub show_session_launcher: bool,
+    /// Chord Storyboard: selected scene section for scoped Generate Arr.
+    pub storyboard_section: Option<usize>,
+    /// Last Generate Arr patch card (Undo = one history restore).
+    pub generate_patch_card: Option<String>,
     pub renaming_track: Option<TrackId>,
     pub multi_selected_clips: Vec<(TrackId, ClipId)>,
     marquee_start_pos: Option<Pos2>,
@@ -104,6 +158,8 @@ impl Default for ArrangementState {
             tool: EditTool::SmartPointer,
             ripple_edit: false,
             show_session_launcher: true,
+            storyboard_section: None,
+            generate_patch_card: None,
             renaming_track: None,
             multi_selected_clips: Vec::new(),
             marquee_start_pos: None,
@@ -125,30 +181,18 @@ impl ArrangementState {
         telem: &EngineTelemetry,
         actions: &mut Vec<ArrangementAction>,
     ) {
-        // Sub-toolbar above timeline
+        // Row 1 — lanes, tools, snap, zoom, add track (kept short so nothing clips)
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if pill_toggle(
-                ui,
-                "⊞ Session Clips",
-                self.show_session_launcher,
-                ACCENT_TEAL,
-            )
-            .on_hover_text("Toggle Ableton/Bitwig Hybrid Session Clip Launcher")
-            .clicked()
+            ui.spacing_mut().item_spacing.x = 5.0;
+            if pill_toggle(ui, "Session", self.show_session_launcher, ACCENT_TEAL)
+                .on_hover_text("Session clip launcher columns")
+                .clicked()
             {
                 self.show_session_launcher = !self.show_session_launcher;
             }
-            if pill_toggle(
-                ui,
-                "🎼 Tempo / Meter Map",
-                project.show_conductor_lane,
-                ACCENT_AMBER,
-            )
-            .on_hover_text(
-                "Show/Hide Dynamic Song Conductor Lane (Variable BPM Ramps & Mid-Song Time Signature Changes!)",
-            )
-            .clicked()
+            if pill_toggle(ui, "Tempo Map", project.show_conductor_lane, ACCENT_AMBER)
+                .on_hover_text("Conductor lane — BPM ramps & meter changes")
+                .clicked()
             {
                 project.show_conductor_lane = !project.show_conductor_lane;
                 if project.show_conductor_lane && project.tempo_map.is_empty() {
@@ -157,59 +201,82 @@ impl ArrangementState {
             }
             if pill_toggle(
                 ui,
-                "🎹 Chord Lane",
+                "Chords",
                 project.show_chord_lane,
                 Color32::from_rgb(186, 108, 226),
             )
-            .on_hover_text("Interactive Chord Track + Circle of Fifths songwriter lane")
+            .on_hover_text("Chord lane + Circle of Fifths")
             .clicked()
             {
                 project.show_chord_lane = !project.show_chord_lane;
             }
             ui.separator();
-
             for t in [EditTool::SmartPointer, EditTool::SplitRazor, EditTool::DrawPencil] {
-                if pill_toggle(ui, t.label(), self.tool == t, ACCENT_FERRIC).clicked() {
+                if pill_toggle(ui, t.label(), self.tool == t, ACCENT_FERRIC)
+                    .on_hover_text(match t {
+                        EditTool::SmartPointer => "Select / move / marquee",
+                        EditTool::SplitRazor => "Click clips to split at cursor",
+                        EditTool::DrawPencil => "Click empty lane to draw a MIDI clip",
+                    })
+                    .clicked()
+                {
                     self.tool = t;
                 }
             }
             ui.separator();
-
-            ui.label(egui::RichText::new("Snap:").size(11.0).color(TEXT_DIM));
+            ui.label(egui::RichText::new("Snap").size(10.5).color(TEXT_DIM));
             egui::ComboBox::from_id_salt("snap_grid_combo")
                 .selected_text(project.snap_grid.label())
-                .width(96.0)
+                .width(90.0)
                 .show_ui(ui, |ui| {
                     for &g in SnapGrid::ALL {
                         ui.selectable_value(&mut project.snap_grid, g, g.label());
                     }
                 });
-
-            if pill_toggle(ui, "⛓ Ripple", self.ripple_edit, ACCENT_AMBER)
-                .on_hover_text("Ripple Edit Mode: Deleting clips shifts later clips on the track left automatically!")
+            if pill_toggle(ui, "Ripple", self.ripple_edit, ACCENT_AMBER)
+                .on_hover_text("Deleting clips shifts later clips left on the track")
                 .clicked()
             {
                 self.ripple_edit = !self.ripple_edit;
             }
-
             ui.separator();
-            ui.spacing_mut().slider_width = 76.0;
-            ui.label(egui::RichText::new("Zoom:").size(11.0).color(TEXT_DIM));
-            ui.add(egui::Slider::new(&mut self.pixels_per_beat, 14.0..=140.0).show_value(false));
-
+            ui.spacing_mut().slider_width = 72.0;
+            ui.label(egui::RichText::new("Zoom").size(10.5).color(TEXT_DIM));
+            ui.add(egui::Slider::new(&mut self.pixels_per_beat, 14.0..=140.0).show_value(false))
+                .on_hover_text("Ctrl+Wheel also zooms");
             let max_scroll = (project.project_end_beat() + 32.0).max(64.0);
-            ui.label(egui::RichText::new("Pos:").size(11.0).color(TEXT_DIM));
+            ui.label(egui::RichText::new("Scroll").size(10.5).color(TEXT_DIM));
             ui.add(egui::Slider::new(&mut self.scroll_beat, 0.0..=max_scroll).show_value(false))
-                .on_hover_text(
-                    "Horizontal Song Scrollbar (or Shift + MouseWheel / Middle-Mouse Drag)",
-                );
+                .on_hover_text("Shift+Wheel / middle-drag / Alt-drag to pan");
 
-            if ui.button("+ Track").clicked() {
-                actions.push(ArrangementAction::AddTrack);
-            }
+            ui.menu_button(
+                egui::RichText::new("+ Track").strong().color(ACCENT_TEAL),
+                |ui| {
+                    ui.set_min_width(220.0);
+                    ui.label(
+                        egui::RichText::new("What are you recording?")
+                            .size(11.0)
+                            .color(TEXT_DIM),
+                    );
+                    ui.separator();
+                    for &kind in NewTrackKind::ALL {
+                        if ui
+                            .add_sized(
+                                [210.0, 22.0],
+                                egui::Button::new(kind.label()).sense(Sense::click()),
+                            )
+                            .on_hover_text(kind.hint())
+                            .clicked()
+                        {
+                            actions.push(ArrangementAction::AddTrack(kind));
+                            ui.close_menu();
+                        }
+                    }
+                },
+            );
             if self.multi_selected_clips.len() > 1 {
                 ui.label(
-                    egui::RichText::new(format!("({} clips selected)", self.multi_selected_clips.len()))
+                    egui::RichText::new(format!("{} clips", self.multi_selected_clips.len()))
                         .size(10.5)
                         .strong()
                         .color(ACCENT_TEAL),
@@ -217,11 +284,84 @@ impl ArrangementState {
             }
             if project.tracks.iter().any(|t| t.active_session_slot.is_some())
                 && ui
-                    .button(egui::RichText::new("⏹ Stop Session Clips").color(ACCENT_AMBER))
+                    .small_button("Stop Clips")
+                    .on_hover_text("Stop all playing session clips")
                     .clicked()
             {
                 project.stop_all_session_clips();
                 actions.push(ArrangementAction::ProjectMutated("Stop All Session Clips"));
+            }
+        });
+
+        // Row 2 — Chord Storyboard (separate so Gen buttons stay visible)
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new("Storyboard")
+                    .size(10.5)
+                    .strong()
+                    .color(Color32::from_rgb(186, 108, 226)),
+            );
+            for (i, scene) in project.scenes.iter().enumerate() {
+                let sel = self.storyboard_section == Some(i);
+                if pill_toggle(ui, &scene.name, sel, Color32::from_rgb(186, 108, 226))
+                    .on_hover_text("Scope Generate to this section")
+                    .clicked()
+                {
+                    self.storyboard_section = if sel { None } else { Some(i) };
+                }
+            }
+            if ui
+                .small_button("Pad")
+                .on_hover_text("Generate pad for selected section (or whole chord lane)")
+                .clicked()
+            {
+                actions.push(ArrangementAction::GenerateArr {
+                    spawn_pad: true,
+                    spawn_bass: false,
+                    spawn_arp: false,
+                    section_idx: self.storyboard_section,
+                });
+            }
+            if ui
+                .small_button("Bass")
+                .on_hover_text("Generate bass for selected section")
+                .clicked()
+            {
+                actions.push(ArrangementAction::GenerateArr {
+                    spawn_pad: false,
+                    spawn_bass: true,
+                    spawn_arp: false,
+                    section_idx: self.storyboard_section,
+                });
+            }
+            if ui
+                .small_button("Arp")
+                .on_hover_text("Generate arp for selected section")
+                .clicked()
+            {
+                actions.push(ArrangementAction::GenerateArr {
+                    spawn_pad: false,
+                    spawn_bass: false,
+                    spawn_arp: true,
+                    section_idx: self.storyboard_section,
+                });
+            }
+            if self.generate_patch_card.is_some()
+                && ui
+                    .small_button("Undo Gen")
+                    .on_hover_text("Restore snapshot from last Generate")
+                    .clicked()
+            {
+                actions.push(ArrangementAction::UndoGenerateArr);
+            }
+            if let Some(ref card) = self.generate_patch_card {
+                ui.label(
+                    egui::RichText::new(card.as_str())
+                        .size(10.0)
+                        .color(TEXT_DIM)
+                        .italics(),
+                );
             }
         });
 
@@ -261,14 +401,16 @@ impl ArrangementState {
         };
         let ruler_h = 28.0_f32;
 
-        // Ctrl + MouseWheel horizontal zoom, Shift + MouseWheel or Middle-Mouse drag horizontal pan!
+        // Ctrl+wheel zoom · Shift/horizontal wheel pan time · Mid or Alt+drag pans time + tracks.
         if ui.rect_contains_pointer(ui.max_rect()) {
-            let (ctrl, shift, scroll, mid_down, ptr_delta) = ui.input(|i| {
+            let (ctrl, shift, alt, scroll, mid_down, primary_down, ptr_delta) = ui.input(|i| {
                 (
                     i.modifiers.ctrl,
                     i.modifiers.shift,
+                    i.modifiers.alt,
                     i.smooth_scroll_delta,
                     i.pointer.middle_down(),
+                    i.pointer.primary_down(),
                     i.pointer.delta(),
                 )
             });
@@ -276,16 +418,23 @@ impl ArrangementState {
                 self.pixels_per_beat =
                     (self.pixels_per_beat * (1.0 + scroll.y * 0.003)).clamp(14.0, 160.0);
             } else if shift && (scroll.y.abs() > 0.1 || scroll.x.abs() > 0.1) {
-                let delta_px = if scroll.x.abs() > 0.1 { scroll.x } else { scroll.y };
+                let delta_px = if scroll.x.abs() > 0.1 {
+                    scroll.x
+                } else {
+                    scroll.y
+                };
                 self.scroll_beat =
                     (self.scroll_beat - (delta_px / self.pixels_per_beat) as f64).max(0.0);
             } else if scroll.x.abs() > 0.1 {
                 self.scroll_beat =
                     (self.scroll_beat - (scroll.x / self.pixels_per_beat) as f64).max(0.0);
             }
-            if mid_down && ptr_delta.x.abs() > 0.1 {
+            // Plain vertical wheel is handled by the parent ScrollArea (scroll across tracks).
+            let pan_drag = mid_down || (alt && primary_down);
+            if pan_drag && (ptr_delta.x.abs() > 0.1 || ptr_delta.y.abs() > 0.1) {
                 self.scroll_beat =
                     (self.scroll_beat - (ptr_delta.x / self.pixels_per_beat) as f64).max(0.0);
+                ui.scroll_with_delta(Vec2::new(0.0, ptr_delta.y));
             }
         }
 
@@ -389,6 +538,8 @@ impl ArrangementState {
             ui.id().with("timeline_ruler_seek"),
             Sense::click_and_drag(),
         );
+        let ruler_resp = ruler_resp
+            .on_hover_text("Click or drag to move the playhead · Shift = free (no snap)");
         if ruler_resp.clicked() || ruler_resp.dragged() {
             if let Some(pos) = ruler_resp.interact_pointer_pos() {
                 let raw_beat =
@@ -467,32 +618,59 @@ impl ArrangementState {
 
         // Right-Click Ruler Context Menu: Add Song Marker, Set Loop Start/End!
         ruler_resp.context_menu(|ui| {
+            ui.set_min_width(220.0);
             let ph = project
                 .snap_grid
                 .snap(telem.playhead_beat, project.time_signature);
             if ui
-                .button(format!("🚩 Add Song Marker at Beat {:.1}", ph))
+                .button(format!("Move Playhead Here ({:.1})", ph))
                 .clicked()
             {
+                actions.push(ArrangementAction::Seek(ph));
+                ui.close_menu();
+            }
+            if ui.button("Add Marker Here").clicked() {
                 let n = project.markers.len() + 1;
                 project.add_marker(format!("Marker {}", n), ph);
                 actions.push(ArrangementAction::ProjectMutated("Add Song Marker"));
                 ui.close_menu();
             }
-            if ui.button("⟦ Set Loop Start to Playhead").clicked() {
+            ui.separator();
+            ui.label(egui::RichText::new("Loop").size(10.5).color(TEXT_DIM));
+            if ui.button("Set Loop Start Here").clicked() {
                 project.loop_start_beat = ph.min(project.loop_end_beat - 1.0).max(0.0);
+                project.loop_enabled = true;
                 actions.push(ArrangementAction::ProjectMutated("Set Loop Start"));
                 ui.close_menu();
             }
-            if ui.button("⟧ Set Loop End to Playhead").clicked() {
+            if ui.button("Set Loop End Here").clicked() {
                 project.loop_end_beat = ph.max(project.loop_start_beat + 1.0);
+                project.loop_enabled = true;
                 actions.push(ArrangementAction::ProjectMutated("Set Loop End"));
                 ui.close_menu();
             }
+            let bpb = project.time_signature.beats_per_bar();
+            if ui
+                .button("Loop Next 4 Bars from Playhead")
+                .on_hover_text("Sets a 4-bar loop starting at the playhead and enables LOOP")
+                .clicked()
+            {
+                project.loop_start_beat = ph.max(0.0);
+                project.loop_end_beat = ph + bpb * 4.0;
+                project.loop_enabled = true;
+                actions.push(ArrangementAction::ProjectMutated("Loop 4 Bars"));
+                ui.close_menu();
+            }
+            if ui
+                .checkbox(&mut project.loop_enabled, "Loop Enabled")
+                .changed()
+            {
+                actions.push(ArrangementAction::ProjectMutated("Toggle Loop"));
+            }
             ui.separator();
-            ui.menu_button("🕒 Add Time Signature Change at Playhead", |ui| {
+            ui.menu_button("Meter Change at Playhead", |ui| {
                 for (num, den) in [(4, 4), (3, 4), (6, 8), (5, 4), (7, 8), (12, 8)] {
-                    if ui.button(format!("{}/{} Meter", num, den)).clicked() {
+                    if ui.button(format!("{num}/{den}")).clicked() {
                         project.add_meter_change(ph.round().max(0.0) as u32, num, den);
                         project.show_conductor_lane = true;
                         actions.push(ArrangementAction::ProjectMutated("Add Meter Change"));
@@ -501,7 +679,10 @@ impl ArrangementState {
                 }
             });
             if ui
-                .button(format!("⏱ Add Tempo Point ({:.1} BPM) at Playhead", project.bpm_at_beat(ph)))
+                .button(format!(
+                    "Tempo Point ({:.1} BPM) Here",
+                    project.bpm_at_beat(ph)
+                ))
                 .clicked()
             {
                 let cur = project.bpm_at_beat(ph);
@@ -639,7 +820,7 @@ impl ArrangementState {
             let track_id = project.tracks[t_idx].id;
             let is_folder = project.is_folder_track(track_id);
             let depth = project.track_depth(track_id);
-            let base_h = project.tracks[t_idx].height_px.max(72.0);
+            let base_h = project.tracks[t_idx].height_px.max(102.0);
             let max_extra_lanes = project.tracks[t_idx]
                 .clips
                 .iter()
@@ -786,25 +967,59 @@ impl ArrangementState {
         // Draw crisp Playhead Line across entire ruler + all tracks!
         let ph_x = ruler_tl_rect.left()
             + ((telem.playhead_beat - self.scroll_beat) as f32 * self.pixels_per_beat);
-        if ph_x >= ruler_tl_rect.left() && ph_x <= ruler_tl_rect.right() {
+        if ph_x >= ruler_tl_rect.left() - 8.0 && ph_x <= ruler_tl_rect.right() + 8.0 {
             let ph_col = if telem.is_recording {
                 ACCENT_RED
             } else {
                 ACCENT_FERRIC
             };
+            // Draggable playhead head + tall grab strip (easy scrub).
+            let handle = Rect::from_center_size(
+                Pos2::new(ph_x, playhead_top + 7.0),
+                Vec2::new(18.0, 20.0),
+            );
+            let strip = Rect::from_min_max(
+                Pos2::new(ph_x - 5.0, playhead_top),
+                Pos2::new(ph_x + 5.0, playhead_bot.min(playhead_top + 120.0)),
+            );
+            let ph_resp = ui.interact(
+                handle.union(strip),
+                ui.id().with("playhead_scrub"),
+                Sense::click_and_drag(),
+            );
+            let ph_resp = ph_resp.on_hover_text("Drag to move playhead");
+            if ph_resp.dragged() || ph_resp.clicked() {
+                if let Some(pos) = ph_resp.interact_pointer_pos() {
+                    let raw_beat = self.scroll_beat
+                        + ((pos.x - ruler_tl_rect.left()) / self.pixels_per_beat) as f64;
+                    let beat = if ui.input(|i| i.modifiers.shift) {
+                        raw_beat.max(0.0)
+                    } else {
+                        project.snap_grid.snap(raw_beat, project.time_signature)
+                    };
+                    actions.push(ArrangementAction::Seek(beat));
+                }
+            }
+
             ui.painter().line_segment(
                 [Pos2::new(ph_x, playhead_top), Pos2::new(ph_x, playhead_bot)],
                 Stroke::new(1.8_f32, ph_col),
             );
             ui.painter().add(egui::Shape::convex_polygon(
                 vec![
-                    Pos2::new(ph_x - 5.5, playhead_top),
-                    Pos2::new(ph_x + 5.5, playhead_top),
-                    Pos2::new(ph_x, playhead_top + 8.0),
+                    Pos2::new(ph_x - 6.5, playhead_top),
+                    Pos2::new(ph_x + 6.5, playhead_top),
+                    Pos2::new(ph_x, playhead_top + 10.0),
                 ],
                 ph_col,
                 Stroke::NONE,
             ));
+            // Grab notch so the head reads as a scrub handle.
+            ui.painter().circle_filled(
+                Pos2::new(ph_x, playhead_top + 3.0),
+                2.2,
+                Color32::WHITE.gamma_multiply(0.85),
+            );
         }
     }
 
@@ -833,9 +1048,10 @@ impl ArrangementState {
             self.renaming_track = Some(track_id);
         }
 
-        // Right-Click Track Header Context Menu: Rename, Color Swatches, Move Up/Down, Duplicate, Delete!
+        // Right-Click Track Header Context Menu
         bg_resp.context_menu(|ui| {
-            ui.label(egui::RichText::new("Track Name:").size(10.5).color(TEXT_DIM));
+            ui.set_min_width(200.0);
+            ui.label(egui::RichText::new("Track name").size(10.5).color(TEXT_DIM));
             if ui
                 .text_edit_singleline(&mut project.tracks[t_idx].name)
                 .changed()
@@ -843,8 +1059,8 @@ impl ArrangementState {
                 actions.push(ArrangementAction::ProjectMutated("Rename Track"));
             }
             ui.separator();
-            ui.label(egui::RichText::new("Studio Color:").size(10.5).color(TEXT_DIM));
-            ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Color").size(10.5).color(TEXT_DIM));
+            ui.horizontal_wrapped(|ui| {
                 for &rgb in ferric_model::STUDIO_TRACK_COLORS {
                     let c32 = track_color32(rgb);
                     if ui
@@ -858,28 +1074,77 @@ impl ArrangementState {
                 }
             });
             ui.separator();
-            if ui.button("▲ Move Track Up").clicked() {
+            ui.label(egui::RichText::new("Input preset").size(10.5).color(TEXT_DIM));
+            if ui
+                .button("MIDI only (no mic)")
+                .on_hover_text("Instrument / MIDI recording — blocks mic bleed")
+                .clicked()
+            {
+                project.tracks[t_idx].input_source = InputSource::MidiAll;
+                actions.push(ArrangementAction::ProjectMutated("Input → MIDI"));
+                ui.close_menu();
+            }
+            if ui
+                .button("Mic / Line (mono 1)")
+                .on_hover_text("Vocal / guitar / interface channel 1")
+                .clicked()
+            {
+                project.tracks[t_idx].input_source = InputSource::AudioMono { channel: 0 };
+                project.tracks[t_idx].input_monitoring = true;
+                actions.push(ArrangementAction::ProjectMutated("Input → Mic"));
+                ui.close_menu();
+            }
+            if ui
+                .button("Stereo In 1/2 + MIDI")
+                .on_hover_text("Universal capture — audio and MIDI together")
+                .clicked()
+            {
+                project.tracks[t_idx].input_source =
+                    InputSource::AudioAndMidi { stereo_pair: 0 };
+                actions.push(ArrangementAction::ProjectMutated("Input → Universal"));
+                ui.close_menu();
+            }
+            ui.separator();
+            let armed = project.tracks[t_idx].record_arm;
+            if ui
+                .button(if armed {
+                    "Disarm Record"
+                } else {
+                    "Arm Record"
+                })
+                .clicked()
+            {
+                project.tracks[t_idx].record_arm = !armed;
+                actions.push(ArrangementAction::ProjectMutated("Toggle Record Arm"));
+                ui.close_menu();
+            }
+            if ui.button("Import Audio onto Track…").clicked() {
+                actions.push(ArrangementAction::ImportAudioToTrack(track_id));
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Move Up").clicked() {
                 actions.push(ArrangementAction::MoveTrack {
                     track_id,
                     delta: -1,
                 });
                 ui.close_menu();
             }
-            if ui.button("▼ Move Track Down").clicked() {
+            if ui.button("Move Down").clicked() {
                 actions.push(ArrangementAction::MoveTrack {
                     track_id,
                     delta: 1,
                 });
                 ui.close_menu();
             }
-            if ui.button("⧉ Duplicate Track").clicked() {
+            if ui.button("Duplicate Track").clicked() {
                 actions.push(ArrangementAction::DuplicateTrack(track_id));
                 ui.close_menu();
             }
             if project.tracks.len() > 1 {
                 ui.separator();
                 if ui
-                    .button(egui::RichText::new("🗑 Delete Track").color(ACCENT_RED))
+                    .button(egui::RichText::new("Delete Track").color(ACCENT_RED))
                     .clicked()
                 {
                     actions.push(ArrangementAction::DeleteTrack(track_id));
@@ -963,8 +1228,14 @@ impl ArrangementState {
                     trk.solo = !trk.solo;
                     actions.push(ArrangementAction::ProjectMutated("Toggle Solo"));
                 }
+                let arm_tip = match trk.input_source {
+                    InputSource::MidiAll => "Record Arm — MIDI only (no mic)",
+                    InputSource::AudioMono { .. } => "Record Arm — Mic / Line (mono)",
+                    InputSource::AudioAndMidi { .. } => "Record Arm — Audio + MIDI",
+                    InputSource::ResampleTrackOutput => "Record Arm — Resample this track's output",
+                };
                 if pill_toggle(ui, "R", trk.record_arm, ACCENT_RED)
-                    .on_hover_text("Record Arm (Audio + MIDI)")
+                    .on_hover_text(arm_tip)
                     .clicked()
                 {
                     trk.record_arm = !trk.record_arm;
@@ -972,7 +1243,7 @@ impl ArrangementState {
                 }
                 if pill_toggle(
                     ui,
-                    "♮",
+                    "Ch",
                     trk.follow_chord_track,
                     Color32::from_rgb(186, 108, 226),
                 )
@@ -984,10 +1255,10 @@ impl ArrangementState {
                 }
                 let fx_txt = format!("FX {}", trk.fx_chain.len());
                 if pill_toggle(ui, &fx_txt, !trk.fx_chain.is_empty(), ACCENT_TEAL)
-                    .on_hover_text("Select Track to inspect FX & Modulators")
+                    .on_hover_text("Open FX & Modulators for this track")
                     .clicked()
                 {
-                    actions.push(ArrangementAction::SelectTrack(track_id));
+                    actions.push(ArrangementAction::OpenFxPanel(track_id));
                 }
                 if pill_toggle(ui, "A", trk.show_automation, Color32::from_rgb(186, 108, 226))
                     .on_hover_text("Show / Add Curved Bezier Automation Lanes (Left-click: Add/Drag, Shift+Drag: Curve Tension, Right-click: Delete)")
@@ -1015,7 +1286,46 @@ impl ArrangementState {
                 }
             });
 
-            // Row 3: Compact Volume dB drag + Pan + Live horizontal peak bar
+            // Row 3: Input source (mic / MIDI / interface) — obvious on every track
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.label(egui::RichText::new("In").size(10.0).color(TEXT_DIM));
+                let mut changed = false;
+                let short = project.tracks[t_idx].input_source.short_label();
+                egui::ComboBox::from_id_salt(("trk_in", track_id))
+                    .selected_text(short)
+                    .width(96.0)
+                    .show_ui(ui, |ui| {
+                        ui.set_min_width(180.0);
+                        for src in InputSource::all_hardware_choices() {
+                            if ui
+                                .selectable_value(
+                                    &mut project.tracks[t_idx].input_source,
+                                    src,
+                                    src.label(),
+                                )
+                                .changed()
+                            {
+                                changed = true;
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text(project.tracks[t_idx].input_source.label());
+                if changed {
+                    actions.push(ArrangementAction::ProjectMutated("Change Track Input"));
+                }
+                let mon = &mut project.tracks[t_idx].input_monitoring;
+                if pill_toggle(ui, "Mon", *mon, ACCENT_TEAL)
+                    .on_hover_text("Input monitoring — hear mic/MIDI through the track")
+                    .clicked()
+                {
+                    *mon = !*mon;
+                    actions.push(ArrangementAction::ProjectMutated("Toggle Input Monitor"));
+                }
+            });
+
+            // Row 4: Compact Volume dB drag + Pan + Live horizontal peak bar
             ui.horizontal(|ui| {
                 let trk = &mut project.tracks[t_idx];
                 let r1 = ui.add(
@@ -1214,6 +1524,17 @@ impl ArrangementState {
                 self.marquee_current_pos = Some(pos);
             }
         } else if bg_resp.clicked() {
+            // Empty lane click: move playhead here + select track.
+            if let Some(pos) = bg_resp.interact_pointer_pos() {
+                let raw_b =
+                    self.scroll_beat + ((pos.x - lane_rect.left()) / self.pixels_per_beat) as f64;
+                let beat = if ui.input(|i| i.modifiers.shift) {
+                    raw_b.max(0.0)
+                } else {
+                    project.snap_grid.snap(raw_b, project.time_signature)
+                };
+                actions.push(ArrangementAction::Seek(beat));
+            }
             if !ui.input(|i| i.modifiers.shift) {
                 self.multi_selected_clips.clear();
             }
@@ -1372,13 +1693,25 @@ impl ArrangementState {
             // Right-Click REAPER Media Item Context Menu
             let playhead = telem.playhead_beat;
             clip_resp.context_menu(|ui| {
-                ui.label(
-                    egui::RichText::new(&project.tracks[t_idx].clips[c_idx].name)
-                        .strong()
-                        .color(t_col),
-                );
+                ui.set_min_width(220.0);
+                ui.label(egui::RichText::new("Clip name").size(10.5).color(TEXT_DIM));
+                if ui
+                    .text_edit_singleline(&mut project.tracks[t_idx].clips[c_idx].name)
+                    .changed()
+                {
+                    actions.push(ArrangementAction::ProjectMutated("Rename Clip"));
+                }
                 ui.separator();
-                if ui.button("✂ Split Clip at Playhead (S)").clicked() {
+                if project.tracks[t_idx].clips[c_idx].is_midi() {
+                    if ui.button("Open Piano Roll").clicked() {
+                        actions.push(ArrangementAction::OpenPianoRoll {
+                            track_id,
+                            clip_id,
+                        });
+                        ui.close_menu();
+                    }
+                }
+                if ui.button("Split at Playhead").clicked() {
                     actions.push(ArrangementAction::SplitClip {
                         track_id,
                         clip_id,
@@ -1386,7 +1719,7 @@ impl ArrangementState {
                     });
                     ui.close_menu();
                 }
-                if ui.button("⧉ Duplicate Clip (Ctrl+D)").clicked() {
+                if ui.button("Duplicate Clip").clicked() {
                     actions.push(ArrangementAction::DuplicateClip { track_id, clip_id });
                     ui.close_menu();
                 }
@@ -1720,18 +2053,15 @@ impl ArrangementState {
                     });
                 if ui
                     .small_button("Gen")
-                    .on_hover_text("Spawn Pad + Bass + Arp tracks from the chord lane")
+                    .on_hover_text("Spawn Pad + Bass + Arp from chord lane (reversible)")
                     .clicked()
                 {
-                    let _ = project.generate_arrangement_from_chords(
-                        gen_voicing,
-                        true,
-                        true,
-                        true,
-                    );
-                    actions.push(ArrangementAction::ProjectMutated(
-                        "Generate Arrangement From Chords",
-                    ));
+                    actions.push(ArrangementAction::GenerateArr {
+                        spawn_pad: true,
+                        spawn_bass: true,
+                        spawn_arp: true,
+                        section_idx: self.storyboard_section,
+                    });
                 }
                 let _ = &mut gen_voicing;
             },

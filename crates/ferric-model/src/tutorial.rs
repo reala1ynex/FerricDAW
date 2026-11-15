@@ -101,28 +101,28 @@ impl NightCurrentStep {
     pub fn goal(self) -> &'static str {
         match self {
             Self::Welcome => {
-                "Optional coach for the dark-techno song (same recipe as demo/NightCurrent-Demo.wav). Close anytime with ✕ / Esc / Close tutorial — nothing starts until you click Begin Session."
+                "We’ll build a short dark-techno track that should match demo/NightCurrent-Demo.wav. Close anytime (✕ / Esc) — nothing starts until you hit Begin Session."
             }
             Self::Session => {
-                "Clean session titled Night Current, 128 BPM, loop bars 1–16. Ignore Afterglow Copper."
+                "Fresh project titled Night Current, 128 BPM, loop bars 1–16. Skip Afterglow Copper for this."
             }
             Self::Chords => {
-                "Enable Chord Lane and lay Cm → Ab → Eb → Bb (1 bar each) across 16 bars."
+                "Turn on Chord Lane and lay Cm → Ab → Eb → Bb (one bar each) across 16 bars."
             }
             Self::Harmony => {
-                "Generate Arr (Pad + Bass + Arp), rename tracks, keep arp only on Stack/Hook B, darken the bed."
+                "Generate Pad + Bass + Arp, rename the tracks, keep arp only on Stack/Hook B, keep the bed dark."
             }
             Self::Drums => {
-                "Add Drum Kit: sparse kick bars 1–2, full four-on-floor from bar 3, claps on 2/4, soft hats."
+                "Add a Drum Kit: sparse kick on bars 1–2, four-on-the-floor from bar 3, claps on 2/4, soft hats."
             }
             Self::Hook => {
                 "PolySynth hook an octave down — Hook A at bar 5, Hook B at bar 13 — filtered, light delay/reverb."
             }
             Self::Counter => {
-                "Add answering Counter on bars 9–12 (softer under 13–16). Check the mute/layout table."
+                "Add a higher answering Counter on bars 9–12 (softer under 13–16). Check the layout table."
             }
             Self::Sidechain => {
-                "Compressor on Pads (and Bass) sidechained to Drums — pads should breathe with the kick."
+                "Compressor on Pads (and Bass) keyed to Drums — pads should duck a little with the kick."
             }
             Self::Mix => {
                 "Kick loudest → bass → hook clear → pads/arp tucked. Store Mix A."
@@ -131,7 +131,7 @@ impl NightCurrentStep {
                 "Ctrl+B · beats 0→64 · export NightCurrent_Master.wav · A/B against the demo WAV."
             }
             Self::Done => {
-                "Play Space, bounce if you haven't, and compare to demo/NightCurrent-Demo.wav. You can re-open this coach anytime."
+                "Hit Space, bounce if you haven’t yet, and compare to demo/NightCurrent-Demo.wav. You can reopen this anytime."
             }
         }
     }
@@ -139,7 +139,7 @@ impl NightCurrentStep {
     pub fn how_to(self) -> &'static str {
         match self {
             Self::Welcome => {
-                "Only opens when you ask (🎓 Tutorial). Begin Session starts a clean Night Current project; Do this step applies one recipe step. Or ignore the coach and close it."
+                "Opens only when you ask (🎓 Tutorial). Begin Session makes a clean Night Current project. Do this step runs one step for you — or close this and work on your own."
             }
             Self::Session => {
                 "Ferric menu → New Empty Session, set BPM to 128, save as NightCurrent.ferric — or hit Do this step."
@@ -148,56 +148,63 @@ impl NightCurrentStep {
                 "Toggle Chord Lane above the timeline. Drop the Cm–Ab–Eb–Bb loop for 16 bars — or Do this step."
             }
             Self::Harmony => {
-                "On the Chord Lane toolbar: Generate Arr (Pad + Bass + Arp). Rename 03 Pads / 02 Bass / 04 Arp. Trim arp to bars 9–16."
+                "Chord Lane toolbar → Generate Arr (Pad + Bass + Arp). Rename to 03 Pads / 02 Bass / 04 Arp. Trim arp to bars 9–16."
             }
             Self::Drums => {
-                "Browser → Drum Kit track named 01 Drums, or Do this step for the tutorial grid."
+                "Browser → Drum Kit, name it 01 Drums — or Do this step for the tutorial grid."
             }
             Self::Hook => {
-                "Add PolySynth track 05 Hook. Draw the phrase at bar 5 (8 bars) and copy to bar 13. Keep cutoff low."
+                "Add PolySynth as 05 Hook. Draw the phrase at bar 5 (8 bars) and copy to bar 13. Keep cutoff low."
             }
             Self::Counter => {
                 "Add 06 Counter with a higher answering line on the Stack section — or Do this step."
             }
             Self::Sidechain => {
-                "Select 03 Pads → FX → Compressor → set Sidechain source to 01 Drums. Same idea on Bass."
+                "Select 03 Pads → FX → Compressor → Sidechain source = 01 Drums. Same idea on Bass."
             }
             Self::Mix => {
-                "Open Mixing Console (bottom dock). Balance levels, then capture Mix A."
+                "Open the mixer in the bottom dock. Balance levels, then capture Mix A."
             }
             Self::Bounce => {
                 "Ctrl+B (or Ferric menu → Bounce). Range 0–64 beats, WAV, −14 LUFS."
             }
-            Self::Done => "Close the coach or hit Restart to build it again.",
+            Self::Done => "Close this panel or hit Restart to build it again.",
         }
     }
 
     pub fn ui_hint(self) -> &'static str {
         match self {
-            Self::Welcome => "Coach stays on the right — keep it open while you work.",
+            Self::Welcome => "This panel stays on the right while you work.",
             Self::Session => "Look: top transport BPM · Ferric menu",
-            Self::Chords => "Look: Chord Lane toggle above arrangement",
+            Self::Chords => "Look: Chord Lane toggle above the arrangement",
             Self::Harmony => "Look: Chord Lane → Gen / Generate Arr",
-            Self::Drums => "Look: left Browser instruments · timeline track headers",
+            Self::Drums => "Look: left Browser · track headers",
             Self::Hook => "Look: Browser PolySynth · piano roll / MIDI clips",
-            Self::Counter => "Look: arrangement mute table in the coach",
+            Self::Counter => "Look: layout table in this panel",
             Self::Sidechain => "Look: bottom dock → FX · Compressor sidechain",
-            Self::Mix => "Look: bottom dock → Mixing Console · Mix A/B/C/D",
-            Self::Bounce => "Look: Ctrl+B bounce modal",
+            Self::Mix => "Look: bottom dock → Mixer · Mix A/B/C/D",
+            Self::Bounce => "Look: Ctrl+B bounce dialog",
             Self::Done => "Look: Space to play · demo WAV in the zip",
         }
     }
 }
 
-/// Soft checkpoint — true when the project already reflects this step.
+/// Checkpoint — progress flags first, then structural heuristics.
 pub fn night_current_step_complete(proj: &Project, step: NightCurrentStep) -> bool {
+    if proj.tutorial_step_reached >= step.index() as u8 {
+        return match step {
+            NightCurrentStep::Bounce | NightCurrentStep::Done => proj.tutorial_bounce_done,
+            _ => true,
+        };
+    }
     match step {
         NightCurrentStep::Welcome => true,
         NightCurrentStep::Session => {
             (proj.bpm - 128.0).abs() < 0.01
-                && proj.title.to_lowercase().contains("night")
                 && proj.loop_enabled
                 && (proj.loop_end_beat - 64.0).abs() < 0.01
+                && (proj.title.to_lowercase().contains("night")
+                    || proj.tutorial_step_reached >= NightCurrentStep::Session.index() as u8)
         }
         NightCurrentStep::Chords => {
             proj.show_chord_lane && proj.chord_track.len() >= 16
@@ -218,9 +225,7 @@ pub fn night_current_step_complete(proj: &Project, step: NightCurrentStep) -> bo
             })
         }
         NightCurrentStep::Mix => proj.mix_snapshots.iter().any(|s| s.is_some()),
-        NightCurrentStep::Bounce | NightCurrentStep::Done => {
-            night_current_step_complete(proj, NightCurrentStep::Mix)
-        }
+        NightCurrentStep::Bounce | NightCurrentStep::Done => proj.tutorial_bounce_done,
     }
 }
 
