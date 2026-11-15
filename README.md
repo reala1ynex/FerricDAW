@@ -2,13 +2,15 @@
 
 A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX. Session clips, CLAP/VST3 plugins (crash-isolated), and a portable Windows build you can unzip and run.
 
-**Current version:** 1.1.2
+**Current version:** [1.1.2](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.2)  
+**Owner:** Patrick Rudolph ([@reala1ynex](https://github.com/reala1ynex))  
+**Devlog:** [`docs/DEVLOG.md`](docs/DEVLOG.md) · **Authors:** [`AUTHORS.md`](AUTHORS.md)
 
 ---
 
 ## Get the app (Windows)
 
-1. Grab the latest zip from [Releases](https://github.com/reala1ynex/FerricDAW/releases).
+1. Grab **v1.1.2** from [Releases](https://github.com/reala1ynex/FerricDAW/releases/latest) (current only).
 2. Unzip somewhere permanent.
 3. Run `ferricdaw.exe`.
 4. Keep `ferric-plugin-bridge.exe` next to it — that’s the plugin sandbox.
@@ -81,10 +83,20 @@ cargo test --workspace
 | [`docs/BEGINNER_GUIDE.md`](docs/BEGINNER_GUIDE.md) | Build Night Current step by step |
 | [`docs/FEATURE_GUIDE.md`](docs/FEATURE_GUIDE.md) | Full feature map |
 | [`docs/NIGHT_CURRENT_DEMO.md`](docs/NIGHT_CURRENT_DEMO.md) | Notes on the demo WAV |
+| [`docs/DEVLOG.md`](docs/DEVLOG.md) | What shipped, by version |
+| [`AUTHORS.md`](AUTHORS.md) | Owner / contact |
 | In-app **F1** | Quickstart, feature guide, shortcuts |
+
+---
+
+## Owner
+
+FerricDAW is made by **Patrick Rudolph** ([@reala1ynex](https://github.com/reala1ynex)).  
+Bugs and ideas: [GitHub Issues](https://github.com/reala1ynex/FerricDAW/issues).
 
 ---
 
 ## License
 
-MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)), your choice.
+MIT ([LICENSE-MIT](LICENSE-MIT)) or Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)), your choice.  
+Copyright © 2026 Patrick Rudolph.

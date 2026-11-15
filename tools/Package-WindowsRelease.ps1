@@ -48,6 +48,9 @@ Copy-ReleaseFile (Join-Path $Root 'target\release\ferric-plugin-bridge.exe') (Jo
 Copy-Item (Join-Path $Root 'README.md') (Join-Path $StageDir 'README.md') -Force
 Copy-Item (Join-Path $Root 'LICENSE-MIT') (Join-Path $StageDir 'LICENSE-MIT') -Force
 Copy-Item (Join-Path $Root 'LICENSE-APACHE') (Join-Path $StageDir 'LICENSE-APACHE') -Force
+if (Test-Path (Join-Path $Root 'AUTHORS.md')) {
+    Copy-Item (Join-Path $Root 'AUTHORS.md') (Join-Path $StageDir 'AUTHORS.md') -Force
+}
 Copy-Item (Join-Path $Root 'tools\SetLineInCapture.ps1') (Join-Path $StageDir 'SetLineInCapture.ps1') -Force
 Copy-Item (Join-Path $Root 'tools\SetDs10Capture.ps1') (Join-Path $StageDir 'SetDs10Capture.ps1') -Force
 
@@ -59,7 +62,7 @@ if (Test-Path $DemoWav) {
 }
 $DocsOut = Join-Path $StageDir 'docs'
 New-Item -ItemType Directory -Force -Path $DocsOut | Out-Null
-foreach ($doc in @('BEGINNER_GUIDE.md', 'FEATURE_GUIDE.md', 'NIGHT_CURRENT_DEMO.md')) {
+foreach ($doc in @('BEGINNER_GUIDE.md', 'FEATURE_GUIDE.md', 'NIGHT_CURRENT_DEMO.md', 'DEVLOG.md')) {
     $src = Join-Path $Root "docs\$doc"
     if (Test-Path $src) { Copy-Item $src (Join-Path $DocsOut $doc) -Force }
 }
@@ -73,8 +76,9 @@ Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in tha
 2. First launch: Night Current tutorial, Afterglow playground, or Empty
 3. Reopen the tutorial anytime: 🎓 Tutorial (Ferric menu / Ctrl+K). Esc closes it.
 4. Target bounce: demo\NightCurrent-Demo.wav
-5. Docs in this zip: docs\BEGINNER_GUIDE.md · docs\FEATURE_GUIDE.md · F1 in the app
+5. Docs: docs\BEGINNER_GUIDE.md · docs\FEATURE_GUIDE.md · docs\DEVLOG.md · AUTHORS.md · F1 in the app
 6. MIDI + Line-In: Browser → Hardware Rig. Optional helper: SetLineInCapture.ps1 (Mic Boost off)
+7. Owner: Patrick Rudolph (github.com/reala1ynex) · Issues on the GitHub repo
 
 Space = play/stop · Ctrl+K = palette · F1 = help · Ferric → Check for Updates
 "@ | Set-Content -Path (Join-Path $StageDir 'START_HERE.txt') -Encoding UTF8

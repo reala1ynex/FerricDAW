@@ -3,7 +3,10 @@ name = "ferric-plugin-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Out-of-process CLAP/VST3 plugin worker IPC (named pipes + shared memory)."
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Out-of-process CLAP/VST3 plugin worker for FerricDAW."
 
 [dependencies]
 ferric-model = { path = "../ferric-model" }

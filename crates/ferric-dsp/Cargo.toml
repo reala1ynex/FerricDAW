@@ -3,7 +3,10 @@ name = "ferric-dsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Zero-allocation real-time DSP effects, VA/FM poly synth, drum engine, chromatic tuner, FFT analyzer, and BS.1770 LUFS metering."
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "FerricDAW instruments, FX, and metering DSP."
 
 [dependencies]
 ferric-model = { path = "../ferric-model" }

@@ -3,7 +3,10 @@ name = "ferric-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Lock-free real-time audio/MIDI engine, full CLAP + VST3 plugin hosts, Win32 HWND editor manager, PDC latency compensation, track freeze, and multi-codec decoder."
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "FerricDAW audio/MIDI engine and plugin host."
 
 [[bin]]
 name = "ferric-plugin-bridge"

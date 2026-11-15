@@ -173,5 +173,7 @@ Tip presets are optional names, not brand locks.
 | This file | Feature map |
 | `BEGINNER_GUIDE.md` | Night Current recipe |
 | `NIGHT_CURRENT_DEMO.md` | Demo WAV notes |
+| `DEVLOG.md` | Version history |
+| `../AUTHORS.md` | Owner / contact |
 | In-app **F1** | Quickstart + this guide + shortcuts |
 | In-app **🎓 Tutorial** | Step coach |

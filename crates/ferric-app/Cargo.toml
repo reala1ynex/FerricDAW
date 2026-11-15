@@ -3,7 +3,10 @@ name = "ferric-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "FerricDAW GPU-accelerated desktop studio application."
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "FerricDAW desktop app."
 
 [[bin]]
 name = "ferricdaw"

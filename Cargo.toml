@@ -13,6 +13,10 @@ default-members = ["crates/ferric-app"]
 version = "1.1.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+authors = ["Patrick Rudolph <https://github.com/reala1ynex>"]
+repository = "https://github.com/reala1ynex/FerricDAW"
+homepage = "https://github.com/reala1ynex/FerricDAW"
+documentation = "https://github.com/reala1ynex/FerricDAW#readme"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
