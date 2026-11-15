@@ -76,3 +76,11 @@
 - **Channel:** v1.1.8 release and tag removed; v1.1.9 is the only current release.
 - **Artifact SHA-256:** `c7b53e51fc38a558f49bc3335400c3f20f0efb905824127da9806fb034eb076c`
 
+## CP-2026-11-15-I — v1.1.10 arrangement cleanup released
+
+- **Commit:** `728be8c` / **Tag:** `v1.1.10`
+- **Release:** `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.10`
+- **Verification:** zero-warning workspace check, workspace tests, Windows function test 59/59, and final visual pass with unused launcher boxes removed.
+- **Channel:** v1.1.9 release and tag removed; v1.1.10 is the only current release.
+- **Artifact SHA-256:** `83f291631f15fa67bb0ac6299eacfa8f91af35d3088ba6b0bcd6681c55400b61`
+

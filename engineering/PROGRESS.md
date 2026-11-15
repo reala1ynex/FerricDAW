@@ -8,6 +8,13 @@
 
 - Unused Session launcher slots no longer render as unexplained dark boxes; they are visually quiet until hovered, then show a deliberate `+` affordance and tooltip.
 
+## v1.1.10 release verified
+
+- Published `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.10` from commit `728be8c`.
+- Removed the prior v1.1.9 release/tag; remote tag inventory now contains only v1.1.10.
+- Downloaded `latest.json`: starts with `{`, has no UTF-8 BOM, reports version 1.1.10, and its SHA-256 `83f291631f15fa67bb0ac6299eacfa8f91af35d3088ba6b0bcd6681c55400b61` matches the local v1.1.10 zip.
+- Final visual loop rechecked the cleaned arrangement and production startup after packaging.
+
 ## v1.1.9 release candidate — visual contrast follow-up
 
 - Shared neutral surfaces were lifted to the reference contrast; remaining legacy arrangement and piano-roll buttons now use the same chrome tokens.
