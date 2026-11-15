@@ -52,11 +52,13 @@ $env:FERRIC_GITHUB_REPO = $RepoName
 [Environment]::SetEnvironmentVariable('FERRIC_GITHUB_REPO', $RepoName, 'User')
 
 Write-Host "Pushing master…" -ForegroundColor Cyan
-git push -u origin master
+# git progress goes to stderr; PowerShell Stop would abort a successful push
+cmd /c "git push -u origin master"
+if ($LASTEXITCODE -ne 0) { throw "git push -u origin master failed" }
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host "  Repo: https://github.com/$Full"
 Write-Host "  Next: commit your work, then run:"
 Write-Host "    powershell -ExecutionPolicy Bypass -File tools\Publish-GitHubRelease.ps1"
-Write-Host "  Or tag a release: git tag v1.1.2 && git push origin v1.1.2  (CI packages + uploads)"
+Write-Host "  Or tag a release: git tag v1.1.3 && git push origin v1.1.3  (CI packages + uploads)"

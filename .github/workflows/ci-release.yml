@@ -17,6 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
+    # Mac/Linux legs are advisory for now — do not block the Windows GitHub release.
+    continue-on-error: ${{ matrix.os != 'windows-latest' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,16 +75,24 @@ jobs:
             New-Item -ItemType Directory -Force -Path "$Stage/docs" | Out-Null
             Copy-Item docs/*.md "$Stage/docs/" -ErrorAction SilentlyContinue
           }
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
           $FeedUrl = "https://github.com/${{ github.repository }}/releases/latest/download/latest.json"
-          Set-Content -Path "$Stage/update_feed.url" -Value $FeedUrl -Encoding ascii
+          [System.IO.File]::WriteAllText("$Stage/update_feed.url", $FeedUrl, $utf8NoBom)
+          if (Test-Path AUTHORS.md) { Copy-Item AUTHORS.md $Stage/ }
+          $DemoWav = "assets/demo/NightCurrent-Demo.wav"
+          if (Test-Path $DemoWav) {
+            New-Item -ItemType Directory -Force -Path "$Stage/demo" | Out-Null
+            Copy-Item $DemoWav "$Stage/demo/NightCurrent-Demo.wav"
+          }
           $ZipName = "FerricDAW-$Tag-win-x64.zip"
           $ZipPath = "dist/$ZipName"
           Compress-Archive -Path "$Stage/*" -DestinationPath $ZipPath -Force
           $Hash = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash.ToLowerInvariant()
           $Url = "https://github.com/${{ github.repository }}/releases/download/$Tag/$ZipName"
-          @{ version = $Ver; url = $Url; sha256 = $Hash; notes = "FerricDAW $Tag portable Windows x64" } |
-            ConvertTo-Json -Compress |
-            Set-Content -Path dist/latest.json -Encoding utf8
+          $json = (@{ version = $Ver; url = $Url; sha256 = $Hash; notes = "FerricDAW $Tag portable Windows x64" } |
+            ConvertTo-Json -Compress)
+          # Never write a UTF-8 BOM — breaks the in-app updater JSON parse.
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) "dist/latest.json"), $json, $utf8NoBom)
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
