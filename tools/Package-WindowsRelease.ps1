@@ -97,8 +97,18 @@ if ($GitHubOwner) {
 
 $ZipName = "FerricDAW-v$Version-win-x64.zip"
 $ZipPath = Join-Path $Root "dist\$ZipName"
-if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
-Compress-Archive -Path (Join-Path $StageDir '*') -DestinationPath $ZipPath -Force
+# Never fail because Explorer / a running copy has the old zip open — write then swap.
+$ZipTmp = Join-Path $Root "dist\$ZipName.$Stamp.tmp.zip"
+if (Test-Path $ZipTmp) { Remove-Item $ZipTmp -Force -ErrorAction SilentlyContinue }
+Compress-Archive -Path (Join-Path $StageDir '*') -DestinationPath $ZipTmp -Force
+try {
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force -ErrorAction Stop }
+    Move-Item $ZipTmp $ZipPath -Force
+} catch {
+    # Keep the temp name as the deliverable if the stable path is locked.
+    $ZipPath = $ZipTmp
+    Write-Host "Note: could not replace $ZipName (file in use). Using: $ZipPath" -ForegroundColor Yellow
+}
 
 # latest.json for GitHub Releases auto-update (sha256 of the zip)
 $Hash = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash.ToLowerInvariant()
@@ -116,25 +126,43 @@ $Latest = [ordered]@{
 $LatestPath = Join-Path $Root 'dist\latest.json'
 $Latest | ConvertTo-Json -Compress | Set-Content -Path $LatestPath -Encoding utf8
 
-# Refresh stable dist\FerricDAW folder for local runs (best-effort if unlocked)
+# Optional local folder refresh — skip entirely if anything inside is locked (don't delete).
 $DistDir = Join-Path $Root 'dist\FerricDAW'
+$refreshed = $false
 try {
-    if (Test-Path $DistDir) { Remove-Item $DistDir -Recurse -Force -ErrorAction Stop }
-    Copy-Item $StageDir $DistDir -Recurse -Force
+    $lockProbe = Join-Path $DistDir 'ferricdaw.exe'
+    if (Test-Path $lockProbe) {
+        # Open for write share — fails if running/locked
+        $fs = [System.IO.File]::Open($lockProbe, 'Open', 'Write', 'None')
+        $fs.Close()
+    }
+    if (-not (Test-Path $DistDir)) {
+        New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+    }
+    Copy-Item (Join-Path $StageDir '*') $DistDir -Recurse -Force
+    $refreshed = $true
 } catch {
-    Write-Host "Note: could not refresh dist\FerricDAW (file in use). Zip is still good: $ZipPath" -ForegroundColor Yellow
+    Write-Host "Note: left dist\FerricDAW alone (file in use / app open). Zip is still good." -ForegroundColor Yellow
 }
 
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $DesktopZip = Join-Path $Desktop $ZipName
-Copy-Item $ZipPath $DesktopZip -Force
+try {
+    Copy-Item $ZipPath $DesktopZip -Force -ErrorAction Stop
+} catch {
+    $DesktopZip = $null
+    Write-Host "Note: could not copy zip to Desktop (file in use)." -ForegroundColor Yellow
+}
 
-# Cleanup stage
+# Cleanup stage (best-effort)
 Remove-Item $StageDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Packaged:" -ForegroundColor Green
 Write-Host "  $ZipPath"
-Write-Host "  $DesktopZip"
+if ($DesktopZip) { Write-Host "  $DesktopZip" }
 Write-Host "  $LatestPath"
-Get-Item $ZipPath, $DesktopZip, $LatestPath | Format-Table FullName, Length, LastWriteTime -AutoSize
+if ($refreshed) { Write-Host "  $DistDir (refreshed)" }
+$show = @($ZipPath, $LatestPath)
+if ($DesktopZip) { $show += $DesktopZip }
+Get-Item $show | Format-Table FullName, Length, LastWriteTime -AutoSize

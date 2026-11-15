@@ -10,6 +10,10 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
+# Stale env tokens break gh; prefer keyring login.
+Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+
 if (-not $GitHubOwner) {
     try {
         $GitHubOwner = (gh api user -q .login).Trim()
@@ -22,6 +26,9 @@ $env:FERRIC_GITHUB_OWNER = $GitHubOwner
 $env:FERRIC_GITHUB_REPO = $GitHubRepo
 
 & (Join-Path $PSScriptRoot 'Package-WindowsRelease.ps1') -GitHubOwner $GitHubOwner -GitHubRepo $GitHubRepo
+if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+    throw "Package-WindowsRelease.ps1 failed (exit $LASTEXITCODE)."
+}
 
 $CargoToml = Get-Content (Join-Path $Root 'Cargo.toml') -Raw
 if ($CargoToml -match 'version\s*=\s*"([^"]+)"') {
@@ -34,7 +41,13 @@ $Tag = "v$Version"
 $ZipName = "FerricDAW-v$Version-win-x64.zip"
 $ZipPath = Join-Path $Root "dist\$ZipName"
 $LatestPath = Join-Path $Root 'dist\latest.json'
-if (-not (Test-Path $ZipPath)) { throw "Missing $ZipPath" }
+if (-not (Test-Path $ZipPath)) {
+    # Lock-tolerant package may have left a stamped tmp zip — pick newest match.
+    $alt = Get-ChildItem (Join-Path $Root 'dist') -Filter "FerricDAW-v$Version-win-x64.zip*" |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($alt) { $ZipPath = $alt.FullName } else { throw "Missing dist\$ZipName" }
+}
 if (-not (Test-Path $LatestPath)) { throw "Missing $LatestPath" }
 
 # Ensure tag exists locally (annotated)
@@ -44,8 +57,11 @@ if (-not $existing) {
 }
 
 Write-Host "Pushing tag $Tag…" -ForegroundColor Cyan
-git push origin $Tag 2>$null
-git push origin HEAD 2>$null
+# git writes progress to stderr; don't let PowerShell treat that as failure
+cmd /c "git push origin $Tag"
+if ($LASTEXITCODE -ne 0) { throw "git push origin $Tag failed" }
+cmd /c "git push origin HEAD"
+if ($LASTEXITCODE -ne 0) { throw "git push origin HEAD failed" }
 
 $notes = @"
 ## FerricDAW $Tag
@@ -59,19 +75,26 @@ Portable Windows x64 build.
 ``latest.json`` is the auto-update feed for this release channel.
 "@
 
-$ghArgs = @(
-    'release', 'create', $Tag,
-    $ZipPath,
-    $LatestPath,
-    '--title', "FerricDAW $Tag",
-    '--notes', $notes
-)
-if ($Draft) { $ghArgs += '--draft' }
-gh release view $Tag 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) {
+$releaseExists = $false
+try {
+    gh release view $Tag 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
+} catch {
+    $releaseExists = $false
+}
+
+if ($releaseExists) {
     Write-Host "Release $Tag already exists — uploading assets…" -ForegroundColor Yellow
     gh release upload $Tag $ZipPath $LatestPath --clobber
 } else {
+    $ghArgs = @(
+        'release', 'create', $Tag,
+        $ZipPath,
+        $LatestPath,
+        '--title', "FerricDAW $Tag",
+        '--notes', $notes
+    )
+    if ($Draft) { $ghArgs += '--draft' }
     & gh @ghArgs
 }
 
