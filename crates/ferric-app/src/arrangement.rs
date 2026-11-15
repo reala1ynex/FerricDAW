@@ -1,7 +1,7 @@
 use crate::theme::{
     pill_toggle, track_color32, StudioUiExt, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL,
     ACCENT_PURPLE, ACCENT_CYAN, ACCENT_BLUE, BG_DEEP, BG_ELEVATED, BG_PANEL, BG_TRACK_EVEN, BG_TRACK_ODD,
-    BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    BORDER_SUBTLE, BUTTON_RADIUS, BUTTON_SURFACE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{
     Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -264,7 +264,11 @@ impl ArrangementState {
                         if ui
                             .add_sized(
                                 [210.0, 22.0],
-                                egui::Button::new(kind.label()).sense(Sense::click()),
+                                egui::Button::new(kind.label())
+                                    .fill(BUTTON_SURFACE)
+                                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                    .corner_radius(BUTTON_RADIUS)
+                                    .sense(Sense::click()),
                             )
                             .on_hover_text(kind.hint())
                             .clicked()

@@ -2,7 +2,14 @@
 
 **Last updated:** 2026-11-15  
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
-**Latest release:** v1.1.8; remaining coverage limits are recorded under I-05.
+**Latest release:** v1.1.9; remaining coverage limits are recorded under I-05.
+
+## v1.1.9 release candidate — visual contrast follow-up
+
+- Shared neutral surfaces were lifted to the reference contrast; remaining legacy arrangement and piano-roll buttons now use the same chrome tokens.
+- Browser sample/preset/plugin labels are slightly more readable, clipped values retain hover tooltips, and long filter hints no longer overrun the compact sidebar.
+- Visual loop rechecked Hardware, Samples, Presets/Plugins, Ferric menu, FX dock, Launch dock, and Kaoss surface on the isolated release build.
+- Mandatory gates passed: `RUSTFLAGS=-D warnings cargo check --workspace --all-targets`, `cargo test --workspace`, and `tools/FunctionTest-Windows.ps1` (59/59).
 
 ## v1.1.8 release verified
 

@@ -75,3 +75,11 @@ Grab it: [Releases · v1.1.6](https://github.com/reala1ynex/FerricDAW/releases/t
 ## 2026-11-14 — v1.1.1
 
 Earlier cut: icon, version info, F1 quickstart, and studio workflow polish.
+## 2026-11-15 — v1.1.9 visual contrast follow-up
+
+- Raised the shared neutral button surface and hover/active contrast to match the reference chrome without changing accent semantics.
+- Styled the remaining legacy arrangement and piano-roll buttons with the same shared surface, border, radius, and geometry.
+- Tightened browser hints and raised dense sample/preset labels; truncated names now expose the full value on hover.
+- Visual loop rechecked Hardware, Samples, Presets/Plugins, Ferric menu, FX dock, Launch dock, and Kaoss surface; no remaining obvious mismatch was observed in those inspected surfaces.
+- Verification: warning-denied workspace check, workspace tests, and Windows function test 59/59 passed.
+

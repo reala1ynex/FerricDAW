@@ -19,10 +19,10 @@ pub const ACCENT_BLUE: Color32 = Color32::from_rgb(92, 200, 242);
 pub const ACCENT_RED: Color32 = Color32::from_rgb(232, 74, 86);
 pub const TEXT_MAIN: Color32 = Color32::from_rgb(232, 235, 242);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(142, 148, 164);
-pub const BUTTON_SURFACE: Color32 = Color32::from_rgb(34, 37, 46);
-pub const BUTTON_HOVER: Color32 = Color32::from_rgb(48, 53, 65);
-pub const BUTTON_ACTIVE: Color32 = Color32::from_rgb(56, 61, 74);
-pub const BUTTON_FOCUS: Color32 = Color32::from_rgb(108, 121, 143);
+pub const BUTTON_SURFACE: Color32 = Color32::from_rgb(47, 50, 59);
+pub const BUTTON_HOVER: Color32 = Color32::from_rgb(62, 66, 78);
+pub const BUTTON_ACTIVE: Color32 = Color32::from_rgb(72, 76, 90);
+pub const BUTTON_FOCUS: Color32 = Color32::from_rgb(120, 128, 148);
 pub const BUTTON_HEIGHT: f32 = 24.0;
 pub const BUTTON_RADIUS: u8 = 5;
 

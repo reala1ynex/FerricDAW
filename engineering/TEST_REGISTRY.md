@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-15
 
-The candidate results below include the I-17 and I-18 session-safety fixes, bounce chrome change, and v1.1.8 UI polish. Release-build visual evidence and its limits are recorded in `PROGRESS.md`.
+The candidate results below include the I-17 and I-18 session-safety fixes, bounce chrome change, v1.1.8 UI polish, and the v1.1.9 contrast follow-up. Release-build visual evidence and its limits are recorded in `PROGRESS.md`.
 
 | ID | Suite | Scope | Command / location | Last result | Covers |
 |----|-------|-------|--------------------|-------------|--------|

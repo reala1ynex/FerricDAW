@@ -2,6 +2,7 @@ use crate::theme::{
     StudioUiExt,
     chrome_card, chrome_row_label, chrome_section_title, pill_toggle, studio_knob, track_color32,
     ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, ACCENT_PURPLE, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
+    BUTTON_RADIUS, BUTTON_SURFACE,
     TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
@@ -1333,6 +1334,9 @@ impl PianoRollState {
                                     egui::Button::new(
                                         egui::RichText::new(row_name).size(10.0).color(TEXT_MAIN),
                                     )
+                                    .fill(BUTTON_SURFACE)
+                                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                    .corner_radius(BUTTON_RADIUS)
                                     .min_size(Vec2::new(98.0, 18.0)),
                                 )
                                 .on_hover_text("Click to audition drum pad")
@@ -1918,6 +1922,9 @@ fn render_fx_slot_cards(
                                                 egui::Button::new(
                                                     egui::RichText::new("Learn").size(8.5),
                                                 )
+                                                .fill(BUTTON_SURFACE)
+                                                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                                .corner_radius(BUTTON_RADIUS)
                                                 .min_size(Vec2::new(34.0, 13.0)),
                                             )
                                             .on_hover_text(format!(

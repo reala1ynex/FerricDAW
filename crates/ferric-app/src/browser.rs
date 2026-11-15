@@ -942,7 +942,7 @@ impl StudioBrowserState {
                 chrome_row_label(ui, "Filter ->", ACCENT_TEAL);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("WAV / FLAC / MP3 / OGG / MID...")
+                        .hint_text("WAV / FLAC / MP3 / OGG...")
                         .desired_width(160.0),
                 );
                 if ui
@@ -1001,9 +1001,8 @@ impl StudioBrowserState {
                                     buffer: buf,
                                 });
                             }
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(name).size(10.5)).truncate(),
-                            );
+                            ui.add(egui::Label::new(egui::RichText::new(name.clone()).size(11.0)).truncate())
+                                .on_hover_text(name.clone());
                         });
                     }
                 });
@@ -1054,7 +1053,7 @@ impl StudioBrowserState {
                                 }
                             }
                             ui.add(
-                                egui::Label::new(egui::RichText::new(fname).size(10.5)).truncate(),
+                                egui::Label::new(egui::RichText::new(fname).size(11.0)).truncate(),
                             );
                         });
                     }
@@ -1081,13 +1080,14 @@ impl StudioBrowserState {
                             }
                             ui.label(
                                 egui::RichText::new(format!("[{}]", preset.category))
-                                    .size(9.5)
+                                    .size(10.5)
                                     .color(ACCENT_TEAL),
                             );
                             ui.add(
-                                egui::Label::new(egui::RichText::new(preset.name).size(10.5))
+                                egui::Label::new(egui::RichText::new(preset.name).size(11.0))
                                     .truncate(),
-                            );
+                            )
+                            .on_hover_text(preset.name);
                         });
                     }
                 });
@@ -1145,7 +1145,7 @@ impl StudioBrowserState {
                         chrome_row_label(ui, "Search ->", ACCENT_TEAL);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.plugin_search)
-                                .hint_text("Vital, Surge, FabFilter...")
+                                .hint_text("Vital / Surge / FabFilter...")
                                 .desired_width(140.0),
                         );
                         if pill_toggle(ui, "All", self.plugin_format_filter.is_none(), ACCENT_TEAL)
@@ -1237,7 +1237,7 @@ impl StudioBrowserState {
                                 };
                                 ui.label(
                                     egui::RichText::new(format!("[{}]", plug.format.badge()))
-                                        .size(9.5)
+                                        .size(10.0)
                                         .monospace()
                                         .color(badge_col),
                                 );
@@ -1247,10 +1247,11 @@ impl StudioBrowserState {
                                             "{} — {}",
                                             plug.name, plug.vendor
                                         ))
-                                        .size(10.5),
+                                        .size(11.0),
                                     )
                                     .truncate(),
-                                );
+                                )
+                                .on_hover_text(format!("{} — {}", plug.name, plug.vendor));
                             });
                         }
                     }
