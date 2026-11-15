@@ -69,8 +69,8 @@ impl TutorialCoach {
             .resizable(true)
             // Bottom-right so Chord Lane / Gen Arr stay visible.
             .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -48.0])
-            .default_size([320.0, 360.0])
-            .min_width(260.0)
+            .default_size([360.0, 460.0])
+            .min_width(300.0)
             .default_open(true)
             .frame(
                 egui::Frame::new()
@@ -130,10 +130,20 @@ impl TutorialCoach {
                     .corner_radius(6)
                     .inner_margin(10.0)
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Goal").size(11.0).strong().color(ACCENT_TEAL));
+                        ui.label(
+                            RichText::new("What you’re aiming for")
+                                .size(11.0)
+                                .strong()
+                                .color(ACCENT_TEAL),
+                        );
                         ui.label(RichText::new(step.goal()).size(12.0).color(TEXT_MAIN));
-                        ui.add_space(6.0);
-                        ui.label(RichText::new("How").size(11.0).strong().color(ACCENT_AMBER));
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Do this")
+                                .size(11.0)
+                                .strong()
+                                .color(ACCENT_AMBER),
+                        );
                         ui.label(RichText::new(step.how_to()).size(12.0).color(TEXT_MAIN));
                         ui.add_space(6.0);
                         ui.label(
@@ -147,14 +157,18 @@ impl TutorialCoach {
                 if matches!(step, NightCurrentStep::Counter) {
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new("Layout (bars)")
+                        RichText::new("Section layout")
                             .size(11.0)
                             .strong()
                             .color(TEXT_DIM),
                     );
                     ui.label(
                         RichText::new(
-                            "1–2 sparse · 3–4 groove · 5–8 Hook A · 9–12 Stack+Counter · 13–16 Hook B",
+                            "1–2 Intro: sparse drums\n\
+                             3–4 Groove: full drums\n\
+                             5–8 Hook A: main lead on\n\
+                             9–12 Stack: arp + counter on\n\
+                             13–16 Hook B: lead back, louder",
                         )
                         .size(11.0)
                         .color(TEXT_MAIN),
@@ -163,11 +177,11 @@ impl TutorialCoach {
 
                 ui.add_space(8.0);
                 let status = if done {
-                    ("✓ Checkpoint looks good", ACCENT_TEAL)
+                    ("✓ Looks good — hit Next when you’re ready", ACCENT_TEAL)
                 } else if step.is_build_step() || step == NightCurrentStep::Welcome {
-                    ("○ Not done yet — do it yourself or use the button", ACCENT_AMBER)
+                    ("○ Not finished yet — follow Do this, or use the teal button", ACCENT_AMBER)
                 } else {
-                    ("→ Follow the bounce steps, then Next", TEXT_DIM)
+                    ("→ Bounce, then compare to the demo and hit Next", TEXT_DIM)
                 };
                 ui.label(RichText::new(status.0).size(11.5).color(status.1));
 
@@ -191,7 +205,7 @@ impl TutorialCoach {
                                     .color(ACCENT_FERRIC),
                             )
                             .on_hover_text(
-                                "Replaces the current project with a clean Night Current @ 128 BPM",
+                                "Replaces the current project with a clean Night Current at 128 BPM",
                             )
                             .clicked()
                         {
@@ -200,12 +214,12 @@ impl TutorialCoach {
                     } else if step.is_build_step() {
                         if ui
                             .button(
-                                RichText::new("Apply (rebuild through step)")
+                                RichText::new("Do this step for me")
                                     .strong()
                                     .color(ACCENT_TEAL),
                             )
                             .on_hover_text(
-                                "Apply rebuilds the tutorial song through this step (replaces the project — confirm if you have unsaved work)",
+                                "Rebuilds the tutorial song through this step. Replaces the project — save first if you care about what you have open.",
                             )
                             .clicked()
                         {
@@ -220,7 +234,7 @@ impl TutorialCoach {
                         }
                         if ui
                             .button(RichText::new("Play demo WAV").color(ACCENT_TEAL))
-                            .on_hover_text("Audition shipped demo/NightCurrent-Demo.wav")
+                            .on_hover_text("Play demo/NightCurrent-Demo.wav")
                             .clicked()
                         {
                             action = TutorialAction::PlayReference;
@@ -260,13 +274,13 @@ impl TutorialCoach {
                 ui.horizontal(|ui| {
                     if ui
                         .button(RichText::new("Close tutorial").color(TEXT_DIM))
-                        .on_hover_text("Dismiss coach anytime (Esc or ✕) — your project stays")
+                        .on_hover_text("Close the coach (Esc). Your project stays open.")
                         .clicked()
                     {
                         action = TutorialAction::Close;
                     }
                     ui.label(
-                        RichText::new("Esc to close · Space = play · Ctrl+S = save")
+                        RichText::new("Esc closes · Space plays · Ctrl+S saves")
                             .size(10.5)
                             .color(TEXT_DIM),
                     );

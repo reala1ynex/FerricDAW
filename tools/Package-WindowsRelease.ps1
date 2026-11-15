@@ -65,30 +65,28 @@ foreach ($doc in @('BEGINNER_GUIDE.md', 'FEATURE_GUIDE.md', 'NIGHT_CURRENT_DEMO.
 }
 
 @"
-FerricDAW v$Version — Windows x64 portable
+FerricDAW v$Version — Windows portable
 
-Plugins that crash run in a worker process — not the DAW. Keep ferric-plugin-bridge.exe beside ferricdaw.exe.
+Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in that worker, not the DAW.
 
 1. Double-click ferricdaw.exe
-2. First launch: choose Night Current Tutorial / Afterglow playground / Empty
-3. Later: Tutorial (Ferric menu / Ctrl+K) — Esc closes the coach
-4. Finish line: demo\NightCurrent-Demo.wav — Play demo WAV / Golden Bounce A/B after bounce
-5. Docs: docs\BEGINNER_GUIDE.md (song) · docs\FEATURE_GUIDE.md (full feature map) · F1 in-app
-6. Hardware Rig Theater: USB MIDI + Line-In (tip skins optional). Dual keyboard pads in transport.
-7. Optional Line-In helper: SetLineInCapture.ps1 (Mic Boost stays OFF)
+2. First launch: Night Current tutorial, Afterglow playground, or Empty
+3. Reopen the tutorial anytime: 🎓 Tutorial (Ferric menu / Ctrl+K). Esc closes it.
+4. Target bounce: demo\NightCurrent-Demo.wav
+5. Docs in this zip: docs\BEGINNER_GUIDE.md · docs\FEATURE_GUIDE.md · F1 in the app
+6. MIDI + Line-In: Browser → Hardware Rig. Optional helper: SetLineInCapture.ps1 (Mic Boost off)
 
-Shortcuts: Space = Play/Stop · Ctrl+K = Palette · F1 = Help / Feature Guide · Esc = close coach
+Space = play/stop · Ctrl+K = palette · F1 = help · Ferric → Check for Updates
 "@ | Set-Content -Path (Join-Path $StageDir 'START_HERE.txt') -Encoding UTF8
 
 @"
-Night Current — FerricDAW tutorial demo
+Night Current — tutorial demo
 
 128 BPM · dark techno · Cm–Ab–Eb–Bb · 16 bars
-Layout: intro → groove → hook → stack → bigger hook
+Intro → groove → hook → stack → bigger hook
 
-This WAV is bounced from the same recipe as the in-app 🎓 Tutorial /
-docs\BEGINNER_GUIDE.md (build_tutorial_project).
-In Ferric: Tutorial → Play demo WAV to A/B without leaving the app.
+Same recipe as the in-app tutorial and docs\BEGINNER_GUIDE.md.
+In Ferric: Tutorial → Play demo WAV to compare without leaving the app.
 "@ | Set-Content -Path (Join-Path $DemoDir 'README.txt') -Encoding UTF8
 
 if ($GitHubOwner) {

@@ -84,54 +84,55 @@ impl NightCurrentStep {
 
     pub fn title(self) -> &'static str {
         match self {
-            Self::Welcome => "Welcome — Night Current",
-            Self::Session => "New session @ 128 BPM",
-            Self::Chords => "Chord Lane loop",
-            Self::Harmony => "Generate Pads / Bass / Arp",
-            Self::Drums => "Techno drum grid",
-            Self::Hook => "Dark synth hook",
-            Self::Counter => "Counter + section layout",
-            Self::Sidechain => "Sidechain pump",
-            Self::Mix => "Balance + Mix A",
-            Self::Bounce => "Bounce the master",
-            Self::Done => "You built Night Current",
+            Self::Welcome => "Night Current — let’s build it",
+            Self::Session => "Start a clean 128 BPM session",
+            Self::Chords => "Put the chord loop on the lane",
+            Self::Harmony => "Generate pads, bass, and arp",
+            Self::Drums => "Program the drums",
+            Self::Hook => "Write the dark synth hook",
+            Self::Counter => "Add the counter line",
+            Self::Sidechain => "Pump the pads with the kick",
+            Self::Mix => "Balance the mix",
+            Self::Bounce => "Export the master",
+            Self::Done => "You’re done — compare to the demo",
         }
     }
 
     pub fn goal(self) -> &'static str {
         match self {
             Self::Welcome => {
-                "We’ll build a short dark-techno track that should match demo/NightCurrent-Demo.wav. Close anytime (✕ / Esc) — nothing starts until you hit Begin Session."
+                "Make a ~30s dark-techno track that matches demo/NightCurrent-Demo.wav.\n\
+                 Close this panel anytime (✕ or Esc). Nothing changes until you click Begin Session."
             }
             Self::Session => {
-                "Fresh project titled Night Current, 128 BPM, loop bars 1–16. Skip Afterglow Copper for this."
+                "You want a saved project named Night Current at 128 BPM with the loop set to bars 1–16."
             }
             Self::Chords => {
-                "Turn on Chord Lane and lay Cm → Ab → Eb → Bb (one bar each) across 16 bars."
+                "Chord Lane should show Cm → Ab → Eb → Bb, one bar each, repeated for 16 bars."
             }
             Self::Harmony => {
-                "Generate Pad + Bass + Arp, rename the tracks, keep arp only on Stack/Hook B, keep the bed dark."
+                "Three harmony tracks exist (pads, bass, arp). Arp only plays in the later half; pads stay quiet."
             }
             Self::Drums => {
-                "Add a Drum Kit: sparse kick on bars 1–2, four-on-the-floor from bar 3, claps on 2/4, soft hats."
+                "A drum track with a thin intro (bars 1–2), then a solid four-on-the-floor groove from bar 3."
             }
             Self::Hook => {
-                "PolySynth hook an octave down — Hook A at bar 5, Hook B at bar 13 — filtered, light delay/reverb."
+                "A filtered PolySynth lead: Hook A from bar 5, louder Hook B from bar 13 — an octave down, not bright."
             }
             Self::Counter => {
-                "Add a higher answering Counter on bars 9–12 (softer under 13–16). Check the layout table."
+                "A higher answering melody on bars 9–12 (softer under 13–16), and the section mutes match the layout below."
             }
             Self::Sidechain => {
-                "Compressor on Pads (and Bass) keyed to Drums — pads should duck a little with the kick."
+                "Pads (and bass) duck a little every kick — compressor sidechained to the drums."
             }
             Self::Mix => {
-                "Kick loudest → bass → hook clear → pads/arp tucked. Store Mix A."
+                "Kick sits on top, then bass, then a clear hook; pads/arp are quieter. Mix A is saved."
             }
             Self::Bounce => {
-                "Ctrl+B · beats 0→64 · export NightCurrent_Master.wav · A/B against the demo WAV."
+                "Export bars 1–16 as NightCurrent_Master.wav and A/B it against the demo."
             }
             Self::Done => {
-                "Hit Space, bounce if you haven’t yet, and compare to demo/NightCurrent-Demo.wav. You can reopen this anytime."
+                "Play your bounce next to demo/NightCurrent-Demo.wav. Reopen this tutorial anytime from 🎓 Tutorial."
             }
         }
     }
@@ -139,52 +140,96 @@ impl NightCurrentStep {
     pub fn how_to(self) -> &'static str {
         match self {
             Self::Welcome => {
-                "Opens only when you ask (🎓 Tutorial). Begin Session makes a clean Night Current project. Do this step runs one step for you — or close this and work on your own."
+                "1. Optional: click Play demo WAV later to hear the target.\n\
+                 2. Click Begin Session — that loads a clean Night Current project.\n\
+                 3. Or close this and follow docs/BEGINNER_GUIDE.md by hand.\n\
+                 Stuck? Use “Do this step for me” on later steps — it rebuilds the song through that step."
             }
             Self::Session => {
-                "Ferric menu → New Empty Session, set BPM to 128, save as NightCurrent.ferric — or hit Do this step."
+                "1. Ferric menu → New Empty Session (skip Afterglow if it’s open).\n\
+                 2. In the top bar, set BPM to 128.\n\
+                 3. Ctrl+S → save as NightCurrent.ferric.\n\
+                 4. Turn Loop on and set the loop to bars 1–16 (beats 0–64).\n\
+                 Shortcut: click “Do this step for me”."
             }
             Self::Chords => {
-                "Toggle Chord Lane above the timeline. Drop the Cm–Ab–Eb–Bb loop for 16 bars — or Do this step."
+                "1. Above the timeline, turn on Chord Lane.\n\
+                 2. From bar 1, place: Cm, Ab, Eb, Bb — one bar each.\n\
+                 3. Repeat that 4-chord loop until you fill 16 bars.\n\
+                 Shortcut: “Do this step for me”."
             }
             Self::Harmony => {
-                "Chord Lane toolbar → Generate Arr (Pad + Bass + Arp). Rename to 03 Pads / 02 Bass / 04 Arp. Trim arp to bars 9–16."
+                "1. On the Chord Lane toolbar, click Gen / Generate Arr (Pad + Bass + Arp).\n\
+                 2. Rename the new tracks to: 03 Pads, 02 Bass, 04 Arp.\n\
+                 3. Mute or trim 04 Arp so it only plays bars 9–16.\n\
+                 4. Pull pads down in the mixer a bit — bed, not a blanket.\n\
+                 Shortcut: “Do this step for me”."
             }
             Self::Drums => {
-                "Browser → Drum Kit, name it 01 Drums — or Do this step for the tutorial grid."
+                "1. Left Browser → add Studio Drum Kit. Name the track 01 Drums.\n\
+                 2. Bars 1–2: kick only on beats 1 and 3.\n\
+                 3. Bars 3–16: kick every beat; clap/snare on 2 and 4.\n\
+                 4. Add soft hats — keep them quiet.\n\
+                 Shortcut: “Do this step for me” fills the tutorial grid."
             }
             Self::Hook => {
-                "Add PolySynth as 05 Hook. Draw the phrase at bar 5 (8 bars) and copy to bar 13. Keep cutoff low."
+                "1. Browser → PolySynth (or Wavetable). Name it 05 Hook.\n\
+                 2. At bar 5, draw ~8 bars of MIDI an octave down, e.g.\n\
+                    C3 G2 Bb2 C3 | Eb3 C3 G2 | Ab2 Bb2 C3 | G2 (hold).\n\
+                 3. Copy that clip to bar 13 (Hook B) and nudge it a bit louder.\n\
+                 4. Lower the synth cutoff. Add a short Delay + light Reverb on the track FX.\n\
+                 Shortcut: “Do this step for me”."
             }
             Self::Counter => {
-                "Add 06 Counter with a higher answering line on the Stack section — or Do this step."
+                "1. Add another synth/MIDI track named 06 Counter.\n\
+                 2. Write a higher answering phrase on bars 9–12.\n\
+                 3. Keep it softer (or shorter) under bars 13–16.\n\
+                 4. Mute/unmute tracks per the layout lines below so sections breathe.\n\
+                 Shortcut: “Do this step for me”."
             }
             Self::Sidechain => {
-                "Select 03 Pads → FX → Compressor → Sidechain source = 01 Drums. Same idea on Bass."
+                "1. Select track 03 Pads.\n\
+                 2. Bottom dock → FX → add Compressor.\n\
+                 3. Set the compressor’s Sidechain source to 01 Drums.\n\
+                 4. Keep the amount gentle — pads should breathe, not choke.\n\
+                 5. Optional: same idea on 02 Bass.\n\
+                 Shortcut: “Do this step for me”."
             }
             Self::Mix => {
-                "Open the mixer in the bottom dock. Balance levels, then capture Mix A."
+                "1. Open Mixer in the bottom dock.\n\
+                 2. Raise 01 Drums (kick) highest, then 02 Bass, then 05 Hook.\n\
+                 3. Tuck 03 Pads and 04 Arp underneath.\n\
+                 4. Click Mix A to store the snapshot.\n\
+                 Shortcut: “Do this step for me”."
             }
             Self::Bounce => {
-                "Ctrl+B (or Ferric menu → Bounce). Range 0–64 beats, WAV, −14 LUFS."
+                "1. Click Open Bounce… (or press Ctrl+B).\n\
+                 2. Range: beats 0 → 64 (bars 1–16).\n\
+                 3. Format: WAV, −14 LUFS on.\n\
+                 4. Save as NightCurrent_Master.wav.\n\
+                 5. Use Play demo WAV here, or Golden Bounce after export, to A/B."
             }
-            Self::Done => "Close this panel or hit Restart to build it again.",
+            Self::Done => {
+                "1. Press Space and listen through once.\n\
+                 2. Play demo WAV and flip between it and your bounce.\n\
+                 3. Close this panel, or Restart tutorial to build again."
+            }
         }
     }
 
     pub fn ui_hint(self) -> &'static str {
         match self {
-            Self::Welcome => "This panel stays on the right while you work.",
-            Self::Session => "Look: top transport BPM · Ferric menu",
-            Self::Chords => "Look: Chord Lane toggle above the arrangement",
-            Self::Harmony => "Look: Chord Lane → Gen / Generate Arr",
-            Self::Drums => "Look: left Browser · track headers",
-            Self::Hook => "Look: Browser PolySynth · piano roll / MIDI clips",
-            Self::Counter => "Look: layout table in this panel",
-            Self::Sidechain => "Look: bottom dock → FX · Compressor sidechain",
-            Self::Mix => "Look: bottom dock → Mixer · Mix A/B/C/D",
-            Self::Bounce => "Look: Ctrl+B bounce dialog",
-            Self::Done => "Look: Space to play · demo WAV in the zip",
+            Self::Welcome => "Tip: this panel sits bottom-right so the timeline stays visible.",
+            Self::Session => "Where: top transport (BPM) · Ferric menu · Ctrl+S",
+            Self::Chords => "Where: Chord Lane toggle just above the arrangement",
+            Self::Harmony => "Where: Chord Lane toolbar → Gen / Generate Arr",
+            Self::Drums => "Where: left Browser → instruments · track name on the left of the lane",
+            Self::Hook => "Where: Browser → PolySynth · double-click clip for piano roll",
+            Self::Counter => "Where: + Track / Browser · mute buttons on track headers",
+            Self::Sidechain => "Where: select Pads → bottom dock FX → Compressor → Sidechain",
+            Self::Mix => "Where: bottom dock → Mixer · Mix A/B/C/D buttons",
+            Self::Bounce => "Where: Ctrl+B or Ferric menu → Bounce",
+            Self::Done => "Where: Space = play · Play demo WAV button above",
         }
     }
 }
