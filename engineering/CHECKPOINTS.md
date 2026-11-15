@@ -61,3 +61,10 @@
 - **Artifact:** `engineering/HANDOFF_CODEX.md`
 - **Registries:** PROGRESS / RELEASE_READINESS / ARCHITECTURE synced to 1.1.6
 - **Next:** none required unless owner opens new work
+## CP-2026-11-15-G — v1.1.8 UI polish released
+
+- **Commit:** `13f830c` / **Tag:** `v1.1.8`
+- **Scope:** unified button/theme chrome, semantic accents, visual feedback pass, and theme invariant tests.
+- **Verification:** warning-denied check, workspace tests, function-test 59/59, isolated release visual loop, package/feed hash verification.
+- **Channel:** v1.1.7 release and tag removed; v1.1.8 is the only current release.
+

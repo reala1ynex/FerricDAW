@@ -7,9 +7,9 @@
 
 ---
 
-## ★ 2026-11-15 mission status — v1.1.7 shipped
+## ★ 2026-11-15 mission status — v1.1.8 shipped
 
-v1.1.7 is the current public release, tagged at `3765857`. The release zip and latest feed were independently downloaded and their SHA-256 verified; the v1.1.6 release/tag were removed after verification. Read `PROGRESS.md` and `RELEASE_READINESS.md` for exact visual coverage and the still-open I-05 limitation. The directive below is retained as historical context; do not repeat publication or claim every UI widget was tested.
+v1.1.8 is the current public release, tagged at `13f830c`. The release zip and latest feed were independently generated/downloaded and their SHA-256 verified; the v1.1.7 release/tag were removed after verification. Read `PROGRESS.md` and `RELEASE_READINESS.md` for exact visual coverage and the still-open I-05 limitation. The directive below is retained as historical context; do not claim every UI widget was pixel-tested.
 
 ## ★ HISTORICAL MISSION (owner directive)
 

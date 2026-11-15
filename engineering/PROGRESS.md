@@ -2,7 +2,14 @@
 
 **Last updated:** 2026-11-15  
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
-**Latest release:** v1.1.7; remaining coverage limits are recorded under I-05.
+**Latest release:** v1.1.8; remaining coverage limits are recorded under I-05.
+
+## v1.1.8 release verified
+
+- Published `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.8` from commit `13f830c`.
+- Removed the prior v1.1.7 release/tag after publication; remote tag inventory now contains only v1.1.8.
+- Downloaded `latest.json`: starts with `{`, has no UTF-8 BOM, reports version 1.1.8, and its SHA-256 `3e80f96dff18dfa9ed10b51bf7fa6295aad60a0b4feb7e11f6eef6b2e6e0bfec` matches the local v1.1.8 zip.
+- UI polish candidate passed the isolated release visual loop and all mandatory automated suites.
 
 ## UI polish candidate — 2026-11-15
 
