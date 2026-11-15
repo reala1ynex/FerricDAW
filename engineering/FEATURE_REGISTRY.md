@@ -1,6 +1,6 @@
 # Feature Registry
 
-**Last updated:** 2026-11-15 · **App version:** 1.1.5
+**Last updated:** 2026-11-15 · **App version:** 1.1.6
 
 Status legend: **Complete+Verified** | **Implemented** | **Partial** | **Broken** | **Missing** | **Blocked**
 

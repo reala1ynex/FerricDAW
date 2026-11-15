@@ -1,6 +1,6 @@
 # Requirements Registry
 
-**Project:** FerricDAW · **Version under test:** 1.1.5  
+**Project:** FerricDAW · **Version under test:** 1.1.6  
 **Last updated:** 2026-11-15
 
 Traceability: Requirement → Feature (`FEATURE_REGISTRY.md`) → Test (`TEST_REGISTRY.md`) → Issue (`ISSUE_REGISTRY.md`).

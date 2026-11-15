@@ -10,3 +10,5 @@
 | D-06 | 2026-11 | `/engineering` registries are source of continuity | Survive agent context loss; claims must match code/tests |
 | D-07 | 2026-11 | No liquid-glass UI redesign | Preserve Pad A/B chrome; user constraint |
 | D-08 | 2026-11 | Alter release history OK (delete old tags) | “Only current version” product policy |
+| D-09 | 2026-11 | Pad A/B `chrome_card` / `chrome_row_label` is the UI chrome standard | Match Hardware Rig / Audio I/O / Kaoss; no liquid glass |
+| D-10 | 2026-11 | `engineering/HANDOFF_CODEX.md` is the primary agent handoff | Survive Cursor↔Codex context switches |

@@ -29,4 +29,20 @@
 - **Tests:** packaged `ferricdaw.exe --function-test` **57/57 PASS**
 - **Cleanup:** deleted GitHub release + tag `v1.1.4`
 - **Readiness:** CONDITIONALLY READY (I-05/I-13/I-14 documented limits)
-- **Next:** none required
+- **Next:** *(done — see CP-2026-11-15-D / E)*
+
+## CP-2026-11-15-D — v1.1.6 UI chrome pass
+
+- **Stage:** Pad A/B chrome across Samples, Presets, DNA, Launch, Mixer, FX, piano roll, routing
+- **Commit / tag:** `a79dc84` / `v1.1.6`
+- **Tests:** function-test 57/57 before publish
+- **Cleanup:** deleted `v1.1.5` release/tag
+- **Next:** Codex handoff doc
+
+## CP-2026-11-15-E — Codex handoff
+
+- **Stage:** Full Codex continuity package
+- **Commit:** *(this commit)*
+- **Artifact:** `engineering/HANDOFF_CODEX.md`
+- **Registries:** PROGRESS / RELEASE_READINESS / ARCHITECTURE synced to 1.1.6
+- **Next:** none required unless owner opens new work
