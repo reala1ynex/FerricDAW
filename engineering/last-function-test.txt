@@ -68,3 +68,7 @@ src/clap/six-sines-clap-entry-impl.cpp:190 Initializing Six Sines 1.2.0.18ecb36 
 ========================================================
 PASS 59  FAIL 0  TOTAL 59
 Function test PASSED.
+UI polish verification — 2026-11-15
+Command: powershell -ExecutionPolicy Bypass -File tools\FunctionTest-Windows.ps1
+Result: PASS (59/59)
+

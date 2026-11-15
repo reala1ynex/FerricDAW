@@ -1,5 +1,6 @@
 use crate::theme::{
-    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, TEXT_DIM, TEXT_MAIN,
+    StudioUiExt,
+    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, ACCENT_PURPLE, BG_DEEP, BG_ELEVATED, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Context, RichText, Stroke};
 
@@ -167,7 +168,7 @@ fn render_quickstart_tab(ui: &mut egui::Ui, start_tutorial: &mut bool) {
             );
             ui.add_space(6.0);
             if ui
-                .button(
+                .chrome_button(
                     RichText::new("Start Night Current Tutorial")
                         .strong()
                         .color(ACCENT_TEAL),
@@ -238,7 +239,7 @@ fn render_feature_guide_tab(ui: &mut egui::Ui) {
         "Reseed · Randomize · Paste seed hex · A/B/C siblings.",
         "Only a Host Seed hex is shown. Travels with the patch. Not DRM.",
     ]);
-    guide_block(ui, "Chord Storyboard", egui::Color32::from_rgb(186, 108, 226), &[
+    guide_block(ui, "Chord Storyboard", ACCENT_PURPLE, &[
         "Section chips: Intro / Groove / Hook / Stack.",
         "Gen Pad / Bass / Arp only writes inside that section.",
         "Patch card shows what got made. Undo Generate restores the previous state.",

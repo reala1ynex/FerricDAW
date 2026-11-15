@@ -8,7 +8,7 @@ use ferric_model::TrackId;
 use std::collections::HashSet;
 
 use crate::theme::{
-    chrome_row_label, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, TEXT_DIM,
+    chrome_row_label, StudioUiExt, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, TEXT_DIM,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -412,7 +412,7 @@ fn track_picker(
                     ui.selectable_value(slot, Some(*id), name);
                 }
             });
-        if ui.small_button("Use selected").clicked() {
+        if ui.chrome_small_button("Use selected").clicked() {
             *slot = selected;
         }
     });

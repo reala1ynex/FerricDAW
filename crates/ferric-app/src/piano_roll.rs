@@ -1,6 +1,7 @@
 use crate::theme::{
+    StudioUiExt,
     chrome_card, chrome_row_label, chrome_section_title, pill_toggle, studio_knob, track_color32,
-    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
+    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, ACCENT_PURPLE, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
     TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
@@ -218,7 +219,7 @@ impl PianoRollState {
                         .on_hover_text("Click empty grid to stamp this chord/interval");
 
                     if ui
-                        .small_button("Q 1/16")
+                        .chrome_small_button("Q 1/16")
                         .on_hover_text("Quantize notes to 16ths")
                         .clicked()
                     {
@@ -226,7 +227,7 @@ impl PianoRollState {
                         actions.push(DockAction::ProjectMutated("Quantize 1/16"));
                     }
                     if ui
-                        .small_button("Humanize")
+                        .chrome_small_button("Humanize")
                         .on_hover_text("Subtle timing & velocity groove")
                         .clicked()
                     {
@@ -253,7 +254,7 @@ impl PianoRollState {
                         });
 
                     if ui
-                        .small_button("Export .mid")
+                        .chrome_small_button("Export .mid")
                         .on_hover_text("Export clip as Standard MIDI File")
                         .clicked()
                     {
@@ -288,14 +289,14 @@ impl PianoRollState {
                     }
 
                     if ui
-                        .small_button("▼Oct")
+                        .chrome_small_button("▼Oct")
                         .on_hover_text("Scroll piano roll down one octave")
                         .clicked()
                     {
                         self.lowest_pitch = self.lowest_pitch.saturating_sub(12).max(12);
                     }
                     if ui
-                        .small_button("▲Oct")
+                        .chrome_small_button("▲Oct")
                         .on_hover_text("Scroll piano roll up one octave")
                         .clicked()
                     {
@@ -611,7 +612,7 @@ impl PianoRollState {
                             actions.push(DockAction::ProjectMutated("Edit Note Pitch"));
                         }
                         ui.separator();
-                        if ui.button("Delete note").clicked() {
+                        if ui.chrome_button("Delete note").clicked() {
                             delete_note_ids.push(note.id);
                             ui.close_menu();
                         }
@@ -869,7 +870,7 @@ impl PianoRollState {
 
             if self.audio_pitch_blob_view {
                 if ui
-                    .small_button("🔍 Re-Analyze")
+                    .chrome_small_button("🔍 Re-Analyze")
                     .on_hover_text("Re-detect vocal/guitar monophonic pitch blobs via YIN")
                     .clicked()
                 {
@@ -883,7 +884,7 @@ impl PianoRollState {
                     }
                 }
                 if ui
-                    .small_button("🧲 Snap All to Scale")
+                    .chrome_small_button("🧲 Snap All to Scale")
                     .on_hover_text("Quantize every detected vocal/guitar note blob to the Session Key & Scale!")
                     .clicked()
                 {
@@ -895,7 +896,7 @@ impl PianoRollState {
                 }
                 if !clip.pitch_blobs.is_empty()
                     && ui
-                        .small_button("🎹 Audio → MIDI Track")
+                        .chrome_small_button("🎹 Audio → MIDI Track")
                         .on_hover_text(
                             "Convert detected vocal/guitar pitch blobs into a brand-new playable FerricWave Synth MIDI Track!",
                         )
@@ -946,7 +947,7 @@ impl PianoRollState {
 
             if !self.audio_pitch_blob_view {
                 if ui
-                    .small_button("⚡ Auto-Warp")
+                    .chrome_small_button("⚡ Auto-Warp")
                     .on_hover_text(
                         "Detect drum/guitar transients & place draggable WSOLA Stretch Markers!",
                     )
@@ -955,7 +956,7 @@ impl PianoRollState {
                     clip.generate_transient_warp_markers(bpm);
                     ch = true;
                 }
-                if !clip.warp_markers.is_empty() && ui.small_button("Clear").clicked() {
+                if !clip.warp_markers.is_empty() && ui.chrome_small_button("Clear").clicked() {
                     clip.warp_markers.clear();
                     ch = true;
                 }
@@ -965,7 +966,7 @@ impl PianoRollState {
                 for &kind in FxKind::ALL {
                     if !kind.is_instrument()
                         && kind != FxKind::ExternalClap
-                        && ui.button(kind.display_name()).clicked()
+                        && ui.chrome_button(kind.display_name()).clicked()
                     {
                         clip.clip_fx.push(FxSlot::new(kind));
                         actions.push(DockAction::ProjectMutated("Add Per-Clip FX"));
@@ -1185,7 +1186,7 @@ impl PianoRollState {
                         let seg_col = match take_idx % 3 {
                             0 => t_col,
                             1 => ACCENT_TEAL,
-                            _ => Color32::from_rgb(186, 108, 226),
+                            _ => ACCENT_PURPLE,
                         };
                         ui.painter().line_segment(
                             [Pos2::new(x, y0), Pos2::new(x, y1)],
@@ -1246,7 +1247,7 @@ impl PianoRollState {
                     actions.push(DockAction::ProjectMutated("Select Take"));
                 }
             }
-            if !clip.comp_segments.is_empty() && ui.small_button("Reset Swipe Comp").clicked() {
+            if !clip.comp_segments.is_empty() && ui.chrome_small_button("Reset Swipe Comp").clicked() {
                 clip.comp_segments.clear();
                 actions.push(DockAction::ProjectMutated("Reset Swipe Comp"));
             }
@@ -1423,7 +1424,7 @@ pub fn render_fx_and_modulators_panel(
                 for &kind in FxKind::ALL {
                     if !kind.is_instrument()
                         && kind != FxKind::ExternalClap
-                        && ui.button(kind.display_name()).clicked()
+                        && ui.chrome_button(kind.display_name()).clicked()
                     {
                         project.master.fx_chain.push(FxSlot::new(kind));
                         actions.push(DockAction::ProjectMutated("Add Master FX"));
@@ -1434,7 +1435,7 @@ pub fn render_fx_and_modulators_panel(
         } else if let Some(tid) = selected_track {
             ui.menu_button("+ Add Instrument / FX", |ui| {
                 for &kind in FxKind::ALL {
-                    if kind != FxKind::ExternalClap && ui.button(kind.display_name()).clicked() {
+                    if kind != FxKind::ExternalClap && ui.chrome_button(kind.display_name()).clicked() {
                         if let Some(trk) = project.find_track_mut(tid) {
                             trk.fx_chain.push(FxSlot::new(kind));
                             actions.push(DockAction::ProjectMutated("Add Track FX"));
@@ -1444,14 +1445,14 @@ pub fn render_fx_and_modulators_panel(
                 }
             });
             ui.menu_button("+ Add Modulator", |ui| {
-                if ui.button("🌊 Tempo-Synced LFO").clicked() {
+                if ui.chrome_button("🌊 Tempo-Synced LFO").clicked() {
                     if let Some(trk) = project.find_track_mut(tid) {
                         trk.modulators.push(ModulatorSlot::new_lfo("LFO"));
                         actions.push(DockAction::ProjectMutated("Add LFO Modulator"));
                     }
                     ui.close_menu();
                 }
-                if ui.button("📈 Audio Envelope Follower").clicked() {
+                if ui.chrome_button("📈 Audio Envelope Follower").clicked() {
                     if let Some(trk) = project.find_track_mut(tid) {
                         trk.modulators
                             .push(ModulatorSlot::new_env_follower("Env Follower"));
@@ -1459,7 +1460,7 @@ pub fn render_fx_and_modulators_panel(
                     }
                     ui.close_menu();
                 }
-                if ui.button("🎛 Macro Knob").clicked() {
+                if ui.chrome_button("🎛 Macro Knob").clicked() {
                     if let Some(trk) = project.find_track_mut(tid) {
                         trk.modulators
                             .push(ModulatorSlot::new_macro("Macro 1", 0.5));
@@ -1727,18 +1728,18 @@ fn render_fx_slot_cards(
                                 .color(ACCENT_TEAL),
                             );
                             if ui
-                                .small_button("Reseed PC")
+                                .chrome_small_button("Reseed PC")
                                 .on_hover_text("Hash this machine's coarse traits into a new Init")
                                 .clicked()
                             {
                                 actions.push(DockAction::HostDnaReseed(fx_id));
                             }
-                            if ui.small_button("Randomize").clicked() {
+                            if ui.chrome_small_button("Randomize").clicked() {
                                 actions.push(DockAction::HostDnaRandomize(fx_id));
                             }
                             for (sib, label) in [(0u8, "A"), (1, "B"), (2, "C")] {
                                 if ui
-                                    .small_button(label)
+                                    .chrome_small_button(label)
                                     .on_hover_text("Sibling Init from same seed")
                                     .clicked()
                                 {
@@ -1754,7 +1755,7 @@ fn render_fx_slot_cards(
                                     .hint_text("Paste seed hex")
                                     .desired_width(110.0),
                             );
-                            if ui.small_button("Paste seed").clicked() {
+                            if ui.chrome_small_button("Paste seed").clicked() {
                                 if let Some(s) = crate::host_fingerprint::parse_host_seed(&paste) {
                                     actions.push(DockAction::HostDnaPaste(fx_id, s));
                                 }
@@ -1811,13 +1812,13 @@ fn render_fx_slot_cards(
                                 });
                         }
 
-                        if idx > 0 && ui.small_button("◀").clicked() {
+                        if idx > 0 && ui.chrome_small_button("◀").clicked() {
                             move_swap = Some((idx, idx - 1));
                         }
-                        if idx + 1 < len && ui.small_button("▶").clicked() {
+                        if idx + 1 < len && ui.chrome_small_button("▶").clicked() {
                             move_swap = Some((idx, idx + 1));
                         }
-                        if ui.small_button("×").clicked() {
+                        if ui.chrome_small_button("×").clicked() {
                             remove_idx = Some(idx);
                         }
                     });
@@ -1852,7 +1853,7 @@ fn render_fx_slot_cards(
                                         .size(10.5)
                                         .color(ACCENT_TEAL),
                                 );
-                                if ui.small_button("📂 Load Audio...").clicked() {
+                                if ui.chrome_small_button("📂 Load Audio...").clicked() {
                                     if let Some(p) = rfd::FileDialog::new()
                                         .add_filter(
                                             "Audio",
@@ -1970,7 +1971,7 @@ fn render_modulator_card(
     actions: &mut Vec<DockAction>,
 ) -> bool {
     let mut remove = false;
-    let mod_col = Color32::from_rgb(186, 108, 226);
+    let mod_col = ACCENT_PURPLE;
     egui::Frame::new()
         .fill(Color32::from_rgb(28, 24, 38))
         .stroke(Stroke::new(1.2_f32, mod_col))
@@ -1985,7 +1986,7 @@ fn render_modulator_card(
                         actions.push(DockAction::ProjectMutated("Toggle Modulator"));
                     }
                     ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(115.0));
-                    if ui.small_button("×").clicked() {
+                    if ui.chrome_small_button("×").clicked() {
                         remove = true;
                     }
                 });
@@ -2059,7 +2060,7 @@ fn render_modulator_card(
                 }
 
                 ui.menu_button("+ Assign Target Parameter", |ui| {
-                    if ui.button("Track Volume").clicked() {
+                    if ui.chrome_button("Track Volume").clicked() {
                         m.routings.push(ModRouting {
                             target: ModTarget::TrackGain,
                             depth: 0.25,
@@ -2067,7 +2068,7 @@ fn render_modulator_card(
                         actions.push(DockAction::ProjectMutated("Assign Mod Target"));
                         ui.close_menu();
                     }
-                    if ui.button("Track Pan").clicked() {
+                    if ui.chrome_button("Track Pan").clicked() {
                         m.routings.push(ModRouting {
                             target: ModTarget::TrackPan,
                             depth: 0.5,
@@ -2079,7 +2080,7 @@ fn render_modulator_card(
                         ui.separator();
                         ui.label(egui::RichText::new(badge).strong());
                         for (pi, p_name) in p_names.iter().enumerate() {
-                            if ui.button(format!("{} → {}", badge, p_name)).clicked() {
+                            if ui.chrome_button(format!("{} → {}", badge, p_name)).clicked() {
                                 m.routings.push(ModRouting {
                                     target: ModTarget::FxParam {
                                         fx_id: *fx_id,
@@ -2118,7 +2119,7 @@ fn render_modulator_card(
                                     .prefix("±"),
                             )
                             .changed();
-                        if ui.small_button("×").clicked() {
+                        if ui.chrome_small_button("×").clicked() {
                             del_r = Some(ri);
                         }
                     });
@@ -2456,7 +2457,7 @@ fn draw_wavetable_3d_scope(
                     .color(ACCENT_TEAL),
             );
             if ui
-                .small_button("📂 Import WAV as Wavetable...")
+                .chrome_small_button("📂 Import WAV as Wavetable...")
                 .on_hover_text(
                     "Convert any .WAV/.FLAC into a 64-frame custom wavetable",
                 )
@@ -2505,7 +2506,7 @@ fn draw_convolution_ir_header(
                 .color(ACCENT_AMBER),
         );
         if ui
-            .small_button("📂 Load Custom IR (.wav/.flac)...")
+            .chrome_small_button("📂 Load Custom IR (.wav/.flac)...")
             .on_hover_text(
                 "Load any Acoustic Room/Hall Impulse Response or Guitar Speaker Cabinet IR!",
             )

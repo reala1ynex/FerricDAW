@@ -4,6 +4,15 @@
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
 **Latest release:** v1.1.7; remaining coverage limits are recorded under I-05.
 
+## UI polish candidate — 2026-11-15
+
+- Added one shared button/theme system (`StudioUiExt`, semantic accent tokens, unified widget hover/open/active visuals, consistent corner radius and 24 px control height).
+- Migrated raw `button`/`small_button` calls across transport, browser, arrangement, mixer, piano roll, dialogs, tutorial, footer, and dock to the shared chrome; destructive actions now use one danger treatment.
+- Replaced duplicated chord/solo/freeze/modulation RGB literals with named palette tokens.
+- Added theme invariant tests covering geometry, neutral interaction states, and semantic accent separation.
+- Isolated release visual pass completed in `target/ui-polish`: main toolbar, Hardware Rig browser, Help Quickstart, Help Feature Guide, Ferric menu, Kaoss dock, and FX dock were rendered and inspected. No remaining obvious chrome mismatch was observed in those surfaces.
+- This candidate still needs the mandatory warning-denied workspace check, full workspace tests, Windows function test, and final release/package decision before publication.
+
 ## v1.1.7 release verified
 
 - Published https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.7 at tagged commit `3765857`.

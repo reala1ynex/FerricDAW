@@ -13,9 +13,18 @@ pub const BORDER_SUBTLE: Color32 = Color32::from_rgb(46, 50, 62);
 pub const ACCENT_FERRIC: Color32 = Color32::from_rgb(232, 114, 62);
 pub const ACCENT_TEAL: Color32 = Color32::from_rgb(66, 196, 176);
 pub const ACCENT_AMBER: Color32 = Color32::from_rgb(240, 182, 62);
+pub const ACCENT_PURPLE: Color32 = Color32::from_rgb(186, 108, 226);
+pub const ACCENT_CYAN: Color32 = Color32::from_rgb(100, 210, 255);
+pub const ACCENT_BLUE: Color32 = Color32::from_rgb(92, 200, 242);
 pub const ACCENT_RED: Color32 = Color32::from_rgb(232, 74, 86);
 pub const TEXT_MAIN: Color32 = Color32::from_rgb(232, 235, 242);
 pub const TEXT_DIM: Color32 = Color32::from_rgb(142, 148, 164);
+pub const BUTTON_SURFACE: Color32 = Color32::from_rgb(34, 37, 46);
+pub const BUTTON_HOVER: Color32 = Color32::from_rgb(48, 53, 65);
+pub const BUTTON_ACTIVE: Color32 = Color32::from_rgb(56, 61, 74);
+pub const BUTTON_FOCUS: Color32 = Color32::from_rgb(108, 121, 143);
+pub const BUTTON_HEIGHT: f32 = 24.0;
+pub const BUTTON_RADIUS: u8 = 5;
 
 pub fn apply_studio_theme(ctx: &Context) {
     let mut visuals = Visuals::dark();
@@ -28,16 +37,25 @@ pub fn apply_studio_theme(ctx: &Context) {
     visuals.widgets.noninteractive.bg_fill = BG_PANEL;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER_SUBTLE);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
-    visuals.widgets.inactive.bg_fill = BG_ELEVATED;
+    visuals.widgets.inactive.bg_fill = BUTTON_SURFACE;
+    visuals.widgets.inactive.weak_bg_fill = BUTTON_SURFACE;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_SUBTLE);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
     visuals.widgets.inactive.corner_radius = CornerRadius::same(5);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(42, 46, 58);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT_FERRIC);
+    visuals.widgets.hovered.bg_fill = BUTTON_HOVER;
+    visuals.widgets.hovered.weak_bg_fill = BUTTON_HOVER;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BUTTON_FOCUS);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
     visuals.widgets.hovered.corner_radius = CornerRadius::same(5);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(56, 40, 34);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, ACCENT_FERRIC);
+    visuals.widgets.active.bg_fill = BUTTON_ACTIVE;
+    visuals.widgets.active.weak_bg_fill = BUTTON_ACTIVE;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, ACCENT_TEAL);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
     visuals.widgets.active.corner_radius = CornerRadius::same(5);
+    visuals.widgets.open = visuals.widgets.hovered;
+    visuals.button_frame = true;
+    visuals.menu_corner_radius = CornerRadius::same(BUTTON_RADIUS);
+    visuals.window_corner_radius = CornerRadius::same(8);
     visuals.window_shadow = Shadow {
         offset: [0, 6],
         blur: 18,
@@ -48,7 +66,9 @@ pub fn apply_studio_theme(ctx: &Context) {
 
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = Vec2::new(6.0, 5.0);
-    style.spacing.button_padding = Vec2::new(8.0, 4.0);
+    style.spacing.button_padding = Vec2::new(8.0, 3.0);
+    style.spacing.interact_size = Vec2::new(24.0, BUTTON_HEIGHT);
+    style.spacing.menu_margin = egui::Margin::same(4);
     ctx.set_style(style);
 }
 
@@ -251,7 +271,7 @@ pub fn pill_toggle(ui: &mut Ui, text: &str, active: bool, active_color: Color32)
     let fill = if active {
         active_color
     } else {
-        Color32::from_rgb(34, 37, 46)
+        BUTTON_SURFACE
     };
     let fg = if active {
         Color32::from_rgb(14, 15, 18)
@@ -261,8 +281,45 @@ pub fn pill_toggle(ui: &mut Ui, text: &str, active: bool, active_color: Color32)
     ui.add(
         egui::Button::new(egui::RichText::new(text).size(11.0).strong().color(fg))
             .fill(fill)
-            .min_size(Vec2::new(22.0, 20.0)),
+            .stroke(Stroke::new(1.0_f32, if active { active_color.gamma_multiply(0.78) } else { BORDER_SUBTLE }))
+            .corner_radius(BUTTON_RADIUS)
+            .min_size(Vec2::new(30.0, BUTTON_HEIGHT)),
     )
+}
+
+/// Shared neutral button styling for every non-toggle action.
+pub trait StudioUiExt {
+    fn chrome_button(&mut self, text: impl Into<egui::WidgetText>) -> Response;
+    fn chrome_small_button(&mut self, text: impl Into<egui::WidgetText>) -> Response;
+    fn chrome_danger_button(&mut self, text: impl Into<egui::WidgetText>) -> Response;
+}
+
+impl StudioUiExt for Ui {
+    fn chrome_button(&mut self, text: impl Into<egui::WidgetText>) -> Response {
+        self.add(
+            egui::Button::new(text)
+                .corner_radius(BUTTON_RADIUS)
+                .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
+        )
+    }
+
+    fn chrome_small_button(&mut self, text: impl Into<egui::WidgetText>) -> Response {
+        self.add(
+            egui::Button::new(text)
+                .corner_radius(BUTTON_RADIUS)
+                .min_size(Vec2::new(30.0, BUTTON_HEIGHT)),
+        )
+    }
+
+    fn chrome_danger_button(&mut self, text: impl Into<egui::WidgetText>) -> Response {
+        self.add(
+            egui::Button::new(text)
+                .fill(ACCENT_RED.gamma_multiply(0.18))
+                .stroke(Stroke::new(1.0_f32, ACCENT_RED.gamma_multiply(0.85)))
+                .corner_radius(BUTTON_RADIUS)
+                .min_size(Vec2::new(0.0, BUTTON_HEIGHT)),
+        )
+    }
 }
 
 /// Shared Hardware Rig / Pads chrome: elevated inset card.
@@ -297,4 +354,34 @@ pub fn draw_badge(painter: &egui::Painter, pos: Pos2, text: &str, bg: Color32, f
     painter.rect_filled(r, 3, bg);
     painter.galley(pos + Vec2::new(4.0, 1.5), galley, fg);
     let _ = Align2::LEFT_TOP;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn studio_theme_keeps_one_button_geometry_and_neutral_interaction_states() {
+        let ctx = Context::default();
+        apply_studio_theme(&ctx);
+        let visuals = ctx.style().visuals.clone();
+
+        assert_eq!(visuals.widgets.inactive.corner_radius, CornerRadius::same(BUTTON_RADIUS));
+        assert_eq!(visuals.widgets.hovered.corner_radius, CornerRadius::same(BUTTON_RADIUS));
+        assert_eq!(visuals.widgets.active.corner_radius, CornerRadius::same(BUTTON_RADIUS));
+        assert_eq!(visuals.widgets.open, visuals.widgets.hovered);
+        assert_eq!(visuals.widgets.hovered.bg_fill, BUTTON_HOVER);
+        assert_eq!(visuals.widgets.active.bg_fill, BUTTON_ACTIVE);
+        assert_eq!(BUTTON_HEIGHT, 24.0);
+    }
+
+    #[test]
+    fn semantic_accents_are_distinct_and_share_the_same_text_safe_surface() {
+        assert_ne!(ACCENT_FERRIC, ACCENT_TEAL);
+        assert_ne!(ACCENT_TEAL, ACCENT_PURPLE);
+        assert_ne!(ACCENT_PURPLE, ACCENT_AMBER);
+        assert_ne!(ACCENT_BLUE, ACCENT_CYAN);
+        assert_ne!(BUTTON_SURFACE, BUTTON_HOVER);
+        assert_ne!(BUTTON_HOVER, BUTTON_ACTIVE);
+    }
 }

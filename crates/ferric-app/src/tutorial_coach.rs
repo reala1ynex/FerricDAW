@@ -1,6 +1,7 @@
 //! Floating in-app coach that walks **Night Current** end-to-end.
 
 use crate::theme::{
+    StudioUiExt,
     ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Context, RichText, Stroke};
@@ -88,7 +89,7 @@ impl TutorialCoach {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .button(RichText::new("✕ Close").size(12.0).color(TEXT_DIM))
+                            .chrome_button(RichText::new("✕ Close").size(12.0).color(TEXT_DIM))
                             .on_hover_text("Close tutorial coach (Esc) — keeps your session")
                             .clicked()
                         {
@@ -190,7 +191,10 @@ impl TutorialCoach {
                     if ui
                         .add_enabled(
                             step != NightCurrentStep::Welcome,
-                            egui::Button::new("← Back"),
+                            egui::Button::new("← Back")
+                                .fill(crate::theme::BUTTON_SURFACE)
+                                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BORDER_SUBTLE))
+                                .corner_radius(crate::theme::BUTTON_RADIUS),
                         )
                         .clicked()
                     {
@@ -199,7 +203,7 @@ impl TutorialCoach {
 
                     if step == NightCurrentStep::Welcome {
                         if ui
-                            .button(
+                        .chrome_button(
                                 RichText::new("Begin Session")
                                     .strong()
                                     .color(ACCENT_FERRIC),
@@ -213,7 +217,7 @@ impl TutorialCoach {
                         }
                     } else if step.is_build_step() {
                         if ui
-                            .button(
+                        .chrome_button(
                                 RichText::new("Do this step for me")
                                     .strong()
                                     .color(ACCENT_TEAL),
@@ -227,13 +231,13 @@ impl TutorialCoach {
                         }
                     } else if step == NightCurrentStep::Bounce {
                         if ui
-                            .button(RichText::new("Open Bounce…").strong().color(ACCENT_AMBER))
+                        .chrome_button(RichText::new("Open Bounce…").strong().color(ACCENT_AMBER))
                             .clicked()
                         {
                             action = TutorialAction::OpenBounce;
                         }
                         if ui
-                            .button(RichText::new("Play demo WAV").color(ACCENT_TEAL))
+                        .chrome_button(RichText::new("Play demo WAV").color(ACCENT_TEAL))
                             .on_hover_text("Play demo/NightCurrent-Demo.wav")
                             .clicked()
                         {
@@ -241,12 +245,12 @@ impl TutorialCoach {
                         }
                     } else if step == NightCurrentStep::Done {
                         if ui
-                            .button(RichText::new("Play demo WAV").strong().color(ACCENT_TEAL))
+                        .chrome_button(RichText::new("Play demo WAV").strong().color(ACCENT_TEAL))
                             .clicked()
                         {
                             action = TutorialAction::PlayReference;
                         }
-                        if ui.button("Restart tutorial").clicked() {
+                        if ui.chrome_button("Restart tutorial").clicked() {
                             action = TutorialAction::Restart;
                         }
                     }
@@ -258,7 +262,7 @@ impl TutorialCoach {
                             "Next →"
                         };
                         if ui
-                            .button(RichText::new(next_label).strong().color(ACCENT_FERRIC))
+                        .chrome_button(RichText::new(next_label).strong().color(ACCENT_FERRIC))
                             .clicked()
                         {
                             action = if step == NightCurrentStep::Done {
@@ -273,7 +277,7 @@ impl TutorialCoach {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .button(RichText::new("Close tutorial").color(TEXT_DIM))
+                        .chrome_button(RichText::new("Close tutorial").color(TEXT_DIM))
                         .on_hover_text("Close the coach (Esc). Your project stays open.")
                         .clicked()
                     {

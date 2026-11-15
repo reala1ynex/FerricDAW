@@ -25,6 +25,7 @@
 | I-19 | P2 | Packaging | A running build locks the default Cargo executable and blocks packaging; alternate Cargo target directories were ignored when copying files | Packaging hard-coded `target/release` | **Resolved** | Alternate target release build and package pass | `Package-WindowsRelease.ps1` now resolves `CARGO_TARGET_DIR` |
 | I-20 | P3 | Packaging docs | START_HERE implied first launch prompts for a session type | Stale packaging text | **Resolved** | Release startup visual smoke and zip contents | Text now states the empty-session startup and menu entry points |
 | I-21 | P2 | UI | Bounce settings did not share the reference card and rounded-control styling | Legacy flat dialog rows | **Resolved** | Release visual check: format change and actual WAV export; required suites pass | Bounce settings use `chrome_card`, `chrome_row_label`, and `pill_toggle` |
+| I-22 | P2 | UI | Button chrome drifted across transport, browser, arrangement, dock, mixer, piano roll, and dialogs | Raw egui buttons, duplicated accent RGBs, and role-specific hover/active defaults | **Resolved in UI polish candidate** | Theme invariant tests; isolated release visual pass across toolbar, Help, menu, Kaoss, and FX dock | Shared `StudioUiExt`, semantic accents, unified widget visuals, standardized danger treatment, and consistent 24 px button geometry |
 
 ## Severity counts (including current candidate)
 
@@ -32,5 +33,5 @@
 |----------|------------|----------|--------------|
 | P0 | 2 | 2 | 0 |
 | P1 | 6 | 4 | 2 fixed in candidate, final visual verification pending (I-17, I-18) |
-| P2 | 9 | 7 | 2 (I-05 accepted, I-13 blocked) |
+| P2 | 10 | 8 | 2 (I-05 accepted, I-13 blocked) |
 | P3 | 4 | 2 | 2 (I-12 env, I-14 blocked) |

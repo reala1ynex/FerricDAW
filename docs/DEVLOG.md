@@ -8,6 +8,13 @@ Notes on what shipped and when. Newest first.
 
 ---
 
+## 2026-11-15 — v1.1.8 UI polish
+
+- Unified buttons, toggles, menus, and action rows around the compact Ferric chrome: one 24 px geometry, 5 px radius, shared inactive/hover/open/active states, and semantic teal/orange/purple/amber/red accents.
+- Migrated transport, browser, arrangement, mixer, piano-roll, tutorial, help, update, footer, and dock actions to the shared styling helpers; destructive actions now share one danger treatment.
+- Replaced duplicated inline accent RGB values with named palette tokens and added theme invariant tests.
+- Verified the isolated release build visually across the toolbar, Hardware Rig, Help tabs, Ferric menu, Kaoss dock, and FX dock.
+
 ## 2026-11-15 — v1.1.7
 
 - Added polyphonic drawbar organ and velocity-sensitive electric piano, with factory presets and palette actions.

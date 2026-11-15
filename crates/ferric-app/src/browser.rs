@@ -1,6 +1,6 @@
 use crate::theme::{
-    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC,
-    ACCENT_TEAL, BG_DEEP, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, StudioUiExt, ACCENT_AMBER,
+    ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_engine::{
@@ -442,21 +442,23 @@ impl StudioBrowserState {
                                         .strong()
                                         .color(Color32::BLACK),
                                 )
-                                .fill(ACCENT_FERRIC),
+                                .fill(ACCENT_FERRIC)
+                                .stroke(Stroke::new(1.0_f32, ACCENT_FERRIC.gamma_multiply(0.8)))
+                                .corner_radius(5),
                             )
                             .clicked()
                         {
                             actions.push(BrowserAction::SetupHardwareRig);
                         }
                         ui.horizontal(|ui| {
-                            if ui.small_button("MIDI only").clicked() {
+                            if ui.chrome_small_button("MIDI only").clicked() {
                                 actions.push(BrowserAction::SetupHardwareRigPreset(2));
                             }
-                            if ui.small_button("Line-In only").clicked() {
+                            if ui.chrome_small_button("Line-In only").clicked() {
                                 actions.push(BrowserAction::SetupHardwareRigPreset(3));
                             }
                             if ui
-                                .small_button("Keyboard + handheld tip")
+                                .chrome_small_button("Keyboard + handheld tip")
                                 .on_hover_text(
                                     "Same generic MIDI + Line-In tracks — tip naming only, not brand-required.",
                                 )
@@ -467,7 +469,7 @@ impl StudioBrowserState {
                         });
                         ui.add_space(4.0);
                         if ui
-                            .button(
+                            .chrome_button(
                                 egui::RichText::new("🔊 Fix: Force Speakers + Line-In")
                                     .size(11.0)
                                     .strong(),
@@ -481,7 +483,7 @@ impl StudioBrowserState {
                         }
                         ui.add_space(4.0);
                         if ui
-                            .button(
+                            .chrome_button(
                                 egui::RichText::new("⌨️ Spawn Dual Keyboard Studio (Prism + Kit)")
                                     .size(11.0)
                                     .strong(),
@@ -513,7 +515,7 @@ impl StudioBrowserState {
                                 .color(TEXT_MAIN),
                         );
                         if ui
-                            .small_button("Rescan USB")
+                            .chrome_small_button("Rescan USB")
                             .on_hover_text("Hot-plug detect any USB MIDI controller")
                             .clicked()
                         {
@@ -680,7 +682,7 @@ impl StudioBrowserState {
                             if self.io_matrix_cache.is_empty() {
                                 self.io_matrix_cache = list_audio_device_matrix();
                             }
-                            if ui.small_button("Refresh matrix").clicked() {
+                            if ui.chrome_small_button("Refresh matrix").clicked() {
                                 self.io_matrix_cache = list_audio_device_matrix();
                                 self.audio_inputs = list_audio_input_devices();
                                 self.audio_outputs = list_audio_output_devices();
@@ -791,7 +793,7 @@ impl StudioBrowserState {
                                 "Loopback Ping"
                             };
                             if ui
-                                .small_button(ping_lbl)
+                                .chrome_small_button(ping_lbl)
                                 .on_hover_text(
                                     "Route Out → Line-In (or mic near speaker) and measure round-trip hardware latency.",
                                 )
@@ -803,7 +805,7 @@ impl StudioBrowserState {
                                 let m_ms =
                                     (meas as f32 * 1000.0) / (telem.sample_rate.max(8_000) as f32);
                                 if ui
-                                    .small_button(format!("Apply {} smp ({:.1}ms)", meas, m_ms))
+                                    .chrome_small_button(format!("Apply {} smp ({:.1}ms)", meas, m_ms))
                                     .clicked()
                                 {
                                     self.recording_offset_samples = meas;
@@ -843,7 +845,7 @@ impl StudioBrowserState {
                                 actions.push(BrowserAction::SetInputGainDb(self.input_gain_db));
                             }
                             if ui
-                                .small_button("+6 DS")
+                                    .chrome_small_button("+6 DS")
                                 .on_hover_text(
                                     "Modest Line-In trim — keep Windows Mic Boost at 0% to avoid hiss",
                                 )
@@ -906,7 +908,7 @@ impl StudioBrowserState {
                                     .color(ACCENT_AMBER),
                                 );
                                 if ui
-                                    .small_button("⚡ Lock BPM")
+                                    .chrome_small_button("⚡ Lock BPM")
                                     .on_hover_text(
                                         "Sync project BPM to the beat detected on Line-In",
                                     )
@@ -944,7 +946,7 @@ impl StudioBrowserState {
                         .desired_width(160.0),
                 );
                 if ui
-                    .small_button("+ Folder")
+                    .chrome_small_button("+ Folder")
                     .on_hover_text("Add Sample Pack or Recording Folder")
                     .clicked()
                 {
@@ -974,11 +976,11 @@ impl StudioBrowserState {
                             continue;
                         }
                         ui.horizontal(|ui| {
-                            if ui.small_button("▶").on_hover_text("Audition Preview").clicked() {
+                            if ui.chrome_small_button("▶").on_hover_text("Audition Preview").clicked() {
                                 actions.push(BrowserAction::PreviewSample(buf.clone()));
                             }
                             if ui
-                                .small_button("+Trk")
+                                .chrome_small_button("+Trk")
                                 .on_hover_text("Drop onto Selected Track at Playhead")
                                 .clicked()
                             {
@@ -988,7 +990,7 @@ impl StudioBrowserState {
                                 });
                             }
                             if ui
-                                .small_button("🎹Slice")
+                                .chrome_small_button("🎹Slice")
                                 .on_hover_text(
                                     "Load into Chromatic/Slice Sampler on Selected Track!",
                                 )
@@ -1033,16 +1035,16 @@ impl StudioBrowserState {
 
                         ui.horizontal(|ui| {
                             if is_midi {
-                                if ui.small_button("🎹 Import .MID").clicked() {
+                                if ui.chrome_small_button("🎹 Import .MID").clicked() {
                                     actions.push(BrowserAction::ImportMidiFile(path.clone()));
                                 }
                             } else {
-                                if ui.small_button("▶").clicked() {
+                                if ui.chrome_small_button("▶").clicked() {
                                     if let Ok(buf) = import_audio_file(&path, sample_rate) {
                                         actions.push(BrowserAction::PreviewSample(buf));
                                     }
                                 }
-                                if ui.small_button("+Trk").clicked() {
+                                if ui.chrome_small_button("+Trk").clicked() {
                                     if let Ok(buf) = import_audio_file(&path, sample_rate) {
                                         actions.push(BrowserAction::DropSampleOnTrack {
                                             name: fname.clone(),
@@ -1074,7 +1076,7 @@ impl StudioBrowserState {
                     chrome_section_title(ui, "Curated Studio FX & Synth Presets", ACCENT_FERRIC);
                     for preset in FACTORY_PRESETS {
                         ui.horizontal(|ui| {
-                            if ui.small_button("+ Load").clicked() {
+                            if ui.chrome_small_button("+ Load").clicked() {
                                 actions.push(BrowserAction::ApplyPreset(preset.clone()));
                             }
                             ui.label(
@@ -1117,7 +1119,7 @@ impl StudioBrowserState {
                             ACCENT_AMBER,
                         );
                         if ui
-                            .small_button("⟳ Scan")
+                            .chrome_small_button("⟳ Scan")
                             .on_hover_text(
                                 "Rescan standard CommonProgramFiles\\CLAP and CommonProgramFiles\\VST3 directories",
                             )
@@ -1126,7 +1128,7 @@ impl StudioBrowserState {
                             self.rescan_plugins();
                         }
                         if ui
-                            .small_button("+ Dir")
+                            .chrome_small_button("+ Dir")
                             .on_hover_text("Add & scan a custom .clap or .vst3 plugin directory")
                             .clicked()
                         {
@@ -1183,7 +1185,7 @@ impl StudioBrowserState {
                                 .size(9.5)
                                 .color(ACCENT_AMBER),
                             );
-                            if ui.small_button("Reset").clicked() {
+                            if ui.chrome_small_button("Reset").clicked() {
                                 actions.push(BrowserAction::ClearPluginQuarantine);
                                 self.rescan_plugins();
                             }
@@ -1216,14 +1218,14 @@ impl StudioBrowserState {
                         for plug in filtered {
                             ui.horizontal(|ui| {
                                 if ui
-                                    .small_button("▶ Audition")
+                                    .chrome_small_button("▶ Audition")
                                     .on_hover_text("Sandbox audition in Plugin Playground")
                                     .clicked()
                                 {
                                     actions.push(BrowserAction::AuditionPlugin(plug.clone()));
                                 }
                                 if ui
-                                    .small_button("+ Insert")
+                                    .chrome_small_button("+ Insert")
                                     .on_hover_text("Insert sandboxed plugin on selected track")
                                     .clicked()
                                 {

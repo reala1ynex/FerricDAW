@@ -153,3 +153,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+UI polish verification — 2026-11-15
+Command: cargo test --workspace
+Result: PASS (workspace; ferric-app 8, ferric-dsp 7, ferric-engine 10, ferric-model 7, ferric-plugin-bridge 1 plus integration/doc tests)
+

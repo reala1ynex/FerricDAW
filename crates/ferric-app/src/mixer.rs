@@ -1,8 +1,8 @@
 use crate::piano_roll::DockAction;
 use crate::theme::{
-    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, stereo_level_meter,
+    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, stereo_level_meter, StudioUiExt,
     studio_knob, track_color32, vertical_fader, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED,
-    ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    ACCENT_TEAL, ACCENT_BLUE, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Color32, Stroke, Ui};
 use ferric_engine::EngineTelemetry;
@@ -54,7 +54,7 @@ pub fn render_mixer_console(
                         }
                     }
                     if ui
-                        .small_button("⬇")
+                        .chrome_small_button("⬇")
                         .on_hover_text(format!("Store current mix into Mix {letter}"))
                         .clicked()
                     {
@@ -64,7 +64,7 @@ pub fn render_mixer_console(
             }
             ui.separator();
             if ui
-                .small_button("+ VCA")
+                .chrome_small_button("+ VCA")
                 .on_hover_text("Add a VCA Master Group (scales member track faders + mute/solo)")
                 .clicked()
             {
@@ -160,7 +160,7 @@ pub fn render_mixer_console(
                                         trk.mute = !trk.mute;
                                         actions.push(DockAction::ProjectMutated("Mixer Mute"));
                                     }
-                                    if pill_toggle(ui, "S", trk.solo, Color32::from_rgb(92, 200, 242))
+                                    if pill_toggle(ui, "S", trk.solo, ACCENT_BLUE)
                                         .on_hover_text("Solo")
                                         .clicked()
                                     {
@@ -345,7 +345,7 @@ pub fn render_mixer_console(
                                                             }
                                                         }
                                                     });
-                                                if ui.small_button("×").clicked() {
+                                                if ui.chrome_small_button("×").clicked() {
                                                     rm_s = Some(si);
                                                 }
                                             });
@@ -363,7 +363,7 @@ pub fn render_mixer_console(
                                         for (dst_id, dst_name) in &all_track_targets {
                                             if *dst_id != tid
                                                 && project.can_route(tid, *dst_id)
-                                                && ui.button(dst_name).clicked()
+                                                && ui.chrome_button(dst_name).clicked()
                                             {
                                                 let _ = project.add_send(tid, *dst_id, -9.0);
                                                 actions.push(DockAction::ProjectMutated(
@@ -436,7 +436,7 @@ pub fn render_mixer_console(
                                         ui,
                                         "S",
                                         project.vca_groups[vi].solo,
-                                        Color32::from_rgb(92, 200, 242),
+                                        ACCENT_BLUE,
                                     )
                                     .clicked()
                                     {
@@ -444,7 +444,7 @@ pub fn render_mixer_console(
                                             !project.vca_groups[vi].solo;
                                         actions.push(DockAction::ProjectMutated("VCA Solo"));
                                     }
-                                    if ui.small_button("×").on_hover_text("Delete VCA").clicked()
+                                    if ui.chrome_small_button("×").on_hover_text("Delete VCA").clicked()
                                     {
                                         remove_vca = Some(vca_id);
                                     }
@@ -492,7 +492,7 @@ pub fn render_mixer_console(
                         ui.set_width(116.0);
                         ui.vertical_centered(|ui| {
                             if ui
-                                .button(
+                                .chrome_button(
                                     egui::RichText::new("MASTER BUS")
                                         .size(11.5)
                                         .strong()
