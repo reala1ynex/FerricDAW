@@ -291,8 +291,12 @@ impl FerricDawApp {
                 )
             } else {
                 format!(
-                    "v1.1.1 Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
-                    engine.audio_device_name, engine.sample_rate, engine.audio_input_name, lpk_badge
+                    "v{} ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
+                    env!("CARGO_PKG_VERSION"),
+                    engine.audio_device_name,
+                    engine.sample_rate,
+                    engine.audio_input_name,
+                    lpk_badge
                 )
             },
             project,
@@ -4512,7 +4516,7 @@ fn main() -> eframe::Result<()> {
     env_logger::init();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FerricDAW v1.1.1 — Full-Fledged Open-Source Rust Hybrid DAW")
+            .with_title(format!("FerricDAW v{}", env!("CARGO_PKG_VERSION")))
             .with_inner_size([1520.0, 900.0])
             .with_min_inner_size([1100.0, 700.0])
             .with_maximized(true)

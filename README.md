@@ -2,7 +2,7 @@
 
 A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX. Session clips, CLAP/VST3 plugins (crash-isolated), and a portable Windows build you can unzip and run.
 
-**Current version:** 1.1.1
+**Current version:** 1.1.2
 
 ---
 
