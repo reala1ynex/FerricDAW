@@ -2,15 +2,83 @@
 
 **Audience:** Codex (or any fresh agent) continuing FerricDAW with zero chat memory.  
 **Authority:** Treat this file + `/engineering/*.md` as the continuity source of truth. Verify claims against git, code, and tests before marking work complete.  
-**Handoff date:** 2026-11-15  
-**Do not invent major product features.** Finish, repair, verify, ship.
+**Handoff date:** 2026-11-15 (mission amended same day)  
+**Do not invent unrelated product categories** (no cloud accounts, no liquid glass). You **are** authorized to add instruments, fix flaws, polish UI chrome, and ship.
+
+---
+
+## ★ ACTIVE MISSION — EXECUTE IMMEDIATELY (owner directive)
+
+Owner wants a **final end-user quality pass**, then ship. Do the real work — not a plan-only reply.
+
+### A. Flaw review (adversarial)
+
+1. Recon the app as an end user: every browser tab, dock tab, modal, transport control, palette command.  
+2. File findings in `engineering/ISSUE_REGISTRY.md` (new I-IDs). Fix P0/P1 immediately; fix worthwhile P2s in the same ship.  
+3. Anything you discover while reviewing (broken buttons, silent failures, chrome mismatches, missing presets, dead instrument paths) → fix it.
+
+### B. Add more instruments (+ related polish)
+
+1. Expand the built-in instrument set beyond the current `FxKind` synths (PolySynth, MonoBass, Prism, HostDNA, Wavetable, DrumKit, SamplePlayer, …).  
+2. Prefer **real DSP + model + UI wiring + palette/factory presets**, not stubs.  
+3. Wire new instruments into: palette “Add … Track”, FX insert menus, factory presets where natural, and **function-test cases**.  
+4. Keep Pad A/B `chrome_card` / `chrome_row_label` visual language.
+
+### C. Same automated tests we ran (mandatory)
+
+```powershell
+cd C:\Users\ndrpe\Projects\FerricDAW
+$env:RUSTFLAGS="-D warnings"; cargo check --workspace --all-targets; Remove-Item Env:RUSTFLAGS
+cargo test --workspace
+powershell -ExecutionPolicy Bypass -File tools\FunctionTest-Windows.ps1
+```
+
+- Function-test must stay **debug** (release `panic=abort` breaks isolation).  
+- Extend `function_test.rs` for every new instrument / button handler.  
+- Record results in `engineering/last-*.txt` + `TEST_REGISTRY.md`.  
+- **Do not** delete or weaken failing tests.
+
+### D. Final end-user visual run (mandatory)
+
+1. Launch the **packaged or release** build (or `cargo run --release`) on Windows.  
+2. Walk **every** surface as a user: first-run / empty session, Night Current tutorial steps, Afterglow, Hardware Rig, Audio I/O, Pads, Samples, Presets/Plugins, arrangement, piano roll, Kaoss Write XY, Mix, FX, Launch Pad, Bounce, Check for Updates modal, dirty close Save/Discard/Cancel.  
+3. Visual bar: Pad A/B chrome density — no orphan flat panels; labels use `Foo ->` row recipe where pickers exist.  
+4. Confirm every control you touch **does what it says** (not just that a handler exists).  
+5. Log visual findings + fixes in ISSUE_REGISTRY / PROGRESS.
+
+### E. Ship to GitHub (mandatory when green)
+
+1. Bump workspace version (next: **1.1.7** unless you need a larger bump).  
+2. Update `README.md`, `docs/DEVLOG.md`, `/engineering` readiness.  
+3. Commit logical changes.  
+4. Publish:
+
+```powershell
+Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue
+Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+powershell -ExecutionPolicy Bypass -File tools\Publish-GitHubRelease.ps1
+```
+
+5. **Only-current channel:** delete prior GitHub release + tag (e.g. `v1.1.6`) after `v1.1.7` is live.  
+6. Verify remote `latest.json`: starts with `{`, **no UTF-8 BOM**, `sha256` matches zip.  
+7. Push `master` + tag; leave registries accurate.
+
+### Mission success criteria
+
+- [ ] Flaw review done; P0/P1 cleared or explicitly blocked with evidence  
+- [ ] New instrument(s) implemented, audible, UI-reachable, tested  
+- [ ] `cargo test --workspace` PASS  
+- [ ] Function-test PASS (all cases, including new ones)  
+- [ ] Visual end-user run completed; chrome consistent with Pad A/B  
+- [ ] New version published on GitHub Releases; only one Latest  
+- [ ] `/engineering` updated + checkpoint recorded  
 
 ---
 
 ## 0. Load state first (mandatory)
 
 ```text
-1. Read engineering/HANDOFF_CODEX.md          (this file)
+1. Read engineering/HANDOFF_CODEX.md          (this file) — execute ★ ACTIVE MISSION
 2. Read engineering/PROGRESS.md
 3. Read engineering/ISSUE_REGISTRY.md
 4. Read engineering/RELEASE_READINESS.md
@@ -240,17 +308,23 @@ All former P0/P1 ship blockers (I-01..I-03, I-07..I-09) are **resolved in 1.1.5+
 
 ---
 
-## 10. Suggested next work (priority order)
+## 10. Next work
 
-Only pick these if the owner asks, or if a regression appears:
+**Owner has opened ★ ACTIVE MISSION (top of this file).** That is the priority — not optional.
 
-1. **Visual QA** of 1.1.6 chrome on live UI (Hardware → Samples → Presets → Mix → FX → Editor → Launch → Kaoss) — screenshot/compare density to Pad A/B.  
-2. **Regression:** if any panel still looks “flat” vs Pad strip, wrap with `chrome_card` / `chrome_row_label` (same recipe).  
-3. **Optional I-05:** egui interaction harness beyond handler function-test (expensive; not required for ship).  
-4. **Do not** enable ASIO SDK in portable zip without explicit owner approval + SDK availability.  
-5. **Do not** expand Mac/Linux packaging unless owner reopens I-14.
+Still out of scope unless owner reopens:
 
-If starting a new ship: bump `Cargo.toml` version → update README + DEVLOG → tests → `Publish-GitHubRelease.ps1` → delete previous release/tag → refresh `/engineering` readiness.
+- True ASIO SDK in portable zip (I-13) without approval  
+- Mac/Linux portable packaging (I-14)  
+- Liquid-glass / full rebrand  
+
+Instrument design notes (guidance, not a closed list):
+
+- Existing: PolySynth, MonoBass, Prism, HostDNA, Wavetable, DrumKit, SamplePlayer  
+- Good additions: keys/epiano, organ, pluck/karplus, noise/percussion one-shots, FM operator variant, simple sampler-kit expansions — real DSP in `ferric-dsp`, `FxKind` in model, engine graph wire, palette + presets + function-test  
+- Prefer quality over quantity: 1–3 solid instruments beat 10 stubs  
+
+Ship path when mission green: bump → docs → tests → `Publish-GitHubRelease.ps1` → delete previous release/tag → update `/engineering`.
 
 ---
 
@@ -277,9 +351,9 @@ When removing old local Ferric copies:
 
 ---
 
-## 13. One-paragraph brief you can paste into Codex
+## 13. Paste this into Codex (owner brief)
 
-> Continue FerricDAW at `C:\Users\ndrpe\Projects\FerricDAW`. Current ship is **v1.1.6** on `master` (HEAD `9ce2698`; tag on `a79dc84`). Owner: Patrick Rudolph / @reala1ynex. Read `engineering/HANDOFF_CODEX.md` then PROGRESS/ISSUE/RELEASE_READINESS. Windows portable DAW (Rust/egui). Do not invent major features; do not liquid-glass the UI; keep Pad A/B `chrome_card` / `chrome_row_label` chrome. Only-current GitHub release channel. Clear stale `GH_TOKEN` before `gh`. Publish via `tools/Publish-GitHubRelease.ps1`. Function-test is debug `tools/FunctionTest-Windows.ps1` (57 cases). Accepted limits: no egui pixel hit-test (I-05), no true ASIO in portable (I-13), no Mac/Linux ship (I-14). Update `/engineering` registries every cycle. Never write under OneDrive.
+> Continue FerricDAW at `C:\Users\ndrpe\Projects\FerricDAW`. Owner: Patrick Rudolph / @reala1ynex. **Read `engineering/HANDOFF_CODEX.md` and execute the ★ ACTIVE MISSION at the top.** Current public ship is **v1.1.6**; your job is the final end-user visual run, the same automated suite (`cargo check` with `-D warnings`, `cargo test --workspace`, `tools/FunctionTest-Windows.ps1`), a flaw review with fixes, **add more real instruments** (DSP+UI+presets+tests — no stubs), fix anything else you find, then **bump and publish to GitHub** with `tools/Publish-GitHubRelease.ps1` (clear stale `GH_TOKEN`), keep only-current release channel, and update `/engineering`. Keep Pad A/B `chrome_card` / `chrome_row_label` chrome — no liquid glass. Do not invent cloud/accounts/Mac-Linux packaging. Never write under OneDrive. Evidence only — do not claim complete without tests + visual pass.
 
 ---
 
