@@ -7,22 +7,25 @@ mod mixer;
 mod palette;
 mod piano_roll;
 mod theme;
+mod tutorial_coach;
 
 use arrangement::{ArrangementAction, ArrangementState};
 use browser::{BrowserAction, KaossPadState, StudioBrowserState, TapTempoTracker};
 use help_modal::{build_app_icon, render_quickstart_help_modal};
+use tutorial_coach::{TutorialAction, TutorialCoach};
 use eframe::egui;
 use egui::{Color32, Context, Key, Stroke};
 use ferric_engine::{
     audio_buffer_from_capture, import_audio_file, load_project_bundle,
+    preferred_line_input_name, preferred_speakers_output_name, realtek_combo_jack_risk,
     render_all_stems_with_options, render_master_with_options, render_track_freeze_buffer,
     save_project_bundle, BitDepth, BounceReport, CapturedTakeEvent, EngineCommand, EngineHandle,
     ExportFormat, MasteringOptions,
 };
 use ferric_model::{
-    build_demo_project, import_smf_file, AutomationTarget, ClipId, FxKind, FxSlot, HistoryManager,
-    InputSource, MidiLearnMapping, ModulatorSlot, Project, Take, TakeContent, TimelineClip, Track,
-    TrackId,
+    build_demo_project, build_tutorial_project_through, import_smf_file, AutomationTarget, ClipId,
+    FxKind, FxSlot, HistoryManager, InputSource, MidiLearnMapping, ModulatorSlot, NightCurrentStep,
+    Project, Take, TakeContent, TimelineClip, Track, TrackId,
 };
 use mixer::{render_mixer_console, render_routing_matrix};
 use palette::{CommandPalette, PaletteCommand};
@@ -56,12 +59,30 @@ struct BounceModalState {
     true_peak_ceiling_dbtp: f32,
     tpdf_dither: bool,
     last_report: Option<Result<BounceReport, String>>,
+    /// Last successful master bounce path (for A/B audition).
+    last_master_path: Option<PathBuf>,
 }
 
 struct PendingMidiLearn {
     track_id: TrackId,
     target: AutomationTarget,
     label: String,
+}
+
+/// Destructive session swap waiting on Save / Discard / Cancel.
+#[derive(Debug, Clone)]
+enum PendingDestructive {
+    NewEmpty,
+    LoadDemo,
+    OpenPath(PathBuf),
+    TutorialApply(NightCurrentStep),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FirstRunChoice {
+    Tutorial,
+    Afterglow,
+    Empty,
 }
 
 struct FerricDawApp {
@@ -77,12 +98,18 @@ struct FerricDawApp {
     palette: CommandPalette,
     bottom_tab: BottomTab,
     show_bottom_dock: bool,
+    /// Persisted lower-dock height (egui alone stores content height and snaps back).
+    bottom_dock_height: f32,
+    /// One-shot viewport clamp so a tiny restored window can't stick in the corner.
+    viewport_bootstrapped: bool,
     inspect_master_fx: bool,
     selected_track: Option<TrackId>,
     selected_clip: Option<(TrackId, ClipId)>,
     clipboard_clip: Option<TimelineClip>,
     recent_projects: Vec<PathBuf>,
     show_help_modal: bool,
+    tutorial: TutorialCoach,
+    pending_destructive: Option<PendingDestructive>,
     dirty_since_autosave: bool,
     last_autosave_inst: std::time::Instant,
     pending_midi_learn: Option<PendingMidiLearn>,
@@ -90,6 +117,7 @@ struct FerricDawApp {
     musical_typing_octave: i8,
     held_typing_keys: HashSet<Key>,
     bounce_modal: BounceModalState,
+    show_first_run: bool,
     status_banner: String,
     capture_inbox: Vec<CapturedTakeEvent>,
 }
@@ -98,10 +126,24 @@ impl FerricDawApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_studio_theme(&cc.egui_ctx);
 
-        let initial_project = build_demo_project(48_000);
+        let cli_path = std::env::args_os().nth(1).map(PathBuf::from);
+        let first_run = !Self::first_run_done_marker().exists() && cli_path.is_none();
+
+        let (initial_project, show_first_run) = if first_run {
+            let mut p = Project::new_empty("Untitled Session");
+            let _ = p.add_track("01 Audio / MIDI");
+            (p, true)
+        } else {
+            (build_demo_project(48_000), false)
+        };
+
         let engine = EngineHandle::start(&initial_project);
-        let project = if engine.sample_rate != 48_000 {
+        let project = if !show_first_run && engine.sample_rate != 48_000 {
             build_demo_project(engine.sample_rate)
+        } else if engine.sample_rate != 48_000 && show_first_run {
+            let mut p = Project::new_empty("Untitled Session");
+            let _ = p.add_track("01 Audio / MIDI");
+            p
         } else {
             initial_project
         };
@@ -115,11 +157,8 @@ impl FerricDawApp {
         };
 
         let mut app = Self {
-            selected_track: project.tracks.get(4).or(project.tracks.first()).map(|t| t.id),
-            selected_clip: project
-                .tracks
-                .get(3)
-                .and_then(|t| t.clips.first().map(|c| (t.id, c.id))),
+            selected_track: project.tracks.first().map(|t| t.id),
+            selected_clip: None,
             bounce_modal: BounceModalState {
                 open: false,
                 export_stems: false,
@@ -127,17 +166,25 @@ impl FerricDawApp {
                 sample_rate: engine.sample_rate,
                 bit_depth: BitDepth::Pcm24,
                 start_beat: 0.0,
-                end_beat: project.project_end_beat(),
+                end_beat: project.project_end_beat().max(64.0),
                 enable_lufs_norm: true,
                 target_lufs: -14.0,
                 true_peak_ceiling_dbtp: -1.0,
                 tpdf_dither: true,
                 last_report: None,
+                last_master_path: None,
             },
-            status_banner: format!(
-                "v1.0 Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
-                engine.audio_device_name, engine.sample_rate, engine.audio_input_name, lpk_badge
-            ),
+            status_banner: if show_first_run {
+                format!(
+                    "Welcome — pick how to start • Out: {} • In: {}{}",
+                    engine.audio_device_name, engine.audio_input_name, lpk_badge
+                )
+            } else {
+                format!(
+                    "v1.1.1 Studio Ready • Out: {} ({} Hz) • In: {}{} • Space: Play • Ctrl+K: Palette",
+                    engine.audio_device_name, engine.sample_rate, engine.audio_input_name, lpk_badge
+                )
+            },
             project,
             project_path: None,
             history: HistoryManager::new(64),
@@ -150,22 +197,27 @@ impl FerricDawApp {
             palette: CommandPalette::default(),
             bottom_tab: BottomTab::FxAndModulators,
             show_bottom_dock: true,
+            bottom_dock_height: 300.0,
+            viewport_bootstrapped: false,
             inspect_master_fx: false,
             clipboard_clip: None,
             recent_projects: Self::load_recent_projects_list(),
             show_help_modal: false,
+            tutorial: TutorialCoach::default(),
+            pending_destructive: None,
             dirty_since_autosave: false,
             last_autosave_inst: std::time::Instant::now(),
             pending_midi_learn: None,
-            musical_typing_enabled: true,
+            musical_typing_enabled: false,
             musical_typing_octave: 4,
             held_typing_keys: HashSet::new(),
+            show_first_run,
             capture_inbox: Vec::new(),
         };
         app.engine.sync_project(&app.project);
 
         // Support launching `ferricdaw.exe my_song.ferric` (or `.json` / `.wav` / `.flac` / `.mid`) from CLI / File Association!
-        if let Some(arg_path) = std::env::args_os().nth(1).map(PathBuf::from) {
+        if let Some(arg_path) = cli_path {
             if arg_path.exists() {
                 let ext = arg_path
                     .extension()
@@ -190,16 +242,34 @@ impl FerricDawApp {
                     app.selected_track = Some(tid);
                     app.sync_engine();
                 }
+                app.show_first_run = false;
+                app.mark_first_run_done();
             }
         }
         app
     }
 
-    fn recent_projects_file() -> PathBuf {
+    fn ferric_appdata_dir() -> PathBuf {
         let base = std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir());
-        base.join("FerricDAW").join("recent_projects.txt")
+        base.join("FerricDAW")
+    }
+
+    fn first_run_done_marker() -> PathBuf {
+        Self::ferric_appdata_dir().join("first_run_done")
+    }
+
+    fn mark_first_run_done(&self) {
+        let p = Self::first_run_done_marker();
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(p, b"1");
+    }
+
+    fn recent_projects_file() -> PathBuf {
+        Self::ferric_appdata_dir().join("recent_projects.txt")
     }
 
     fn load_recent_projects_list() -> Vec<PathBuf> {
@@ -361,6 +431,50 @@ impl FerricDawApp {
         }
     }
 
+    fn split_clip_to_stems(&mut self, track_id: TrackId, clip_id: ClipId) {
+        let Some(src_clip) = self
+            .project
+            .find_track(track_id)
+            .and_then(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .cloned()
+        else {
+            return;
+        };
+        let take = src_clip
+            .takes
+            .get(src_clip.active_take)
+            .or_else(|| src_clip.takes.first());
+        let Some(Take {
+            content: TakeContent::Audio { buffer },
+            ..
+        }) = take
+        else {
+            self.status_banner = "Stem split needs an audio take.".into();
+            return;
+        };
+
+        self.snapshot_before("Split Audio to 4 Stems");
+        let stems = ferric_dsp::split_audio_to_4_stems(buffer);
+        let start = src_clip.start_beat;
+        let len = src_clip.length_beats;
+        let n_scenes = self.project.scenes.len();
+        let labels = [
+            ("Drums / Perc", stems.drums_percussion, 0usize),
+            ("Sub / Bass", stems.sub_bass, 1),
+            ("Mids / Keys", stems.mids_keys_vocals, 2),
+            ("Highs / Air", stems.highs_air, 3),
+        ];
+        for (name, buf, color) in labels {
+            let mut trk = Track::new(format!("Stem · {name}"), color, n_scenes);
+            trk.clips
+                .push(TimelineClip::new_audio(format!("{name}"), start, len, buf));
+            self.project.tracks.push(trk);
+        }
+        self.status_banner =
+            "Split into 4 stem tracks (Drums / Bass / Mids / Highs) via HPSS.".into();
+        self.sync_engine();
+    }
+
     /// 1-Click Hardware Studio Rig tailored specifically for Akai LPK25 + Nintendo DS KORG DS-10!
     fn spawn_akai_and_ds10_rig(&mut self) {
         self.snapshot_before("Spawn Akai LPK25 + KORG DS-10 Rig");
@@ -381,38 +495,136 @@ impl FerricDawApp {
             t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
         }
 
-        // 2. Nintendo DS (KORG DS-10) Stereo 3.5mm Line-In Console Channel!
+        // 2. Nintendo DS (KORG DS-10) → Realtek External Mic (mono) console channel.
+        // Mic Boost + big digital trim = hiss; keep Windows Boost at 0 and trim modest.
         let ds_id = self.project.add_track("Nintendo DS — KORG DS-10 Line-In");
         if let Some(t) = self.project.find_track_mut(ds_id) {
             t.color = [66, 179, 165];
-            t.input_source = InputSource::AudioAndMidi { stereo_pair: 0 };
+            t.input_source = InputSource::AudioMono { channel: 0 };
             t.record_arm = true;
             t.input_monitoring = true;
+            t.gain_db = 0.0;
 
-            // Clean up portable headphone-out hiss with gentle Gate, sculpt MS-10 punch with EQ, add Oxide Tape & Space!
-            let mut gate = FxSlot::new(FxKind::NoiseGate);
-            gate.set_param(0, -54.0);
-            gate.set_param(5, -78.0);
             let mut eq = FxSlot::new(FxKind::ParametricEq);
-            eq.set_param(0, 32.0); // Keep deep MS-10 bass!
-            eq.set_param(2, 2.0);  // +2 dB low punch
-            eq.set_param(10, 2.5); // +2.5 dB top air for DS DAC roll-off
-            let mut tape = FxSlot::new(FxKind::TapeSaturator);
-            tape.set_param(0, 4.0);
-            tape.set_param(1, 48.0);
+            eq.set_param(0, 100.0); // HPF cable / bias
+            eq.set_param(2, 0.0);
+            eq.set_param(10, -3.0); // tame mic-jack hiss shelf
+            eq.set_param(11, -1.0);
+            let mut comp = FxSlot::new(FxKind::Compressor);
+            comp.preset_name = "DS Mic-Jack Leveler".into();
+            comp.set_param(0, -24.0);
+            comp.set_param(1, 2.5);
+            comp.set_param(2, 10.0);
+            comp.set_param(3, 150.0);
+            comp.set_param(5, 3.0); // light makeup — never stack with Mic Boost
 
-            t.fx_chain.push(gate);
             t.fx_chain.push(eq);
-            t.fx_chain.push(tape);
+            t.fx_chain.push(comp);
         }
 
         self.selected_track = Some(lpk_id);
         self.bottom_tab = BottomTab::KaossPad;
         self.show_bottom_dock = true;
+        // Auto-route around Realtek combo-jack mute (Speakers out + External Mic in).
+        self.apply_ds10_safe_audio_routing();
         self.sync_engine();
         self.status_banner =
-            "⚡ Spawned 'LPK25 Analog Synth' + 'Nintendo DS — KORG DS-10 Line-In' & opened KAOSS X-Y Pad!"
+            "⚡ Spawned LPK25 + DS-10 Line-In • locked Speakers out + Line-In mic (avoids combo-jack mute)"
                 .into();
+    }
+
+    /// Lock capture to Realtek External Microphone (not Steam/AMD array) + clean DS monitor chain.
+    fn apply_ds10_safe_audio_routing(&mut self) {
+        let speakers = preferred_speakers_output_name();
+        let line_in = preferred_line_input_name();
+        if let Some(ref s) = speakers {
+            self.browser.selected_out = Some(s.clone());
+        }
+        if let Some(ref i) = line_in {
+            self.browser.selected_in = Some(i.clone());
+        } else {
+            // Explicit fallback string matching this machine's endpoint name.
+            let fallback = self
+                .browser
+                .audio_inputs
+                .iter()
+                .find(|n| {
+                    let l = n.to_lowercase();
+                    l.contains("external microphone") || l.contains("line in")
+                })
+                .cloned();
+            self.browser.selected_in = fallback;
+        }
+        // Modest digital trim only — Windows Mic Boost must stay at 0% or the jack hisses.
+        self.browser.input_gain_db = 6.0;
+        for t in &mut self.project.tracks {
+            let name = t.name.to_lowercase();
+            if !(name.contains("ds-10") || name.contains("nintendo ds") || name.contains("line-in"))
+            {
+                continue;
+            }
+            t.input_source = InputSource::AudioMono { channel: 0 };
+            t.record_arm = true;
+            t.input_monitoring = true;
+            t.gain_db = 0.0;
+            // Drop gate (pops) + tape (hisses when gain-staged hot).
+            t.fx_chain
+                .retain(|fx| fx.kind != FxKind::NoiseGate && fx.kind != FxKind::TapeSaturator);
+            if let Some(eq) = t.fx_chain.iter_mut().find(|fx| fx.kind == FxKind::ParametricEq) {
+                eq.set_param(0, 100.0);
+                eq.set_param(2, 0.0);
+                eq.set_param(10, -3.0);
+                eq.set_param(11, -1.0);
+            } else {
+                let mut eq = FxSlot::new(FxKind::ParametricEq);
+                eq.set_param(0, 100.0);
+                eq.set_param(10, -3.0);
+                eq.set_param(11, -1.0);
+                t.fx_chain.insert(0, eq);
+            }
+            if let Some(comp) = t.fx_chain.iter_mut().find(|fx| fx.kind == FxKind::Compressor) {
+                comp.set_param(0, -24.0);
+                comp.set_param(1, 2.5);
+                comp.set_param(5, 3.0);
+            } else {
+                let mut comp = FxSlot::new(FxKind::Compressor);
+                comp.preset_name = "DS Mic-Jack Leveler".into();
+                comp.set_param(0, -24.0);
+                comp.set_param(1, 2.5);
+                comp.set_param(2, 10.0);
+                comp.set_param(3, 150.0);
+                comp.set_param(5, 3.0);
+                let insert_at = t
+                    .fx_chain
+                    .iter()
+                    .position(|fx| fx.kind == FxKind::ParametricEq)
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                t.fx_chain.insert(insert_at, comp);
+            }
+        }
+        self.engine = EngineHandle::start_with_config(
+            &self.project,
+            self.browser.selected_out.as_deref(),
+            self.browser.selected_in.as_deref(),
+            self.browser.selected_buffer_size,
+            self.browser.recording_offset_samples,
+            self.browser.selected_audio_driver,
+        );
+        self.engine.set_input_gain_db(6.0);
+        let in_name = self.engine.audio_input_name.clone();
+        if in_name.to_lowercase().contains("steam")
+            || in_name.to_lowercase().contains("array")
+            || in_name.to_lowercase().contains("nvidia")
+        {
+            self.status_banner = format!(
+                "⚠ Capture device is '{in_name}' — switch Input to 'External Microphone (Realtek)' or Windows will never hear the DS."
+            );
+        } else {
+            self.status_banner = format!(
+                "DS capture: {in_name} @ +6 dB • Mic Boost 0% • hiss shelf cut (raise DS headphone vol, not boost)"
+            );
+        }
     }
 
     fn handle_midi_learn_poll(&mut self) {
@@ -553,6 +765,331 @@ impl FerricDawApp {
             }
         }
         self.sync_engine();
+    }
+
+    fn start_night_current_tutorial(&mut self) {
+        self.show_help_modal = false;
+        self.show_first_run = false;
+        self.tutorial.start();
+        self.status_banner =
+            "Night Current tutorial open — coach bottom-right (Begin Session → Next)"
+                .into();
+    }
+
+    fn apply_first_run_choice(&mut self, choice: FirstRunChoice) {
+        self.mark_first_run_done();
+        self.show_first_run = false;
+        match choice {
+            FirstRunChoice::Tutorial => {
+                self.project = Project::new_empty("Untitled Session");
+                let tid = self.project.add_track("01 Audio / MIDI");
+                self.selected_track = Some(tid);
+                self.selected_clip = None;
+                self.project_path = None;
+                self.sync_engine();
+                self.start_night_current_tutorial();
+            }
+            FirstRunChoice::Afterglow => {
+                self.execute_destructive(PendingDestructive::LoadDemo);
+                self.status_banner =
+                    "Afterglow Copper playground loaded — open 🎓 Tutorial anytime for Night Current."
+                        .into();
+            }
+            FirstRunChoice::Empty => {
+                self.execute_destructive(PendingDestructive::NewEmpty);
+                self.status_banner =
+                    "Empty session — Ctrl+K or 🎓 Tutorial when you want a guided song.".into();
+            }
+        }
+    }
+
+    fn render_first_run_modal(&mut self, ctx: &Context) {
+        if !self.show_first_run {
+            return;
+        }
+        let mut choice = None;
+        egui::Window::new("Welcome to FerricDAW")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(420.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.5_f32, ACCENT_FERRIC))
+                    .corner_radius(8)
+                    .inner_margin(16.0),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("How do you want to start?")
+                        .size(16.0)
+                        .strong()
+                        .color(ACCENT_FERRIC),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Plugins that crash run in a worker process — not the DAW. Pick a path:",
+                    )
+                    .size(12.0)
+                    .color(TEXT_DIM),
+                );
+                ui.add_space(12.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 36.0],
+                        egui::Button::new(
+                            egui::RichText::new("🎓 Night Current Tutorial")
+                                .strong()
+                                .color(ACCENT_TEAL),
+                        ),
+                    )
+                    .on_hover_text("Guided dark-techno song — coach walks you end-to-end")
+                    .clicked()
+                {
+                    choice = Some(FirstRunChoice::Tutorial);
+                }
+                ui.add_space(6.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 32.0],
+                        egui::Button::new("Afterglow Copper playground"),
+                    )
+                    .on_hover_text("Full demo session to poke around")
+                    .clicked()
+                {
+                    choice = Some(FirstRunChoice::Afterglow);
+                }
+                ui.add_space(6.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 32.0],
+                        egui::Button::new("Empty session"),
+                    )
+                    .clicked()
+                {
+                    choice = Some(FirstRunChoice::Empty);
+                }
+            });
+        if let Some(c) = choice {
+            self.apply_first_run_choice(c);
+        }
+    }
+
+    fn session_has_user_work(&self) -> bool {
+        self.dirty_since_autosave
+            || self.project_path.is_some()
+            || self.project.chord_track.len() > 2
+            || self
+                .project
+                .tracks
+                .iter()
+                .any(|t| !t.clips.is_empty() || t.fx_chain.len() > 1)
+    }
+
+    fn request_destructive(&mut self, action: PendingDestructive) {
+        if self.session_has_user_work() {
+            self.pending_destructive = Some(action);
+        } else {
+            self.execute_destructive(action);
+        }
+    }
+
+    fn execute_destructive(&mut self, action: PendingDestructive) {
+        match action {
+            PendingDestructive::NewEmpty => {
+                self.snapshot_before("New Empty Session");
+                self.project = Project::new_empty("Untitled Session");
+                let tid = self.project.add_track("01 Audio / MIDI");
+                self.selected_track = Some(tid);
+                self.selected_clip = None;
+                self.project_path = None;
+                self.sync_engine();
+                self.status_banner = "New empty session.".into();
+            }
+            PendingDestructive::LoadDemo => {
+                self.snapshot_before("Load Demo Session");
+                self.project = build_demo_project(self.engine.sample_rate);
+                self.selected_track = self.project.tracks.first().map(|t| t.id);
+                self.selected_clip = None;
+                self.project_path = None;
+                self.sync_engine();
+                self.status_banner = "Loaded Afterglow Copper playground.".into();
+            }
+            PendingDestructive::OpenPath(p) => {
+                self.open_project_from_path(&p);
+            }
+            PendingDestructive::TutorialApply(step) => {
+                self.apply_tutorial_step(step);
+                self.status_banner = format!(
+                    "Tutorial step {} applied — Space to hear, or Play demo WAV to A/B",
+                    step.letter()
+                );
+            }
+        }
+    }
+
+    fn handle_tutorial_action(&mut self, action: TutorialAction) {
+        match action {
+            TutorialAction::None => {}
+            TutorialAction::Close => {
+                self.tutorial.open = false;
+            }
+            TutorialAction::Restart => {
+                self.tutorial.start();
+            }
+            TutorialAction::OpenBounce => {
+                self.bounce_modal.start_beat = 0.0;
+                self.bounce_modal.end_beat = 64.0;
+                self.bounce_modal.open = true;
+            }
+            TutorialAction::PlayReference => {
+                self.play_night_current_demo_reference();
+            }
+            TutorialAction::Back => {
+                self.tutorial.step = self.tutorial.step.prev();
+            }
+            TutorialAction::Next => {
+                // Never force a project wipe — only "Begin Session" / "Do this step" mutate.
+                self.tutorial.step = self.tutorial.step.next();
+            }
+            TutorialAction::ApplyStep => {
+                let mut step = self.tutorial.step;
+                if step == NightCurrentStep::Welcome {
+                    step = NightCurrentStep::Session;
+                    self.tutorial.step = step;
+                }
+                if step.is_build_step() {
+                    self.request_destructive(PendingDestructive::TutorialApply(step));
+                }
+            }
+        }
+    }
+
+    fn apply_tutorial_step(&mut self, step: NightCurrentStep) {
+        let label: &'static str = match step {
+            NightCurrentStep::Welcome => "Tutorial: Welcome",
+            NightCurrentStep::Session => "Tutorial: Session",
+            NightCurrentStep::Chords => "Tutorial: Chords",
+            NightCurrentStep::Harmony => "Tutorial: Harmony",
+            NightCurrentStep::Drums => "Tutorial: Drums",
+            NightCurrentStep::Hook => "Tutorial: Hook",
+            NightCurrentStep::Counter => "Tutorial: Counter",
+            NightCurrentStep::Sidechain => "Tutorial: Sidechain",
+            NightCurrentStep::Mix => "Tutorial: Mix",
+            NightCurrentStep::Bounce => "Tutorial: Bounce",
+            NightCurrentStep::Done => "Tutorial: Done",
+        };
+        self.snapshot_before(label);
+        self.project = build_tutorial_project_through(self.engine.sample_rate, step);
+        self.project_path = None;
+        self.selected_track = self.project.tracks.first().map(|t| t.id);
+        self.selected_clip = None;
+        self.bounce_modal.end_beat = 64.0;
+        self.dirty_since_autosave = true;
+        self.sync_engine();
+    }
+
+    fn play_night_current_demo_reference(&mut self) {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                candidates.push(dir.join("demo").join("NightCurrent-Demo.wav"));
+                candidates.push(dir.join("assets").join("demo").join("NightCurrent-Demo.wav"));
+            }
+        }
+        candidates.push(PathBuf::from("demo/NightCurrent-Demo.wav"));
+        candidates.push(PathBuf::from("assets/demo/NightCurrent-Demo.wav"));
+        candidates.push(PathBuf::from(
+            r"C:\Users\ndrpe\Projects\FerricDAW\assets\demo\NightCurrent-Demo.wav",
+        ));
+
+        for path in candidates {
+            if !path.exists() {
+                continue;
+            }
+            match import_audio_file(&path, self.engine.sample_rate) {
+                Ok(buf) => {
+                    self.engine.send(EngineCommand::PreviewBuffer(buf));
+                    self.status_banner = format!(
+                        "Playing reference demo — {}",
+                        path.display()
+                    );
+                    return;
+                }
+                Err(e) => {
+                    self.status_banner = format!("Demo WAV found but failed to load: {e}");
+                    return;
+                }
+            }
+        }
+        self.status_banner =
+            "demo/NightCurrent-Demo.wav not found next to ferricdaw.exe — check the release zip."
+                .into();
+    }
+
+    fn render_destructive_confirm_modal(&mut self, ctx: &Context) {
+        let Some(pending) = self.pending_destructive.clone() else {
+            return;
+        };
+        let title = match &pending {
+            PendingDestructive::NewEmpty => "Replace session with empty?",
+            PendingDestructive::LoadDemo => "Load Afterglow Copper playground?",
+            PendingDestructive::OpenPath(_) => "Open another session?",
+            PendingDestructive::TutorialApply(step) => {
+                if *step == NightCurrentStep::Session {
+                    "Begin Night Current session?"
+                } else {
+                    "Apply tutorial step (rebuilds song)?"
+                }
+            }
+        };
+        let detail = match &pending {
+            PendingDestructive::TutorialApply(_) => {
+                "This rebuilds the tutorial project through the current step and replaces clips/FX. Save first if you care about the current session."
+            }
+            _ => "You have unsaved or in-progress work. Save before continuing, discard, or cancel.",
+        };
+
+        let mut open = true;
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.5_f32, ACCENT_FERRIC))
+                    .corner_radius(8)
+                    .inner_margin(14.0),
+            )
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(detail).color(TEXT_MAIN));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(egui::RichText::new("Save…").strong().color(ACCENT_TEAL))
+                        .clicked()
+                    {
+                        self.save_project_dialog();
+                        // Keep pending so user can confirm again after save.
+                    }
+                    if ui
+                        .button(egui::RichText::new("Discard & continue").color(ACCENT_AMBER))
+                        .clicked()
+                    {
+                        self.pending_destructive = None;
+                        self.execute_destructive(pending.clone());
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_destructive = None;
+                    }
+                });
+            });
+        if !open {
+            self.pending_destructive = None;
+        }
     }
 
     fn execute_palette_command(&mut self, cmd: PaletteCommand) {
@@ -705,6 +1242,9 @@ impl FerricDawApp {
             PaletteCommand::OpenQuickstartHelp => {
                 self.show_help_modal = true;
             }
+            PaletteCommand::StartNightCurrentTutorial => {
+                self.start_night_current_tutorial();
+            }
             PaletteCommand::QuantizeSelectedClip => {
                 if let Some((tid, cid)) = self.selected_clip {
                     self.snapshot_before("Quantize MIDI");
@@ -726,10 +1266,7 @@ impl FerricDawApp {
             }
             PaletteCommand::SaveProject => self.save_project_dialog(),
             PaletteCommand::LoadDemoProject => {
-                self.snapshot_before("Load Demo Session");
-                self.project = build_demo_project(self.engine.sample_rate);
-                self.selected_track = self.project.tracks.first().map(|t| t.id);
-                self.sync_engine();
+                self.request_destructive(PendingDestructive::LoadDemo);
             }
             PaletteCommand::Undo => self.perform_undo(),
             PaletteCommand::Redo => self.perform_redo(),
@@ -839,11 +1376,12 @@ impl FerricDawApp {
             .add_filter("FerricDAW / JSON", &["ferric", "json"])
             .pick_file()
         {
-            self.open_project_from_path(&p);
+            self.request_destructive(PendingDestructive::OpenPath(p));
         }
     }
 
     fn open_project_from_path(&mut self, p: &PathBuf) {
+        // Called from confirm dialog or when session is clean — always loads.
         match load_project_bundle(p, self.engine.sample_rate) {
             Ok(loaded) => {
                 self.snapshot_before("Open Project");
@@ -1151,12 +1689,7 @@ impl FerricDawApp {
                     .color(ACCENT_FERRIC),
                 |ui| {
                     if ui.button("📄 New Empty Session").clicked() {
-                        self.snapshot_before("New Empty Session");
-                        self.project = Project::new_empty("Untitled Session");
-                        let tid = self.project.add_track("01 Audio / MIDI");
-                        self.selected_track = Some(tid);
-                        self.selected_clip = None;
-                        self.sync_engine();
+                        self.request_destructive(PendingDestructive::NewEmpty);
                         ui.close_menu();
                     }
                     if ui
@@ -1166,8 +1699,11 @@ impl FerricDawApp {
                         self.spawn_akai_and_ds10_rig();
                         ui.close_menu();
                     }
-                    if ui.button("🎵 Reload 'Neon Oxide' Demo Session").clicked() {
-                        self.execute_palette_command(PaletteCommand::LoadDemoProject);
+                    if ui
+                        .button("🎵 Reload Afterglow Copper Playground")
+                        .clicked()
+                    {
+                        self.request_destructive(PendingDestructive::LoadDemo);
                         ui.close_menu();
                     }
                     ui.separator();
@@ -1179,7 +1715,7 @@ impl FerricDawApp {
                         ui.menu_button("🕘 Open Recent Session", |ui| {
                             for rp in self.recent_projects.clone() {
                                 if ui.button(rp.display().to_string()).clicked() {
-                                    self.open_project_from_path(&rp);
+                                    self.request_destructive(PendingDestructive::OpenPath(rp));
                                     ui.close_menu();
                                 }
                             }
@@ -1211,6 +1747,13 @@ impl FerricDawApp {
                         ui.close_menu();
                     }
                     ui.separator();
+                    if ui
+                        .button("🎓 Night Current Tutorial (build the song)")
+                        .clicked()
+                    {
+                        self.start_night_current_tutorial();
+                        ui.close_menu();
+                    }
                     if ui.button("❓ Quickstart & Keyboard Shortcuts  F1").clicked() {
                         self.show_help_modal = true;
                         ui.close_menu();
@@ -1413,6 +1956,16 @@ impl FerricDawApp {
                     .clicked()
                 {
                     self.show_help_modal = !self.show_help_modal;
+                }
+                if pill_toggle(ui, "🎓 Tutorial", self.tutorial.open, ACCENT_FERRIC)
+                    .on_hover_text("In-app Night Current tutorial — build the song step by step")
+                    .clicked()
+                {
+                    if self.tutorial.open {
+                        self.tutorial.open = false;
+                    } else {
+                        self.start_night_current_tutorial();
+                    }
                 }
                 if ui
                     .button(egui::RichText::new("⌘ Ctrl+K").size(11.0).color(ACCENT_FERRIC))
@@ -1636,10 +2189,12 @@ impl FerricDawApp {
                             .set_file_name(format!("master_mix.{}", ext))
                             .save_file()
                         {
-                            self.bounce_modal.last_report = Some(
-                                render_master_with_options(&self.project, &file, &opts)
-                                    .map_err(|e| e.to_string()),
-                            );
+                            let report = render_master_with_options(&self.project, &file, &opts)
+                                .map_err(|e| e.to_string());
+                            if report.is_ok() {
+                                self.bounce_modal.last_master_path = Some(file.clone());
+                            }
+                            self.bounce_modal.last_report = Some(report);
                         }
                     }
                 }
@@ -1658,6 +2213,48 @@ impl FerricDawApp {
                                 ))
                                 .color(ACCENT_TEAL),
                             );
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(
+                                        egui::RichText::new("A/B vs Night Current demo")
+                                            .strong()
+                                            .color(ACCENT_TEAL),
+                                    )
+                                    .on_hover_text(
+                                        "Audition the shipped golden demo WAV (finish line)",
+                                    )
+                                    .clicked()
+                                {
+                                    self.play_night_current_demo_reference();
+                                }
+                                if self.bounce_modal.last_master_path.is_some()
+                                    && ui
+                                        .button("Play my bounce")
+                                        .on_hover_text("Audition the file you just exported")
+                                        .clicked()
+                                {
+                                    if let Some(path) =
+                                        self.bounce_modal.last_master_path.clone()
+                                    {
+                                        match import_audio_file(&path, self.engine.sample_rate)
+                                        {
+                                            Ok(buf) => {
+                                                self.engine
+                                                    .send(EngineCommand::PreviewBuffer(buf));
+                                                self.status_banner = format!(
+                                                    "Playing your bounce — {}",
+                                                    path.display()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                self.status_banner =
+                                                    format!("Could not play bounce: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                            });
                         }
                         Err(err) => {
                             ui.label(egui::RichText::new(err).color(ACCENT_RED));
@@ -1762,6 +2359,13 @@ impl FerricDawApp {
                         )
                     };
                 }
+                BrowserAction::FixDs10ComboJackRouting => {
+                    self.apply_ds10_safe_audio_routing();
+                    self.status_banner = format!(
+                        "🔊 DS mute fix • Out: {} • In: {}",
+                        self.engine.audio_device_name, self.engine.audio_input_name
+                    );
+                }
                 BrowserAction::SwitchAudioDevices {
                     output,
                     input,
@@ -1774,13 +2378,33 @@ impl FerricDawApp {
                         input.as_deref(),
                         buffer_size,
                         recording_offset_samples,
+                        self.browser.selected_audio_driver,
                     );
-                    self.status_banner = format!(
-                        "Audio Configured • Out: {} • In: {} • Buf: {:?}",
+                    let mut msg = format!(
+                        "Audio Configured • Out: {} • In: {} • Buf: {:?} • {}",
                         self.engine.audio_device_name,
                         self.engine.audio_input_name,
-                        buffer_size
+                        buffer_size,
+                        self.browser.selected_audio_driver.label()
                     );
+                    if let Some(note) = self.engine.driver_status_note {
+                        msg.push_str(" · ");
+                        msg.push_str(note);
+                    }
+                    if realtek_combo_jack_risk(
+                        &self.engine.audio_device_name,
+                        &self.engine.audio_input_name,
+                    ) || self
+                        .engine
+                        .audio_device_name
+                        .to_lowercase()
+                        .contains("headphone")
+                    {
+                        msg.push_str(
+                            " ⚠ Headphones output + DS on combo jack usually = silence — use Force Speakers + Line-In",
+                        );
+                    }
+                    self.status_banner = msg;
                 }
                 BrowserAction::SetInputGainDb(db) => {
                     self.engine.set_input_gain_db(db);
@@ -1827,6 +2451,18 @@ impl FerricDawApp {
 
 impl eframe::App for FerricDawApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if !self.viewport_bootstrapped {
+            self.viewport_bootstrapped = true;
+            let inner = ctx.input(|i| i.viewport().inner_rect);
+            let too_small = inner
+                .map(|r| r.width() < 960.0 || r.height() < 600.0)
+                .unwrap_or(true);
+            if too_small {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1520.0, 900.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+        }
+
         self.engine.poll_ui(&mut self.capture_inbox);
         if self
             .engine
@@ -1892,8 +2528,21 @@ impl eframe::App for FerricDawApp {
         if let Some(cmd) = self.palette.show(ctx) {
             self.execute_palette_command(cmd);
         }
+        self.render_first_run_modal(ctx);
         self.render_bounce_modal(ctx);
-        render_quickstart_help_modal(ctx, &mut self.show_help_modal);
+        self.render_destructive_confirm_modal(ctx);
+        if render_quickstart_help_modal(ctx, &mut self.show_help_modal) {
+            self.start_night_current_tutorial();
+        }
+        {
+            let overlay = self.palette.open
+                || self.bounce_modal.open
+                || self.show_help_modal
+                || self.pending_destructive.is_some()
+                || self.show_first_run;
+            let action = self.tutorial.show(ctx, &self.project, overlay);
+            self.handle_tutorial_action(action);
+        }
 
         // 1. Top Studio Transport Bar
         egui::TopBottomPanel::top("ferric_transport_top")
@@ -1908,7 +2557,38 @@ impl eframe::App for FerricDawApp {
                 self.render_top_transport_bar(ui);
             });
 
-        // 2. Status Bar
+        // 2. Dockable Left Studio Browser (Hardware Rig / DS-10 / LPK25, Samples, Presets & CLAP)
+        if self.browser.visible {
+            egui::SidePanel::left("ferric_left_browser")
+                .resizable(true)
+                .default_width(248.0)
+                .width_range(215.0..=360.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(BG_PANEL)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .inner_margin(7.0),
+                )
+                .show(ctx, |ui| {
+                    let mut b_actions = Vec::new();
+                    let telem = self.engine.latest_telemetry;
+                    let has_lpk = self.engine.has_akai_lpk25();
+                    self.browser.ui(
+                        ui,
+                        self.engine.sample_rate,
+                        self.project.bpm,
+                        &self.engine.midi_port_names,
+                        has_lpk,
+                        &self.engine.audio_device_name,
+                        &self.engine.audio_input_name,
+                        &telem,
+                        &mut b_actions,
+                    );
+                    self.process_browser_actions(b_actions);
+                });
+        }
+
+        // 3. Status footer FIRST among bottom panels (egui pins the first bottom panel to the screen edge).
         egui::TopBottomPanel::bottom("ferric_status_footer")
             .exact_height(24.0)
             .frame(
@@ -1953,44 +2633,13 @@ impl eframe::App for FerricDawApp {
                 });
             });
 
-        // 3. Dockable Left Studio Browser (Hardware Rig / DS-10 / LPK25, Samples, Presets & CLAP)
-        if self.browser.visible {
-            egui::SidePanel::left("ferric_left_browser")
-                .resizable(true)
-                .default_width(248.0)
-                .width_range(215.0..=360.0)
-                .frame(
-                    egui::Frame::new()
-                        .fill(BG_PANEL)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                        .inner_margin(7.0),
-                )
-                .show(ctx, |ui| {
-                    let mut b_actions = Vec::new();
-                    let telem = self.engine.latest_telemetry;
-                    let has_lpk = self.engine.has_akai_lpk25();
-                    self.browser.ui(
-                        ui,
-                        self.engine.sample_rate,
-                        self.project.bpm,
-                        &self.engine.midi_port_names,
-                        has_lpk,
-                        &self.engine.audio_device_name,
-                        &self.engine.audio_input_name,
-                        &telem,
-                        &mut b_actions,
-                    );
-                    self.process_browser_actions(b_actions);
-                });
-        }
-
-        // 4. Lower Studio Dock (Piano Roll + Warp, FX + Sidechain + Learn, DS-10 KAOSS Pad, Mixer, Routing)
+        // 4. Lower Studio Dock (sits above the footer; height filled so resize doesn't snap back)
         if self.show_bottom_dock {
-            egui::TopBottomPanel::bottom("ferric_lower_dock")
+            let dock_h = self.bottom_dock_height.clamp(180.0, 620.0);
+            let dock_resp = egui::TopBottomPanel::bottom("ferric_lower_dock")
                 .resizable(true)
-                .default_height(275.0)
-                .min_height(180.0)
-                .max_height(490.0)
+                .default_height(dock_h)
+                .height_range(180.0..=620.0)
                 .frame(
                     egui::Frame::new()
                         .fill(BG_PANEL)
@@ -1998,6 +2647,15 @@ impl eframe::App for FerricDawApp {
                         .inner_margin(8.0),
                 )
                 .show(ctx, |ui| {
+                    // Fill *this frame's* allocated height only — never max() with the
+                    // previous dock_h or the panel ratchets and refuses to shrink.
+                    let fill_h = ui.available_height();
+                    ui.set_min_height(fill_h);
+                    egui::ScrollArea::vertical()
+                        .id_salt("ferric_lower_dock_scroll")
+                        .max_height(fill_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         for (tab, label) in [
                             (BottomTab::EditorAndComp, "🎹 MIDI / Warp / Comp"),
@@ -2181,7 +2839,14 @@ impl eframe::App for FerricDawApp {
                     if need_sync {
                         self.sync_engine();
                     }
+                    // Consume leftover space so PanelState stores the dragged height, not content height.
+                    ui.allocate_space(ui.available_size());
+                        }); // ScrollArea
                 });
+            let measured = dock_resp.response.rect.height();
+            if measured > 1.0 {
+                self.bottom_dock_height = measured.clamp(180.0, 620.0);
+            }
         }
 
         // 5. Central Hybrid Session Clip Launcher + Linear Multitrack Arrangement + Bezier Automation
@@ -2259,6 +2924,13 @@ impl eframe::App for FerricDawApp {
                         ArrangementAction::ToggleFreezeTrack(tid) => {
                             self.toggle_freeze_track(tid);
                         }
+                        ArrangementAction::SplitAudioToStems {
+                            track_id,
+                            clip_id,
+                        } => {
+                            self.split_clip_to_stems(track_id, clip_id);
+                            need_sync = true;
+                        }
                         ArrangementAction::MoveClipToTrack {
                             from_track,
                             to_track,
@@ -2326,11 +2998,15 @@ fn main() -> eframe::Result<()> {
     env_logger::init();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FerricDAW v1.0 — Full-Fledged Open-Source Rust Hybrid DAW")
+            .with_title("FerricDAW v1.1.1 — Full-Fledged Open-Source Rust Hybrid DAW")
             .with_inner_size([1520.0, 900.0])
-            .with_min_inner_size([1024.0, 640.0])
+            .with_min_inner_size([1100.0, 700.0])
+            .with_maximized(true)
             .with_drag_and_drop(true)
             .with_icon(std::sync::Arc::new(build_app_icon())),
+        // Don't restore a previously saved tiny corner window.
+        persist_window: false,
+        centered: true,
         ..Default::default()
     };
     eframe::run_native(

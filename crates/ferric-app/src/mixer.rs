@@ -7,6 +7,7 @@ use crate::theme::{
 use egui::{Color32, Stroke, Ui};
 use ferric_engine::EngineTelemetry;
 use ferric_model::{InputSource, Project, SendTap, TrackId};
+use uuid::Uuid;
 
 pub fn render_mixer_console(
     ui: &mut Ui,
@@ -16,6 +17,71 @@ pub fn render_mixer_console(
     telem: &EngineTelemetry,
     actions: &mut Vec<DockAction>,
 ) {
+    // Mix A/B/C/D recall strip — instant console snapshot compare!
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("MIX RECALL")
+                .size(11.0)
+                .strong()
+                .color(ACCENT_TEAL),
+        );
+        for slot in 0..4 {
+            let letter = ['A', 'B', 'C', 'D'][slot];
+            let occupied = project
+                .mix_snapshots
+                .get(slot)
+                .and_then(|s| s.as_ref())
+                .is_some();
+            let snap_name = project
+                .mix_snapshots
+                .get(slot)
+                .and_then(|s| s.as_ref())
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("Mix {letter}"));
+            ui.horizontal(|ui| {
+                if pill_toggle(
+                    ui,
+                    &format!("Mix {letter}"),
+                    occupied,
+                    if occupied { ACCENT_FERRIC } else { TEXT_DIM },
+                )
+                .on_hover_text(format!(
+                    "Left-click: recall {snap_name} • Right-click / Store: capture current console"
+                ))
+                .clicked()
+                {
+                    if occupied {
+                        if project.recall_mix_snapshot(slot) {
+                            actions.push(DockAction::ProjectMutated("Recall Mix Snapshot"));
+                        }
+                    } else {
+                        project.capture_mix_snapshot(slot, format!("Mix {letter}"));
+                        actions.push(DockAction::ProjectMutated("Store Mix Snapshot"));
+                    }
+                }
+                if ui
+                    .small_button("⬇")
+                    .on_hover_text(format!("Store current mix into Mix {letter}"))
+                    .clicked()
+                {
+                    project.capture_mix_snapshot(slot, format!("Mix {letter}"));
+                    actions.push(DockAction::ProjectMutated("Store Mix Snapshot"));
+                }
+            });
+        }
+        ui.separator();
+        if ui
+            .small_button("+ VCA")
+            .on_hover_text("Add a VCA Master Group (scales member track faders + mute/solo)")
+            .clicked()
+        {
+            let n = project.vca_groups.len() + 1;
+            project.add_vca_group(format!("VCA {n}"));
+            actions.push(DockAction::ProjectMutated("Add VCA Group"));
+        }
+    });
+    ui.add_space(4.0);
+
     egui::ScrollArea::horizontal()
         .id_salt("mixer_console_hscroll")
         .auto_shrink([false, false])
@@ -25,6 +91,11 @@ pub fn render_mixer_console(
                     .tracks
                     .iter()
                     .map(|t| (t.id, t.name.clone()))
+                    .collect();
+                let vca_choices: Vec<(Uuid, String)> = project
+                    .vca_groups
+                    .iter()
+                    .map(|v| (v.id, v.name.clone()))
                     .collect();
 
                 for idx in 0..project.tracks.len() {
@@ -66,17 +137,11 @@ pub fn render_mixer_console(
                                 }
 
                                 // Input Source selector
-                                egui::ComboBox::from_id_salt(("mix_in", tid))
+                                    egui::ComboBox::from_id_salt(("mix_in", tid))
                                     .selected_text(project.tracks[idx].input_source.label())
                                     .width(82.0)
                                     .show_ui(ui, |ui| {
-                                        for src in [
-                                            InputSource::AudioAndMidi { stereo_pair: 0 },
-                                            InputSource::AudioMono { channel: 0 },
-                                            InputSource::AudioMono { channel: 1 },
-                                            InputSource::MidiAll,
-                                            InputSource::ResampleTrackOutput,
-                                        ] {
+                                        for src in InputSource::all_hardware_choices() {
                                             if ui
                                                 .selectable_value(
                                                     &mut project.tracks[idx].input_source,
@@ -132,9 +197,48 @@ pub fn render_mixer_console(
                                     actions.push(DockAction::ProjectMutated("Adjust Pan"));
                                 }
 
-                                // Fader + Dual Stereo Meter + Compressor Gain Reduction indicator
+                                // VCA group assignment
+                                {
+                                    let cur_vca = project.tracks[idx].vca_group_id;
+                                    let cur_lbl = cur_vca
+                                        .and_then(|id| {
+                                            vca_choices.iter().find(|(vid, _)| *vid == id)
+                                        })
+                                        .map(|(_, n)| n.as_str())
+                                        .unwrap_or("No VCA");
+                                    egui::ComboBox::from_id_salt(("mix_vca", tid))
+                                        .selected_text(cur_lbl)
+                                        .width(82.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(cur_vca.is_none(), "No VCA")
+                                                .clicked()
+                                            {
+                                                project.tracks[idx].vca_group_id = None;
+                                                actions.push(DockAction::ProjectMutated(
+                                                    "Clear Track VCA",
+                                                ));
+                                            }
+                                            for (vid, vname) in &vca_choices {
+                                                if ui
+                                                    .selectable_label(
+                                                        cur_vca == Some(*vid),
+                                                        vname,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    project.tracks[idx].vca_group_id = Some(*vid);
+                                                    actions.push(DockAction::ProjectMutated(
+                                                        "Assign Track VCA",
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                }
+
+                                // Fader + Dual Stereo Meter + Sidechain GR bar
                                 ui.horizontal(|ui| {
-                                    ui.add_space(10.0);
+                                    ui.add_space(6.0);
                                     if vertical_fader(
                                         ui,
                                         &mut project.tracks[idx].gain_db,
@@ -151,14 +255,29 @@ pub fn render_mixer_console(
                                         meter.peak_r_db,
                                         86.0,
                                     );
-                                    if meter.gain_reduction_db > 0.2 {
+                                    // Vertical gain-reduction key meter (sidechain / compressor)
+                                    let gr = meter.gain_reduction_db.clamp(0.0, 24.0);
+                                    let (gr_rect, _) = ui.allocate_exact_size(
+                                        egui::Vec2::new(8.0, 86.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().rect_filled(gr_rect, 2.0, BG_DEEP);
+                                    if gr > 0.05 {
+                                        let fill_h = gr_rect.height() * (gr / 24.0);
+                                        let fill = egui::Rect::from_min_max(
+                                            egui::pos2(
+                                                gr_rect.left(),
+                                                gr_rect.bottom() - fill_h,
+                                            ),
+                                            gr_rect.max,
+                                        );
+                                        ui.painter().rect_filled(fill, 2.0, ACCENT_AMBER);
+                                    }
+                                    if gr > 0.2 {
                                         ui.label(
-                                            egui::RichText::new(format!(
-                                                "-{:.0}",
-                                                meter.gain_reduction_db
-                                            ))
-                                            .size(9.0)
-                                            .color(ACCENT_AMBER),
+                                            egui::RichText::new(format!("-{:.0}", gr))
+                                                .size(9.0)
+                                                .color(ACCENT_AMBER),
                                         );
                                     }
                                 });
@@ -256,6 +375,108 @@ pub fn render_mixer_console(
                                 );
                             });
                         });
+                }
+
+                ui.separator();
+
+                // VCA Master Group strips
+                let mut remove_vca: Option<Uuid> = None;
+                for vi in 0..project.vca_groups.len() {
+                    let vca_id = project.vca_groups[vi].id;
+                    let v_col = Color32::from_rgb(
+                        project.vca_groups[vi].color[0],
+                        project.vca_groups[vi].color[1],
+                        project.vca_groups[vi].color[2],
+                    );
+                    let member_n = project
+                        .tracks
+                        .iter()
+                        .filter(|t| t.vca_group_id == Some(vca_id))
+                        .count();
+                    egui::Frame::new()
+                        .fill(Color32::from_rgb(28, 30, 38))
+                        .stroke(Stroke::new(1.5_f32, v_col))
+                        .corner_radius(5)
+                        .inner_margin(6.0)
+                        .show(ui, |ui| {
+                            ui.set_width(88.0);
+                            ui.vertical_centered(|ui| {
+                                let (bar_r, _) = ui.allocate_exact_size(
+                                    egui::Vec2::new(82.0, 4.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(bar_r, 2, v_col);
+                                ui.label(
+                                    egui::RichText::new(&project.vca_groups[vi].name)
+                                        .size(11.0)
+                                        .strong()
+                                        .color(v_col),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("VCA · {member_n} ch"))
+                                        .size(9.0)
+                                        .color(TEXT_DIM),
+                                );
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    if pill_toggle(
+                                        ui,
+                                        "M",
+                                        project.vca_groups[vi].mute,
+                                        ACCENT_AMBER,
+                                    )
+                                    .clicked()
+                                    {
+                                        project.vca_groups[vi].mute =
+                                            !project.vca_groups[vi].mute;
+                                        actions.push(DockAction::ProjectMutated("VCA Mute"));
+                                    }
+                                    if pill_toggle(
+                                        ui,
+                                        "S",
+                                        project.vca_groups[vi].solo,
+                                        Color32::from_rgb(92, 200, 242),
+                                    )
+                                    .clicked()
+                                    {
+                                        project.vca_groups[vi].solo =
+                                            !project.vca_groups[vi].solo;
+                                        actions.push(DockAction::ProjectMutated("VCA Solo"));
+                                    }
+                                    if ui.small_button("×").on_hover_text("Delete VCA").clicked()
+                                    {
+                                        remove_vca = Some(vca_id);
+                                    }
+                                });
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(10.0);
+                                    if vertical_fader(
+                                        ui,
+                                        &mut project.vca_groups[vi].gain_db,
+                                        86.0,
+                                        v_col,
+                                    )
+                                    .changed()
+                                    {
+                                        actions.push(DockAction::ProjectMutated("Move VCA Fader"));
+                                    }
+                                });
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{:+.1} dB",
+                                        project.vca_groups[vi].gain_db
+                                    ))
+                                    .size(10.0)
+                                    .monospace()
+                                    .color(TEXT_DIM),
+                                );
+                            });
+                        });
+                }
+                if let Some(vid) = remove_vca {
+                    project.remove_vca_group(vid);
+                    actions.push(DockAction::ProjectMutated("Remove VCA Group"));
                 }
 
                 ui.separator();

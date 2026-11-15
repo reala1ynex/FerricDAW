@@ -1,19 +1,28 @@
+pub mod audio_backend;
 pub mod clap_host;
 pub mod flac_enc;
 pub mod graph;
+pub mod lossy_enc;
+pub mod plugin_bridge;
 pub mod plugin_window;
 pub mod vst3_host;
 pub mod wav_io;
 
 pub use clap_host::{
-    inspect_clap_bundle, scan_clap_plugins, DiscoveredClapPlugin, DiscoveredExternalPlugin,
-    HostedClapInstance, LoadedClapBundle,
+    inspect_clap_bundle, scan_clap_plugins, ClapGuiAndStateHandle, DiscoveredClapPlugin,
+    DiscoveredExternalPlugin, HostedClapInstance, LoadedClapBundle,
 };
+pub use plugin_bridge::{drain_pending_plugin_quarantine, SandboxedExternalPlugin};
 pub use flac_enc::write_flac_stereo_file;
 pub use graph::{AudioGraphCore, TrackMeter, MAX_ENGINE_TRACKS};
 pub use plugin_window::{FloatingPluginWindow, NativePluginGuiView, PluginQuarantine};
 pub use vst3_host::{
     inspect_vst3_binary, scan_vst3_plugins, HostedVst3Instance, LoadedVst3Bundle,
+    Vst3GuiAndStateHandle,
+};
+pub use audio_backend::{
+    exclusive_buffer_hint, host_for_driver, list_audio_device_matrix, AudioDeviceInfo,
+    AudioDriverKind, HwMultiFrame, ResolvedAudioHost,
 };
 pub use wav_io::{
     import_audio_file, import_wav_file, load_project_bundle, render_all_stems_offline,
@@ -182,7 +191,7 @@ struct RtCallbackState {
     frame_counter: u64,
     cmd_rx: Consumer<EngineCommand>,
     hw_midi_rx: Consumer<HwMidiPacket>,
-    hw_audio_rx: Consumer<(f32, f32)>,
+    hw_audio_rx: Consumer<HwMultiFrame>,
     telem_tx: Producer<EngineTelemetry>,
     garbage_tx: Producer<Box<Project>>,
     capture_req_tx: Producer<CaptureRequest>,
@@ -190,6 +199,9 @@ struct RtCallbackState {
     out_r: Vec<f32>,
     in_l: Vec<f32>,
     in_r: Vec<f32>,
+    /// Planar multi-channel hardware input (up to 16 ch) for the I/O matrix.
+    in_planes: Vec<Vec<f32>>,
+    hw_in_channel_count: u8,
     live_midi_block: Vec<(Option<TrackId>, MidiEvent)>,
     sustain_release_scratch: Vec<(Option<TrackId>, MidiEvent)>,
     preview_buf: Option<AudioBuffer>,
@@ -261,6 +273,75 @@ pub fn list_audio_output_devices() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Prefer real Speakers over Realtek "Headphones" (combo-jack trap when DS Line-In is plugged).
+fn prefer_speakers_output_device(host: &cpal::Host) -> Option<cpal::Device> {
+    let devices: Vec<cpal::Device> = host.output_devices().ok()?.collect();
+    let score = |name: &str| -> i32 {
+        let n = name.to_lowercase();
+        if n.contains("headphone") || n.contains("headset") {
+            return -100;
+        }
+        if n.contains("steam") || n.contains("nvidia") || n.contains("broadcast") {
+            return -50;
+        }
+        if n.contains("speaker") {
+            return 100;
+        }
+        if n.contains("realtek") {
+            return 40;
+        }
+        0
+    };
+    let mut best: Option<(i32, cpal::Device)> = None;
+    for d in devices {
+        let Ok(name) = d.name() else { continue };
+        let s = score(&name);
+        match &best {
+            None => best = Some((s, d)),
+            Some((bs, _)) if s > *bs => best = Some((s, d)),
+            _ => {}
+        }
+    }
+    best.map(|(_, d)| d).or_else(|| host.default_output_device())
+}
+
+/// True when the active output looks like Headphones (combo-jack mute risk with DS Line-In).
+/// Pure string check — never enumerate devices (was called every UI frame and tanked FPS).
+pub fn realtek_combo_jack_risk(output_name: &str, _input_name: &str) -> bool {
+    output_name.to_lowercase().contains("headphone")
+}
+
+/// Best Speakers device name for forcing playback away from the combo-jack Headphones path.
+pub fn preferred_speakers_output_name() -> Option<String> {
+    let host = cpal::default_host();
+    prefer_speakers_output_device(&host).and_then(|d| d.name().ok())
+}
+
+/// Prefer External Microphone / Line In for DS-10 over Steam/NVIDIA virtual mics.
+pub fn preferred_line_input_name() -> Option<String> {
+    let mut ranked: Vec<(i32, String)> = list_audio_input_devices()
+        .into_iter()
+        .map(|n| {
+            let l = n.to_lowercase();
+            let score = if l.contains("external microphone") || l.contains("line in") || l.contains("line-in")
+            {
+                100
+            } else if l.contains("realtek") && l.contains("microphone") && !l.contains("array") {
+                80
+            } else if l.contains("steam") || l.contains("nvidia") || l.contains("broadcast") {
+                -50
+            } else if l.contains("array") {
+                -20
+            } else {
+                0
+            };
+            (score, n)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.into_iter().map(|(_, n)| n).next()
+}
+
 /// Zero-allocation Acoustic / Cable Loopback Round-Trip Latency Ping Detector!
 /// Emits a sharp 2.5 ms dual-frequency chirp impulse on Output L/R and measures exact samples until arrival on Input L/R!
 #[derive(Debug, Clone, Copy, Default)]
@@ -318,6 +399,11 @@ pub struct EngineHandle {
     pub audio_input_name: String,
     pub midi_port_names: Vec<String>,
     pub input_gain_db: f32,
+    pub audio_driver: AudioDriverKind,
+    /// Honest note when Exclusive/ASIO couldn't do what the label historically implied.
+    pub driver_status_note: Option<&'static str>,
+    pub input_channel_count: u16,
+    pub output_channel_count: u16,
     cmd_tx: Producer<EngineCommand>,
     telem_rx: Consumer<EngineTelemetry>,
     garbage_rx: Consumer<Box<Project>>,
@@ -336,7 +422,14 @@ pub struct EngineHandle {
 
 impl EngineHandle {
     pub fn start(initial_project: &Project) -> Self {
-        Self::start_with_config(initial_project, None, None, None, 0)
+        Self::start_with_config(
+            initial_project,
+            None,
+            None,
+            None,
+            0,
+            AudioDriverKind::WasapiShared,
+        )
     }
 
     pub fn start_with_devices(
@@ -344,7 +437,14 @@ impl EngineHandle {
         preferred_out: Option<&str>,
         preferred_in: Option<&str>,
     ) -> Self {
-        Self::start_with_config(initial_project, preferred_out, preferred_in, None, 0)
+        Self::start_with_config(
+            initial_project,
+            preferred_out,
+            preferred_in,
+            None,
+            0,
+            AudioDriverKind::WasapiShared,
+        )
     }
 
     pub fn start_with_config(
@@ -353,43 +453,51 @@ impl EngineHandle {
         preferred_in: Option<&str>,
         preferred_buffer_size: Option<u32>,
         recording_offset_samples: u32,
+        audio_driver: AudioDriverKind,
     ) -> Self {
-        let host = cpal::default_host();
+        let ResolvedAudioHost {
+            host,
+            fallback_note: driver_status_note,
+        } = host_for_driver(audio_driver);
         let out_device = preferred_out
             .and_then(|want| {
                 host.output_devices()
                     .ok()?
                     .find(|d| d.name().ok().as_deref() == Some(want))
             })
-            .or_else(|| host.default_output_device());
+            .or_else(|| prefer_speakers_output_device(&host));
 
-        let (sample_rate, out_config_opt, device_name) = if let Some(ref dev) = out_device {
-            let name = dev.name().unwrap_or_else(|_| "Default Audio Output".into());
-            match dev.default_output_config() {
-                Ok(cfg) => (cfg.sample_rate().0, Some(cfg), name),
-                Err(_) => (48_000, None, format!("{} (Offline Fallback)", name)),
-            }
-        } else {
-            (48_000, None, "No Hardware Output (Offline Mode)".into())
-        };
+        let (sample_rate, out_config_opt, device_name, output_channel_count) =
+            if let Some(ref dev) = out_device {
+                let name = dev.name().unwrap_or_else(|_| "Default Audio Output".into());
+                match dev.default_output_config() {
+                    Ok(cfg) => (cfg.sample_rate().0, Some(cfg.clone()), name, cfg.channels()),
+                    Err(_) => (48_000, None, format!("{} (Offline Fallback)", name), 2),
+                }
+            } else {
+                (48_000, None, "No Hardware Output (Offline Mode)".into(), 0)
+            };
+
+        let buf_hint = exclusive_buffer_hint(audio_driver, preferred_buffer_size, 64);
 
         let (cmd_tx, cmd_rx) = RingBuffer::<EngineCommand>::new(512);
         let (telem_tx, telem_rx) = RingBuffer::<EngineTelemetry>::new(64);
         let (garbage_tx, garbage_rx) = RingBuffer::<Box<Project>>::new(64);
         let (hw_midi_tx, hw_midi_rx) = RingBuffer::<HwMidiPacket>::new(2048);
-        let (hw_audio_tx, hw_audio_rx) = RingBuffer::<(f32, f32)>::new(sample_rate as usize);
+        let (hw_audio_tx, hw_audio_rx) = RingBuffer::<HwMultiFrame>::new(sample_rate as usize);
         let (capture_req_tx, capture_req_rx) = RingBuffer::<CaptureRequest>::new(16);
 
         let shared_midi_tx = Arc::new(Mutex::new(hw_midi_tx));
         let (midi_conns, midi_port_names) = Self::connect_all_hardware_midi(shared_midi_tx.clone());
 
-        let (input_stream, audio_input_name) = Self::start_hardware_audio_input(
-            &host,
-            preferred_in,
-            sample_rate,
-            preferred_buffer_size,
-            hw_audio_tx,
-        );
+        let (input_stream, audio_input_name, input_channel_count) =
+            Self::start_hardware_audio_input(
+                &host,
+                preferred_in,
+                sample_rate,
+                buf_hint,
+                hw_audio_tx,
+            );
 
         let max_block = 4096usize;
         let mut core = AudioGraphCore::new(sample_rate as f32, max_block);
@@ -417,6 +525,8 @@ impl EngineHandle {
             out_r: vec![0.0; max_block],
             in_l: vec![0.0; max_block],
             in_r: vec![0.0; max_block],
+            in_planes: (0..16).map(|_| vec![0.0; max_block]).collect(),
+            hw_in_channel_count: input_channel_count.min(16) as u8,
             live_midi_block: Vec::with_capacity(128),
             sustain_release_scratch: Vec::with_capacity(64),
             preview_buf: None,
@@ -442,7 +552,7 @@ impl EngineHandle {
             rec_resample_r: Vec::with_capacity(sample_rate as usize * 180),
             recording_offset_samples: recording_offset_samples as usize,
             ping_state: LoopbackPingDetector::default(),
-            actual_buffer_frames: preferred_buffer_size.unwrap_or(256),
+            actual_buffer_frames: buf_hint.unwrap_or(256),
             last_midi_note: None,
             last_midi_cc: None,
             samples_since_telem: 0,
@@ -452,7 +562,7 @@ impl EngineHandle {
         let output_stream = if let (Some(dev), Some(supported_cfg)) = (out_device, out_config_opt) {
             let channels = supported_cfg.channels() as usize;
             let mut stream_cfg: cpal::StreamConfig = supported_cfg.clone().into();
-            if let Some(req_buf) = preferred_buffer_size {
+            if let Some(req_buf) = buf_hint {
                 let clamped = match supported_cfg.buffer_size() {
                     cpal::SupportedBufferSize::Range { min, max } => req_buf.clamp(*min, *max),
                     cpal::SupportedBufferSize::Unknown => req_buf,
@@ -511,12 +621,16 @@ impl EngineHandle {
 
         Self {
             sample_rate,
-            requested_buffer_size: preferred_buffer_size,
+            requested_buffer_size: buf_hint,
             recording_offset_samples,
             audio_device_name: device_name,
             audio_input_name,
             midi_port_names,
             input_gain_db: 0.0,
+            audio_driver,
+            driver_status_note,
+            input_channel_count,
+            output_channel_count,
             cmd_tx,
             telem_rx,
             garbage_rx,
@@ -624,15 +738,15 @@ impl EngineHandle {
         (conns, names)
     }
 
-    /// Universal Hardware Audio Line-In / Mic Input Stream (supports `F32` & `I16`, mono/stereo,
+    /// Universal Hardware Audio Line-In / Mic Input Stream (supports `F32` & `I16`, mono→16-ch,
     /// AND automatic real-time sample-rate conversion — ideal for Nintendo DS KORG DS-10 3.5mm Line-In!).
     fn start_hardware_audio_input(
         host: &cpal::Host,
         preferred_in: Option<&str>,
         target_sr: u32,
         preferred_buffer_size: Option<u32>,
-        mut hw_audio_tx: Producer<(f32, f32)>,
-    ) -> (Option<cpal::Stream>, String) {
+        mut hw_audio_tx: Producer<HwMultiFrame>,
+    ) -> (Option<cpal::Stream>, String, u16) {
         let dev_opt = preferred_in
             .and_then(|want| {
                 host.input_devices()
@@ -642,15 +756,16 @@ impl EngineHandle {
             .or_else(|| host.default_input_device());
 
         let Some(dev) = dev_opt else {
-            return (None, "No Audio Input Detected".into());
+            return (None, "No Audio Input Detected".into(), 0);
         };
         let in_name = dev.name().unwrap_or_else(|_| "Audio Line/Mic In".into());
         let Ok(cfg) = dev.default_input_config() else {
-            return (None, format!("{} (Unavailable)", in_name));
+            return (None, format!("{} (Unavailable)", in_name), 0);
         };
 
         let in_sr = cfg.sample_rate().0.max(8_000);
         let channels = cfg.channels().max(1) as usize;
+        let ch_count = channels.min(16) as u16;
         let fmt = cfg.sample_format();
         let buf_range = cfg.buffer_size().clone();
         let mut stream_cfg: cpal::StreamConfig = cfg.into();
@@ -662,69 +777,100 @@ impl EngineHandle {
             stream_cfg.buffer_size = cpal::BufferSize::Fixed(clamped);
         }
         let step = in_sr as f64 / target_sr.max(8_000) as f64;
-        let mut frac_acc = 0.0_f64;
-        let mut prev_lr = (0.0_f32, 0.0_f32);
+        // Same-rate path: push frames directly (fractional SRC at step≈1 caused 1-sample
+        // zero-padding pops that got amplified by mic-jack input trim).
+        let same_rate = (step - 1.0).abs() < 1.0e-9;
 
         let stream_res = match fmt {
-            cpal::SampleFormat::F32 => dev.build_input_stream(
-                &stream_cfg,
-                move |data: &[f32], _| {
-                    let frames = data.len() / channels;
-                    for f in 0..frames {
-                        let l = data[f * channels];
-                        let r = if channels > 1 {
-                            data[f * channels + 1]
-                        } else {
-                            l
-                        };
-                        while frac_acc < 1.0 {
-                            let t = frac_acc as f32;
-                            let ol = prev_lr.0 + (l - prev_lr.0) * t;
-                            let or = prev_lr.1 + (r - prev_lr.1) * t;
-                            let _ = hw_audio_tx.push((ol, or));
-                            frac_acc += step;
+            cpal::SampleFormat::F32 => {
+                let mut frac_acc = 0.0_f64;
+                let mut prev = HwMultiFrame::default();
+                dev.build_input_stream(
+                    &stream_cfg,
+                    move |data: &[f32], _| {
+                        let frames = data.len() / channels;
+                        for f in 0..frames {
+                            let mut cur = HwMultiFrame {
+                                count: ch_count as u8,
+                                channels: [0.0; 16],
+                            };
+                            for c in 0..ch_count as usize {
+                                cur.channels[c] = data[f * channels + c];
+                            }
+                            if same_rate {
+                                let _ = hw_audio_tx.push(cur);
+                                continue;
+                            }
+                            while frac_acc < 1.0 {
+                                let t = frac_acc as f32;
+                                let mut lerped = HwMultiFrame {
+                                    count: cur.count,
+                                    channels: [0.0; 16],
+                                };
+                                for c in 0..cur.count as usize {
+                                    lerped.channels[c] = prev.channels[c]
+                                        + (cur.channels[c] - prev.channels[c]) * t;
+                                }
+                                let _ = hw_audio_tx.push(lerped);
+                                frac_acc += step;
+                            }
+                            frac_acc -= 1.0;
+                            prev = cur;
                         }
-                        frac_acc -= 1.0;
-                        prev_lr = (l, r);
-                    }
-                },
-                |err| log::warn!("Audio input error: {}", err),
-                None,
-            ),
-            cpal::SampleFormat::I16 => dev.build_input_stream(
-                &stream_cfg,
-                move |data: &[i16], _| {
-                    let frames = data.len() / channels;
-                    for f in 0..frames {
-                        let l = data[f * channels] as f32 / 32768.0;
-                        let r = if channels > 1 {
-                            data[f * channels + 1] as f32 / 32768.0
-                        } else {
-                            l
-                        };
-                        while frac_acc < 1.0 {
-                            let t = frac_acc as f32;
-                            let ol = prev_lr.0 + (l - prev_lr.0) * t;
-                            let or = prev_lr.1 + (r - prev_lr.1) * t;
-                            let _ = hw_audio_tx.push((ol, or));
-                            frac_acc += step;
+                    },
+                    |err| log::warn!("Audio input error: {}", err),
+                    None,
+                )
+            }
+            cpal::SampleFormat::I16 => {
+                let mut frac_acc = 0.0_f64;
+                let mut prev = HwMultiFrame::default();
+                dev.build_input_stream(
+                    &stream_cfg,
+                    move |data: &[i16], _| {
+                        let frames = data.len() / channels;
+                        for f in 0..frames {
+                            let mut cur = HwMultiFrame {
+                                count: ch_count as u8,
+                                channels: [0.0; 16],
+                            };
+                            for c in 0..ch_count as usize {
+                                cur.channels[c] = data[f * channels + c] as f32 / 32768.0;
+                            }
+                            if same_rate {
+                                let _ = hw_audio_tx.push(cur);
+                                continue;
+                            }
+                            while frac_acc < 1.0 {
+                                let t = frac_acc as f32;
+                                let mut lerped = HwMultiFrame {
+                                    count: cur.count,
+                                    channels: [0.0; 16],
+                                };
+                                for c in 0..cur.count as usize {
+                                    lerped.channels[c] = prev.channels[c]
+                                        + (cur.channels[c] - prev.channels[c]) * t;
+                                }
+                                let _ = hw_audio_tx.push(lerped);
+                                frac_acc += step;
+                            }
+                            frac_acc -= 1.0;
+                            prev = cur;
                         }
-                        frac_acc -= 1.0;
-                        prev_lr = (l, r);
-                    }
-                },
-                |err| log::warn!("Audio input error: {}", err),
-                None,
-            ),
-            _ => return (None, format!("{} (Unsupported Format)", in_name)),
+                    },
+                    |err| log::warn!("Audio input error: {}", err),
+                    None,
+                )
+            }
+            _ => return (None, format!("{} (Unsupported Format)", in_name), ch_count),
         };
 
         match stream_res {
             Ok(s) => {
                 let _ = s.play();
-                (Some(s), in_name)
+                (Some(s), in_name, ch_count)
             }
-            Err(_) => (None, format!("{} (Busy)", in_name)),
+            Err(_) => (None, format!("{} (Busy)", in_name), ch_count),
         }
     }
 
@@ -733,7 +879,7 @@ impl EngineHandle {
     }
 
     pub fn set_input_gain_db(&mut self, db: f32) {
-        self.input_gain_db = db.clamp(-24.0, 24.0);
+        self.input_gain_db = db.clamp(-24.0, 36.0);
         let _ = self.cmd_tx.push(EngineCommand::SetInputGainDb(self.input_gain_db));
     }
 
@@ -812,6 +958,37 @@ impl EngineHandle {
             .clap_plugin_name
             .clone()
             .unwrap_or_else(|| format!("FerricDAW — {}", pid));
+
+        if fx.sandbox_out_of_process {
+            match SandboxedExternalPlugin::spawn(
+                path.clone(),
+                fx.plugin_format,
+                pid,
+                fx.plugin_state_b64.as_deref(),
+                sr as f64,
+                4096,
+            ) {
+                Ok(sandbox) => {
+                    self.quarantine.unmark_clean(path);
+                    log::info!(
+                        "Loaded {} in out-of-process sandbox",
+                        fx.clap_plugin_name.as_deref().unwrap_or(pid)
+                    );
+                    return FxRuntimeInstance::new_external_clap(
+                        fx.id,
+                        Box::new(sandbox),
+                        4096,
+                    );
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Out-of-process sandbox failed for {}: {} — trying in-process host",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
 
         self.quarantine.mark_suspect(path);
         match fx.plugin_format {
@@ -957,6 +1134,7 @@ impl EngineHandle {
     }
 
     pub fn poll_ui(&mut self, out_captures: &mut Vec<CapturedTakeEvent>) {
+        drain_pending_plugin_quarantine(&mut self.quarantine);
         for win in &mut self.plugin_windows {
             win.poll();
         }
@@ -1161,7 +1339,13 @@ impl RtCallbackState {
             let retro_cap = self.retro_audio_l.len();
 
             for i in 0..chunk {
-                let (il, ir) = self.hw_audio_rx.pop().unwrap_or((0.0, 0.0));
+                let frame = self.hw_audio_rx.pop().unwrap_or_default();
+                let nch = frame.count.max(self.hw_in_channel_count).min(16);
+                for c in 0..nch as usize {
+                    self.in_planes[c][i] = frame.channels[c];
+                }
+                let il = frame.get(0);
+                let ir = frame.get(1);
                 self.in_l[i] = il;
                 self.in_r[i] = ir;
                 let pk = (il.abs().max(ir.abs())) * self.core.input_gain_lin;
@@ -1188,10 +1372,30 @@ impl RtCallbackState {
                 &[]
             };
 
+            // Zero-alloc planar HW matrix (up to 8 stereo pairs / 16 ch exposed to tracks).
+            let hw_slices: [&[f32]; 16] = [
+                &self.in_planes[0][..chunk],
+                &self.in_planes[1][..chunk],
+                &self.in_planes[2][..chunk],
+                &self.in_planes[3][..chunk],
+                &self.in_planes[4][..chunk],
+                &self.in_planes[5][..chunk],
+                &self.in_planes[6][..chunk],
+                &self.in_planes[7][..chunk],
+                &self.in_planes[8][..chunk],
+                &self.in_planes[9][..chunk],
+                &self.in_planes[10][..chunk],
+                &self.in_planes[11][..chunk],
+                &self.in_planes[12][..chunk],
+                &self.in_planes[13][..chunk],
+                &self.in_planes[14][..chunk],
+                &self.in_planes[15][..chunk],
+            ];
+            let n_planes = self.hw_in_channel_count.max(2).min(16) as usize;
+
             self.core.render_block(
                 &self.project,
-                &self.in_l[..chunk],
-                &self.in_r[..chunk],
+                &hw_slices[..n_planes],
                 midi_slice,
                 &mut self.out_l[..chunk],
                 &mut self.out_r[..chunk],
@@ -1635,7 +1839,62 @@ pub fn audio_buffer_from_capture(sr: u32, left: Vec<f32>, right: Vec<f32>) -> Au
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferric_model::build_demo_project;
+    use ferric_model::{build_demo_project, build_tutorial_project};
+
+    #[test]
+    fn tutorial_night_current_follows_guide_and_writes_demo_wav() {
+        let proj = build_tutorial_project(48_000);
+        assert!(
+            proj.title.contains("Night Current"),
+            "tutorial project title"
+        );
+        assert!(
+            (proj.bpm - 128.0).abs() < 0.01,
+            "tutorial BPM must be 128"
+        );
+        assert_eq!(proj.chord_track.len(), 16, "16 bars of chords");
+        for name in ["01 Drums", "02 Bass", "03 Pads", "04 Arp", "05 Hook", "06 Counter"] {
+            assert!(
+                proj.tracks.iter().any(|t| t.name == name),
+                "missing tutorial track {name}"
+            );
+        }
+        let pads = proj
+            .tracks
+            .iter()
+            .find(|t| t.name == "03 Pads")
+            .expect("pads");
+        assert!(
+            pads.fx_chain.iter().any(|f| f.sidechain_source.is_some()),
+            "pads should sidechain from drums"
+        );
+        let hook = proj
+            .tracks
+            .iter()
+            .find(|t| t.name == "05 Hook")
+            .expect("hook");
+        assert!(
+            hook.clips.len() >= 2,
+            "hook A + hook B clips"
+        );
+
+        let demo_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/demo");
+        std::fs::create_dir_all(&demo_dir).expect("demo dir");
+        let out = demo_dir.join("NightCurrent-Demo.wav");
+        let report = render_master_offline(&proj, &out, 48_000, BitDepth::Pcm16, 0.0, 64.0)
+            .expect("tutorial bounce");
+        assert!(
+            report.peak_db > -42.0 && report.peak_db <= 0.2,
+            "tutorial bounce too quiet/hot: {} dBFS",
+            report.peak_db
+        );
+        assert!(out.is_file(), "demo wav written");
+        let decoded = import_audio_file(&out, 48_000).expect("decode tutorial demo");
+        assert!(
+            decoded.len_frames() > 48_000 * 20,
+            "demo should be ~30s of audio"
+        );
+    }
 
     #[test]
     fn offline_master_bounce_and_track_freeze_render_cleanly() {

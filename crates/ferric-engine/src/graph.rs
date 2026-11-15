@@ -4,7 +4,7 @@ use ferric_dsp::{
     OnsetBpmDetector, TunerReading, VocalPitchTelemetry,
 };
 use ferric_model::{
-    eval_midi_cc_curve, AutomationTarget, InputSource, MidiCcTarget, ModTarget, ModulatorId,
+    eval_midi_cc_curve, AutomationTarget, MidiCcTarget, ModTarget, ModulatorId,
     Project, SendTap, TakeContent, TimeStretchMode, TimelineClip, Track, TrackId,
 };
 use std::f32::consts::TAU;
@@ -259,11 +259,13 @@ impl AudioGraphCore {
     }
 
     /// Zero-allocation real-time audio block evaluation with PDC, Freeze, WSOLA & Sidechains!
+    ///
+    /// `hw_ins` is a planar multi-channel hardware input matrix (channel 0 = In 1, …).
+    /// Legacy stereo callers may pass `&[hw_l, hw_r]`.
     pub fn render_block(
         &mut self,
         project: &Project,
-        hw_in_l: &[f32],
-        hw_in_r: &[f32],
+        hw_ins: &[&[f32]],
         live_midi: &[(Option<TrackId>, MidiEvent)],
         out_l: &mut [f32],
         out_r: &mut [f32],
@@ -275,6 +277,8 @@ impl AudioGraphCore {
         out_l[..frames].fill(0.0);
         out_r[..frames].fill(0.0);
 
+        let hw_in_l = hw_ins.first().copied().unwrap_or(&[]);
+        let hw_in_r = hw_ins.get(1).copied().unwrap_or(hw_in_l);
         if hw_in_l.len() >= frames && hw_in_r.len() >= frames {
             self.input_tuner
                 .push_block(&hw_in_l[..frames], &hw_in_r[..frames]);
@@ -316,7 +320,9 @@ impl AudioGraphCore {
         let arrangement_playing = self.is_playing && !in_count_in;
         let block_start_beat = self.playhead_beat;
         let block_end_beat = block_start_beat + beats_per_sample * frames as f64;
-        let any_solo = project.tracks.iter().take(num_tracks).any(|t| t.solo);
+        let any_track_solo = project.tracks.iter().take(num_tracks).any(|t| t.solo);
+        let any_vca_solo = project.vca_groups.iter().any(|v| v.solo);
+        let any_solo = any_track_solo || any_vca_solo;
 
         self.fill_topo_order(project, num_tracks);
         self.last_vocal_pitch = VocalPitchTelemetry::default();
@@ -324,6 +330,13 @@ impl AudioGraphCore {
         for ord_pos in 0..self.topo_scratch.len() {
             let t_idx = self.topo_scratch[ord_pos];
             let track = &project.tracks[t_idx];
+
+            let vca = track
+                .vca_group_id
+                .and_then(|vid| project.vca_groups.iter().find(|v| v.id == vid));
+            let vca_muted = vca.map(|v| v.mute).unwrap_or(false);
+            let vca_soloed = vca.map(|v| v.solo).unwrap_or(false);
+            let vca_gain_db = vca.map(|v| v.gain_db).unwrap_or(0.0);
 
             let folder_soloed = track
                 .parent_folder_id
@@ -334,7 +347,9 @@ impl AudioGraphCore {
                 .tracks
                 .iter()
                 .any(|c| c.parent_folder_id == Some(track.id) && c.solo);
-            let audible = !track.mute && (!any_solo || track.solo || folder_soloed || child_soloed);
+            let audible = !track.mute
+                && !vca_muted
+                && (!any_solo || track.solo || folder_soloed || child_soloed || vca_soloed);
 
             let mut max_gr_db = 0.0_f32;
 
@@ -376,35 +391,31 @@ impl AudioGraphCore {
                     }
                 }
 
-                // 2. Live hardware audio input monitoring (e.g., Nintendo DS KORG DS-10 3.5mm Line-In!)
-                if track.record_arm
-                    && track.input_monitoring
-                    && hw_in_l.len() >= frames
-                    && hw_in_r.len() >= frames
-                {
+                // 2. Live hardware audio input monitoring (multi-channel matrix + DS-10 Line-In!)
+                if track.record_arm && track.input_monitoring {
                     let ig = self.input_gain_lin;
-                    match track.input_source {
-                        InputSource::AudioAndMidi { .. } => {
-                            for i in 0..frames {
-                                self.bus_l[t_idx][i] += hw_in_l[i] * ig;
-                                self.bus_r[t_idx][i] += hw_in_r[i] * ig;
+                    match track.input_source.hardware_channels() {
+                        Some((l_ch, Some(r_ch))) => {
+                            let ls = hw_ins.get(l_ch as usize).copied().unwrap_or(hw_in_l);
+                            let rs = hw_ins.get(r_ch as usize).copied().unwrap_or(hw_in_r);
+                            if ls.len() >= frames && rs.len() >= frames {
+                                for i in 0..frames {
+                                    self.bus_l[t_idx][i] += ls[i] * ig;
+                                    self.bus_r[t_idx][i] += rs[i] * ig;
+                                }
                             }
                         }
-                        InputSource::AudioMono { channel: 0 } => {
-                            for i in 0..frames {
-                                let m = hw_in_l[i] * ig;
-                                self.bus_l[t_idx][i] += m;
-                                self.bus_r[t_idx][i] += m;
+                        Some((ch, None)) => {
+                            let ms = hw_ins.get(ch as usize).copied().unwrap_or(hw_in_l);
+                            if ms.len() >= frames {
+                                for i in 0..frames {
+                                    let m = ms[i] * ig;
+                                    self.bus_l[t_idx][i] += m;
+                                    self.bus_r[t_idx][i] += m;
+                                }
                             }
                         }
-                        InputSource::AudioMono { .. } => {
-                            for i in 0..frames {
-                                let m = hw_in_r[i] * ig;
-                                self.bus_l[t_idx][i] += m;
-                                self.bus_r[t_idx][i] += m;
-                            }
-                        }
-                        _ => {}
+                        None => {}
                     }
                 }
 
@@ -441,6 +452,15 @@ impl AudioGraphCore {
                 }
 
                 self.midi_scratch.sort_by_key(|e| e.sample_offset);
+
+                // 3a. Chord-Track Harmonic Follow: snap MIDI pitches to active chord tones!
+                if track.follow_chord_track {
+                    if let Some(ch) = project.chord_at_beat(block_start_beat) {
+                        for ev in &mut self.midi_scratch {
+                            ev.note = ch.snap_pitch_to_chord(ev.note);
+                        }
+                    }
+                }
 
                 // 3b. Track MIDI Arpeggiator / Note-Repeat!
                 self.arp_lanes[t_idx].process_midi_block(
@@ -622,14 +642,16 @@ impl AudioGraphCore {
                 }
             }
 
-            let mut fader_db = track.gain_db + mod_gain_offset_db;
+            let mut fader_db = track.gain_db + mod_gain_offset_db + vca_gain_db;
             let mut pan = (track.pan + mod_pan_offset).clamp(-1.0, 1.0);
             let mut width = track.stereo_width.clamp(0.0, 2.0);
             if self.is_playing && track.automation_mode != ferric_model::AutomationMode::Off {
                 for lane in &track.automation_lanes {
                     if let Some(v) = lane.eval_at(block_start_beat) {
                         match lane.target {
-                            AutomationTarget::Volume => fader_db = -60.0 + v * 72.0,
+                            AutomationTarget::Volume => {
+                                fader_db = -60.0 + v * 72.0 + vca_gain_db
+                            }
                             AutomationTarget::Pan => pan = v * 2.0 - 1.0,
                             AutomationTarget::StereoWidth => width = v * 2.0,
                             _ => {}

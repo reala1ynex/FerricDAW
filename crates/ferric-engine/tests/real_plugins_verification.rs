@@ -465,7 +465,7 @@ fn verify_real_downloaded_clap_and_vst3_plugins_end_to_end() {
     let zero_in = [0.0_f32; 512];
 
     for _ in 0..(total_frames / 512) {
-        graph.render_block(&proj, &zero_in, &zero_in, &[], &mut blk_l, &mut blk_r);
+        graph.render_block(&proj, &[&zero_in, &zero_in], &[], &mut blk_l, &mut blk_r);
         mix_l.extend_from_slice(&blk_l);
         mix_r.extend_from_slice(&blk_r);
     }

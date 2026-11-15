@@ -1426,6 +1426,25 @@ fn render_fx_slot_cards(
                             {
                                 actions.push(DockAction::ProjectMutated("Adjust Plugin Trim"));
                             }
+                            let sandbox_lbl = if fx.sandbox_out_of_process {
+                                "🛡 Sandbox"
+                            } else {
+                                "In-Process"
+                            };
+                            if pill_toggle(
+                                ui,
+                                sandbox_lbl,
+                                fx.sandbox_out_of_process,
+                                ACCENT_TEAL,
+                            )
+                            .on_hover_text(
+                                "When enabled, loads the plugin in an isolated ferric-plugin-bridge worker process (reload FX to apply).",
+                            )
+                            .clicked()
+                            {
+                                fx.sandbox_out_of_process = !fx.sandbox_out_of_process;
+                                actions.push(DockAction::ProjectMutated("Toggle Plugin Sandbox"));
+                            }
                         }
                         if !fx.kind.is_instrument() {
                             if ui

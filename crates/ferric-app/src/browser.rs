@@ -4,8 +4,9 @@ use crate::theme::{
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_engine::{
-    import_audio_file, list_audio_input_devices, list_audio_output_devices,
-    scan_all_external_plugins, DiscoveredExternalPlugin, EngineTelemetry, PluginQuarantine,
+    import_audio_file, list_audio_device_matrix, list_audio_input_devices,
+    list_audio_output_devices, realtek_combo_jack_risk, scan_all_external_plugins,
+    AudioDeviceInfo, AudioDriverKind, DiscoveredExternalPlugin, EngineTelemetry, PluginQuarantine,
 };
 use ferric_model::{
     synthesize_browser_sample, AudioBuffer, ExternalPluginFormat, FactoryPreset, FxKind,
@@ -23,6 +24,8 @@ pub enum BrowserAction {
     ClearPluginQuarantine,
     ImportMidiFile(PathBuf),
     SetupAkaiAndDs10Rig,
+    /// Force Speakers out + External Mic/Line in (fixes Realtek combo-jack mute when DS is plugged).
+    FixDs10ComboJackRouting,
     RescanMidi,
     SwitchAudioDevices {
         output: Option<String>,
@@ -64,8 +67,11 @@ pub struct StudioBrowserState {
     pub selected_out: Option<String>,
     pub selected_in: Option<String>,
     pub selected_buffer_size: Option<u32>,
+    pub selected_audio_driver: AudioDriverKind,
     pub recording_offset_samples: u32,
     pub input_gain_db: f32,
+    /// Cached I/O matrix — never call `list_audio_device_matrix` every frame.
+    pub io_matrix_cache: Vec<AudioDeviceInfo>,
 }
 
 impl Default for StudioBrowserState {
@@ -98,8 +104,10 @@ impl Default for StudioBrowserState {
             selected_out: None,
             selected_in: None,
             selected_buffer_size: None,
+            selected_audio_driver: AudioDriverKind::WasapiShared,
             recording_offset_samples: 0,
             input_gain_db: 0.0,
+            io_matrix_cache: Vec::new(),
         };
         if let Ok(profile) = std::env::var("USERPROFILE") {
             let music = PathBuf::from(profile).join("Music");
@@ -249,6 +257,20 @@ impl StudioBrowserState {
                         {
                             actions.push(BrowserAction::SetupAkaiAndDs10Rig);
                         }
+                        ui.add_space(4.0);
+                        if ui
+                            .button(
+                                egui::RichText::new("🔊 Fix: Force Speakers + Line-In (DS Mute Fix)")
+                                    .size(11.0)
+                                    .strong(),
+                            )
+                            .on_hover_text(
+                                "Plugging the DS into a Realtek combo jack often switches Windows to Headphones and mutes Speakers. This locks Out=Speakers and In=External Microphone.",
+                            )
+                            .clicked()
+                        {
+                            actions.push(BrowserAction::FixDs10ComboJackRouting);
+                        }
                     });
 
                 ui.add_space(6.0);
@@ -340,6 +362,17 @@ impl StudioBrowserState {
                                 .size(10.0)
                                 .color(ACCENT_TEAL),
                         );
+                        if realtek_combo_jack_risk(active_out, active_in)
+                            || active_out.to_lowercase().contains("headphone")
+                        {
+                            ui.colored_label(
+                                ACCENT_AMBER,
+                                egui::RichText::new(
+                                    "⚠ Combo-jack trap: Output is Headphones. DS cable on the same Realtek jack mutes Speakers — click “Force Speakers + Line-In” above, or set Out=Speakers and In=External Microphone.",
+                                )
+                                .size(10.5),
+                            );
+                        }
 
                         egui::ComboBox::from_id_salt("hw_in_picker")
                             .selected_text(
@@ -349,7 +382,8 @@ impl StudioBrowserState {
                             )
                             .width(210.0)
                             .show_ui(ui, |ui| {
-                                for dev in &self.audio_inputs.clone() {
+                                let inputs = self.audio_inputs.clone();
+                                for dev in &inputs {
                                     if ui
                                         .selectable_label(
                                             self.selected_in.as_deref() == Some(dev.as_str()),
@@ -376,7 +410,8 @@ impl StudioBrowserState {
                             )
                             .width(210.0)
                             .show_ui(ui, |ui| {
-                                for dev in &self.audio_outputs.clone() {
+                                let outputs = self.audio_outputs.clone();
+                                for dev in &outputs {
                                     if ui
                                         .selectable_label(
                                             self.selected_out.as_deref() == Some(dev.as_str()),
@@ -394,6 +429,64 @@ impl StudioBrowserState {
                                     }
                                 }
                             });
+
+                        egui::ComboBox::from_id_salt("hw_driver_picker")
+                            .selected_text(self.selected_audio_driver.label())
+                            .width(210.0)
+                            .show_ui(ui, |ui| {
+                                for &drv in AudioDriverKind::ALL {
+                                    if ui
+                                        .selectable_label(
+                                            self.selected_audio_driver == drv,
+                                            drv.label(),
+                                        )
+                                        .on_hover_text(drv.hover_hint())
+                                        .clicked()
+                                    {
+                                        self.selected_audio_driver = drv;
+                                        actions.push(BrowserAction::SwitchAudioDevices {
+                                            output: self.selected_out.clone(),
+                                            input: self.selected_in.clone(),
+                                            buffer_size: self.selected_buffer_size,
+                                            recording_offset_samples: self.recording_offset_samples,
+                                        });
+                                    }
+                                }
+                            });
+
+                        // Multi-channel device matrix summary (cached — WASAPI enum every frame kills FPS)
+                        ui.collapsing("I/O Channel Matrix", |ui| {
+                            if self.io_matrix_cache.is_empty() {
+                                self.io_matrix_cache = list_audio_device_matrix();
+                            }
+                            if ui.small_button("Refresh matrix").clicked() {
+                                self.io_matrix_cache = list_audio_device_matrix();
+                                self.audio_inputs = list_audio_input_devices();
+                                self.audio_outputs = list_audio_output_devices();
+                            }
+                            for info in self.io_matrix_cache.iter().take(12) {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}  ·  in {} / out {}  ·  {} Hz  ·  buf {}–{}",
+                                        info.name,
+                                        info.input_channels,
+                                        info.output_channels,
+                                        info.default_sample_rate,
+                                        info.min_buffer,
+                                        info.max_buffer
+                                    ))
+                                    .size(10.0)
+                                    .color(TEXT_DIM),
+                                );
+                            }
+                            ui.label(
+                                egui::RichText::new(
+                                    "Per-track: Mixer input picker selects In 1/2 … In 15/16 pairs or mono In 1–16.",
+                                )
+                                .size(10.0)
+                                .color(ACCENT_TEAL),
+                            );
+                        });
 
                         // Low-Latency Hardware Buffer Size Selector!
                         let buf_ms = (telem.buffer_size_frames as f32 * 1000.0)
@@ -496,12 +589,22 @@ impl StudioBrowserState {
                             if ui
                                 .add(
                                     egui::DragValue::new(&mut self.input_gain_db)
-                                        .range(-24.0..=24.0)
+                                        .range(-24.0..=36.0)
                                         .speed(0.2)
                                         .suffix(" dB"),
                                 )
                                 .changed()
                             {
+                                actions.push(BrowserAction::SetInputGainDb(self.input_gain_db));
+                            }
+                            if ui
+                                .small_button("+6 DS")
+                                .on_hover_text(
+                                    "Modest Line-In trim — keep Windows Mic Boost at 0% to avoid hiss",
+                                )
+                                .clicked()
+                            {
+                                self.input_gain_db = 6.0;
                                 actions.push(BrowserAction::SetInputGainDb(self.input_gain_db));
                             }
                         });
@@ -519,6 +622,28 @@ impl StudioBrowserState {
                                 ),
                                 2,
                                 ACCENT_TEAL,
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Input peak: {:+.1} dBFS",
+                                telem.input_peak_db
+                            ))
+                            .size(10.0)
+                            .monospace()
+                            .color(if telem.input_peak_db < -50.0 {
+                                ACCENT_AMBER
+                            } else {
+                                ACCENT_TEAL
+                            }),
+                        );
+                        if telem.input_peak_db < -50.0 {
+                            ui.colored_label(
+                                ACCENT_AMBER,
+                                egui::RichText::new(
+                                    "No usable input. Set Windows Recording → External Microphone (Realtek) as Default, enable Mic Boost, max DS volume, use a TRS cable into the mic/combo jack — not Steam/AMD Array.",
+                                )
+                                .size(10.0),
                             );
                         }
                         if let Some(det_bpm) = telem.detected_input_bpm {

@@ -383,6 +383,10 @@ pub struct FxSlot {
     /// Post-plugin trim in dB when hosting an external CLAP/VST3 plugin.
     #[serde(default)]
     pub plugin_output_trim_db: f32,
+    /// When `true`, runs this external `.clap`/`.vst3` plugin inside an isolated `ferric-plugin-bridge`
+    /// worker process over IPC pipes so a buggy C++ plugin crash can NEVER take down the live DAW!
+    #[serde(default)]
+    pub sandbox_out_of_process: bool,
 }
 
 impl FxSlot {
@@ -412,11 +416,16 @@ impl FxSlot {
             dynamic_param_specs: Vec::new(),
             plugin_state_b64: None,
             plugin_output_trim_db: 0.0,
+            sandbox_out_of_process: false,
         }
     }
 
     pub fn new_clap(path: PathBuf, plugin_id: String, name: String) -> Self {
         Self::new_external_plugin(ExternalPluginFormat::Clap, path, plugin_id, name)
+    }
+
+    pub fn new_vst3(path: PathBuf, plugin_id: String, name: String) -> Self {
+        Self::new_external_plugin(ExternalPluginFormat::Vst3, path, plugin_id, name)
     }
 
     pub fn new_external_plugin(
@@ -432,6 +441,7 @@ impl FxSlot {
         slot.clap_plugin_id = Some(plugin_id);
         slot.clap_plugin_name = Some(name);
         slot.params.clear();
+        slot.sandbox_out_of_process = true;
         slot
     }
 

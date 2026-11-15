@@ -4,12 +4,13 @@ members = [
     "crates/ferric-model",
     "crates/ferric-dsp",
     "crates/ferric-engine",
+    "crates/ferric-plugin-bridge",
     "crates/ferric-app",
 ]
 default-members = ["crates/ferric-app"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 

@@ -7,7 +7,9 @@ use egui::{
 };
 use ferric_engine::EngineTelemetry;
 use ferric_model::{
-    ClipId, MidiNote, Project, SessionSlot, SnapGrid, Take, TakeContent, TimelineClip, TrackId,
+    ChordQuality, ClipId, MidiNote, ProgressionPreset, Project, SessionSlot, SnapGrid, Take,
+    TakeContent, TimelineClip, TrackId, VoicingStyle, CIRCLE_OF_FIFTHS_MAJOR,
+    CIRCLE_OF_FIFTHS_MINOR, NOTE_PITCH_CLASSES,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,10 @@ pub enum ArrangementAction {
     },
     ImportAudioToTrack(TrackId),
     ToggleFreezeTrack(TrackId),
+    SplitAudioToStems {
+        track_id: TrackId,
+        clip_id: ClipId,
+    },
     DeleteTrack(TrackId),
     DuplicateTrack(TrackId),
     MoveTrack {
@@ -148,6 +154,17 @@ impl ArrangementState {
                 if project.show_conductor_lane && project.tempo_map.is_empty() {
                     project.upsert_tempo_point(0.0, project.bpm, true);
                 }
+            }
+            if pill_toggle(
+                ui,
+                "🎹 Chord Lane",
+                project.show_chord_lane,
+                Color32::from_rgb(186, 108, 226),
+            )
+            .on_hover_text("Interactive Chord Track + Circle of Fifths songwriter lane")
+            .clicked()
+            {
+                project.show_chord_lane = !project.show_chord_lane;
             }
             ui.separator();
 
@@ -600,6 +617,18 @@ impl ArrangementState {
             );
             playhead_bot = playhead_bot.max(cond_bot);
         }
+        if project.show_chord_lane {
+            let chord_bot = self.render_chord_lane(
+                ui,
+                avail_w,
+                timeline_x0_rel,
+                timeline_w,
+                project,
+                telem.playhead_beat,
+                actions,
+            );
+            playhead_bot = playhead_bot.max(chord_bot);
+        }
 
         // Render Each Visible Track Row + Optional Multi-Take Comping Lanes!
         let prev_row_bounds = self.track_row_bounds.clone();
@@ -940,6 +969,18 @@ impl ArrangementState {
                 {
                     trk.record_arm = !trk.record_arm;
                     actions.push(ArrangementAction::ProjectMutated("Toggle Record Arm"));
+                }
+                if pill_toggle(
+                    ui,
+                    "♮",
+                    trk.follow_chord_track,
+                    Color32::from_rgb(186, 108, 226),
+                )
+                .on_hover_text("Follow Chord Track — snap MIDI pitches to active chord tones")
+                .clicked()
+                {
+                    trk.follow_chord_track = !trk.follow_chord_track;
+                    actions.push(ArrangementAction::ProjectMutated("Toggle Chord Follow"));
                 }
                 let fx_txt = format!("FX {}", trk.fx_chain.len());
                 if pill_toggle(ui, &fx_txt, !trk.fx_chain.is_empty(), ACCENT_TEAL)
@@ -1408,6 +1449,19 @@ impl ArrangementState {
                         }
                         ui.close_menu();
                     }
+                    if ui
+                        .button("✂ Split to 4 Stems (Drums / Bass / Mids / Highs)")
+                        .on_hover_text(
+                            "Offline HPSS + Linkwitz-Riley stem split into four new audio tracks",
+                        )
+                        .clicked()
+                    {
+                        actions.push(ArrangementAction::SplitAudioToStems {
+                            track_id,
+                            clip_id,
+                        });
+                        ui.close_menu();
+                    }
                 } else if ui.button("🎹 Quantize MIDI Notes (1/16)").clicked() {
                     project.quantize_midi_clip(track_id, clip_id, 0.25);
                     actions.push(ArrangementAction::ProjectMutated("Quantize MIDI 1/16"));
@@ -1553,6 +1607,237 @@ impl ArrangementState {
                 }
             }
         }
+    }
+
+    fn render_chord_lane(
+        &mut self,
+        ui: &mut Ui,
+        avail_w: f32,
+        timeline_x0_rel: f32,
+        timeline_w: f32,
+        project: &mut Project,
+        playhead_beat: f64,
+        actions: &mut Vec<ArrangementAction>,
+    ) -> f32 {
+        let lane_h = 56.0_f32;
+        let (lane_rect, lane_resp) = ui.allocate_exact_size(
+            Vec2::new(avail_w, lane_h),
+            Sense::click_and_drag(),
+        );
+        ui.painter().rect_filled(lane_rect, 0.0, Color32::from_rgb(24, 22, 32));
+        ui.painter().hline(
+            lane_rect.x_range(),
+            lane_rect.bottom(),
+            Stroke::new(1.0_f32, BORDER_SUBTLE),
+        );
+
+        let header = Rect::from_min_max(
+            lane_rect.min,
+            Pos2::new(lane_rect.left() + timeline_x0_rel, lane_rect.bottom()),
+        );
+        ui.painter().rect_filled(header, 0.0, BG_PANEL);
+        ui.painter().text(
+            Pos2::new(header.left() + 6.0, header.top() + 4.0),
+            Align2::LEFT_TOP,
+            "CHORDS",
+            FontId::proportional(10.0),
+            Color32::from_rgb(186, 108, 226),
+        );
+
+        // Inline header controls (not a floating Area — those drifted off the lane).
+        let mut gen_voicing = VoicingStyle::OpenSpreadPad;
+        let controls_rect = Rect::from_min_max(
+            Pos2::new(header.left() + 4.0, header.top() + 16.0),
+            Pos2::new(header.right() - 4.0, header.bottom() - 2.0),
+        );
+        ui.allocate_new_ui(
+            egui::UiBuilder::new()
+                .max_rect(controls_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.set_clip_rect(controls_rect);
+                ui.spacing_mut().item_spacing.x = 3.0;
+                if ui
+                    .small_button("CoF+")
+                    .on_hover_text("Insert next Circle-of-Fifths major chord at playhead")
+                    .clicked()
+                {
+                    let beat = project
+                        .snap_grid
+                        .snap(playhead_beat.max(0.0), project.time_signature);
+                    let idx = CIRCLE_OF_FIFTHS_MAJOR
+                        .iter()
+                        .position(|&p| p == project.root_pitch_class)
+                        .unwrap_or(0);
+                    let next = CIRCLE_OF_FIFTHS_MAJOR[(idx + 1) % 12];
+                    project.upsert_chord_event(beat, 4.0, next, ChordQuality::Maj7);
+                    actions.push(ArrangementAction::ProjectMutated("Insert CoF Chord"));
+                }
+                if ui
+                    .small_button("CoFm")
+                    .on_hover_text("Insert relative minor from Circle of Fifths")
+                    .clicked()
+                {
+                    let beat = project
+                        .snap_grid
+                        .snap(playhead_beat.max(0.0), project.time_signature);
+                    let idx = CIRCLE_OF_FIFTHS_MINOR
+                        .iter()
+                        .position(|&p| p == project.root_pitch_class)
+                        .unwrap_or(0);
+                    let next = CIRCLE_OF_FIFTHS_MINOR[(idx + 1) % 12];
+                    project.upsert_chord_event(beat, 4.0, next, ChordQuality::Min9);
+                    actions.push(ArrangementAction::ProjectMutated("Insert CoF Minor"));
+                }
+                egui::ComboBox::from_id_salt("chord_prog_preset")
+                    .selected_text("Prog…")
+                    .width(72.0)
+                    .show_ui(ui, |ui| {
+                        for preset in ProgressionPreset::ALL {
+                            if ui.button(preset.label()).clicked() {
+                                let start = project
+                                    .snap_grid
+                                    .snap(playhead_beat.max(0.0), project.time_signature);
+                                let events = preset.generate(
+                                    project.root_pitch_class,
+                                    true,
+                                    start,
+                                    4.0,
+                                );
+                                for ev in events {
+                                    project.upsert_chord_event(
+                                        ev.start_beat,
+                                        ev.length_beats,
+                                        ev.root_pc,
+                                        ev.quality,
+                                    );
+                                }
+                                actions.push(ArrangementAction::ProjectMutated(
+                                    "Apply Progression Preset",
+                                ));
+                            }
+                        }
+                    });
+                if ui
+                    .small_button("Gen")
+                    .on_hover_text("Spawn Pad + Bass + Arp tracks from the chord lane")
+                    .clicked()
+                {
+                    let _ = project.generate_arrangement_from_chords(
+                        gen_voicing,
+                        true,
+                        true,
+                        true,
+                    );
+                    actions.push(ArrangementAction::ProjectMutated(
+                        "Generate Arrangement From Chords",
+                    ));
+                }
+                let _ = &mut gen_voicing;
+            },
+        );
+
+        let tl = Rect::from_min_max(
+            Pos2::new(lane_rect.left() + timeline_x0_rel, lane_rect.top()),
+            lane_rect.max,
+        );
+        let beat_to_x = |b: f64| tl.left() + ((b - self.scroll_beat) as f32) * self.pixels_per_beat;
+        let x_to_beat = |x: f32| {
+            self.scroll_beat + ((x - tl.left()) / self.pixels_per_beat) as f64
+        };
+
+        // Draw chord blocks
+        let chords_snapshot: Vec<_> = project.chord_track.clone();
+        for ch in &chords_snapshot {
+            let x0 = beat_to_x(ch.start_beat);
+            let x1 = beat_to_x(ch.end_beat());
+            if x1 < tl.left() || x0 > tl.right() {
+                continue;
+            }
+            let crect = Rect::from_min_max(
+                Pos2::new(x0.max(tl.left()) + 1.0, tl.top() + 6.0),
+                Pos2::new(x1.min(tl.right()) - 1.0, tl.bottom() - 6.0),
+            );
+            let hue = ch.root_pc as f32 / 12.0;
+            let col = Color32::from_rgb(
+                (120.0 + 100.0 * (hue * std::f32::consts::TAU).sin()) as u8,
+                (90.0 + 80.0 * ((hue + 0.33) * std::f32::consts::TAU).sin()) as u8,
+                (150.0 + 90.0 * ((hue + 0.66) * std::f32::consts::TAU).sin()) as u8,
+            );
+            ui.painter().rect_filled(crect, 3.0, col.gamma_multiply(0.55));
+            ui.painter().rect_stroke(
+                crect,
+                3.0,
+                Stroke::new(1.0_f32, col),
+                StrokeKind::Outside,
+            );
+            ui.painter().text(
+                crect.center(),
+                Align2::CENTER_CENTER,
+                ch.symbol(),
+                FontId::proportional(12.0),
+                TEXT_MAIN,
+            );
+        }
+
+        // Click empty area to insert chord; right-click for quality menu on existing
+        if lane_resp.clicked() {
+            if let Some(pos) = lane_resp.interact_pointer_pos() {
+                if tl.contains(pos) {
+                    let beat = project
+                        .snap_grid
+                        .snap(x_to_beat(pos.x).max(0.0), project.time_signature);
+                    // If clicking an existing chord, cycle quality; else insert
+                    let hit = project
+                        .chord_track
+                        .iter()
+                        .position(|c| beat >= c.start_beat && beat < c.end_beat());
+                    if let Some(i) = hit {
+                        let quals = ChordQuality::ALL;
+                        let cur = project.chord_track[i].quality;
+                        let idx = quals.iter().position(|q| *q == cur).unwrap_or(0);
+                        project.chord_track[i].quality = quals[(idx + 1) % quals.len()];
+                        actions.push(ArrangementAction::ProjectMutated("Cycle Chord Quality"));
+                    } else {
+                        project.upsert_chord_event(
+                            beat,
+                            4.0,
+                            project.root_pitch_class,
+                            ChordQuality::Min9,
+                        );
+                        actions.push(ArrangementAction::ProjectMutated("Insert Chord"));
+                    }
+                }
+            }
+        }
+        if lane_resp.secondary_clicked() {
+            if let Some(pos) = lane_resp.interact_pointer_pos() {
+                if tl.contains(pos) {
+                    let beat = x_to_beat(pos.x);
+                    project
+                        .chord_track
+                        .retain(|c| !(beat >= c.start_beat && beat < c.end_beat()));
+                    actions.push(ArrangementAction::ProjectMutated("Delete Chord"));
+                }
+            }
+        }
+
+        // Key label
+        let key_lbl = format!(
+            "{} {}",
+            NOTE_PITCH_CLASSES[project.root_pitch_class as usize % 12],
+            project.musical_scale.label()
+        );
+        ui.painter().text(
+            Pos2::new(header.left() + 8.0, header.bottom() - 10.0),
+            Align2::LEFT_CENTER,
+            key_lbl,
+            FontId::proportional(9.0),
+            TEXT_DIM,
+        );
+
+        let _ = timeline_w;
+        lane_rect.bottom()
     }
 
     fn render_conductor_lane(

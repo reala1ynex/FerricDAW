@@ -22,6 +22,7 @@ pub enum PaletteCommand {
     GlueSelectedClips,
     ToggleConductorLane,
     OpenQuickstartHelp,
+    StartNightCurrentTutorial,
     QuantizeSelectedClip,
     ToggleLoop,
     ToggleMetronome,
@@ -218,6 +219,12 @@ impl CommandPalette {
                 cmd: PaletteCommand::OpenQuickstartHelp,
             },
             ActionItem {
+                title: "Start Night Current Tutorial (build the song)",
+                shortcut: "🎓",
+                category: "Learn",
+                cmd: PaletteCommand::StartNightCurrentTutorial,
+            },
+            ActionItem {
                 title: "Capture Retroactive Audio/MIDI Buffer (Last 15s)",
                 shortcut: "Shift+R",
                 category: "CAPTURE",
@@ -320,7 +327,7 @@ impl CommandPalette {
                 cmd: PaletteCommand::SaveProject,
             },
             ActionItem {
-                title: "Reload 'Neon Oxide' Factory Demo Session",
+                title: "Reload Afterglow Copper Playground Session",
                 shortcut: "",
                 category: "PROJECT",
                 cmd: PaletteCommand::LoadDemoProject,

@@ -50,15 +50,24 @@ impl BitDepth {
 pub enum ExportFormat {
     Wav,
     Flac,
+    Mp3,
+    Ogg,
 }
 
 impl ExportFormat {
-    pub const ALL: &'static [ExportFormat] = &[ExportFormat::Wav, ExportFormat::Flac];
+    pub const ALL: &'static [ExportFormat] = &[
+        ExportFormat::Wav,
+        ExportFormat::Flac,
+        ExportFormat::Mp3,
+        ExportFormat::Ogg,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             ExportFormat::Wav => "WAV (Uncompressed PCM / Float)",
             ExportFormat::Flac => "FLAC (Lossless Compressed + MD5)",
+            ExportFormat::Mp3 => "MP3 (Lossy Delivery ~192 kbps)",
+            ExportFormat::Ogg => "OGG (Lossy Delivery Q7 Mid/Side)",
         }
     }
 
@@ -66,6 +75,8 @@ impl ExportFormat {
         match self {
             ExportFormat::Wav => "wav",
             ExportFormat::Flac => "flac",
+            ExportFormat::Mp3 => "mp3",
+            ExportFormat::Ogg => "ogg",
         }
     }
 }
@@ -356,6 +367,14 @@ pub fn write_exported_audio_file(
             )?;
             Ok(())
         }
+        ExportFormat::Mp3 => {
+            crate::lossy_enc::write_mp3_stereo_file(path, opts.sample_rate, left, right)?;
+            Ok(())
+        }
+        ExportFormat::Ogg => {
+            crate::lossy_enc::write_ogg_vorbis_stereo_file(path, opts.sample_rate, left, right)?;
+            Ok(())
+        }
     }
 }
 
@@ -415,8 +434,7 @@ pub fn render_track_freeze_buffer(
         blk_r[..n].fill(0.0);
         core.render_block(
             &solo_proj,
-            &zero_in[..n],
-            &zero_in[..n],
+            &[&zero_in[..n], &zero_in[..n]],
             &[],
             &mut blk_l[..n],
             &mut blk_r[..n],
@@ -490,8 +508,7 @@ pub fn render_master_with_options(
         blk_r[..n].fill(0.0);
         core.render_block(
             &render_proj,
-            &zero_in[..n],
-            &zero_in[..n],
+            &[&zero_in[..n], &zero_in[..n]],
             &[],
             &mut blk_l[..n],
             &mut blk_r[..n],

@@ -3,6 +3,7 @@ pub mod fx;
 pub mod project;
 pub mod theory;
 pub mod track;
+pub mod tutorial;
 
 pub use clip::{
     eval_midi_cc_curve, AudioBuffer, ClipId, CompSegment, FadeShape, MidiCcPoint, MidiCcTarget,
@@ -14,18 +15,21 @@ pub use fx::{
     ModulatorId, ModulatorKind, ModulatorSlot, ParamSpec, PluginParamDescriptor, FACTORY_PRESETS,
 };
 pub use project::{
-    build_demo_project, synthesize_browser_sample, HistoryManager, MasterBus, MeterChange,
-    MidiLearnMapping, ModelError, Project, Scene, SnapGrid, TempoPoint, TimeSignature,
-    TimelineMarker,
+    build_demo_project, build_tutorial_project, build_tutorial_project_through,
+    synthesize_browser_sample, HistoryManager, MasterBus, MeterChange, MidiLearnMapping,
+    MixSnapshot, ModelError, Project, Scene, SnapGrid, TempoPoint, TimeSignature, TimelineMarker,
+    TrackMixState, VcaGroup,
 };
+pub use tutorial::{night_current_step_complete, NightCurrentStep};
 pub use theory::{
-    export_smf_clip, import_smf_file, ChordStamp, ImportedMidiTrack, MusicalScale,
-    NOTE_PITCH_CLASSES,
+    export_smf_clip, generate_euclidean_rhythm, import_smf_file, ChordEvent, ChordQuality,
+    ChordStamp, ImportedMidiTrack, MusicalScale, ProgressionPreset, VoicingStyle,
+    CIRCLE_OF_FIFTHS_MAJOR, CIRCLE_OF_FIFTHS_MINOR, NOTE_PITCH_CLASSES,
 };
 pub use track::{
     apply_curve_tension, ArpMode, AutomationLane, AutomationMode, AutomationPoint,
-    AutomationTarget, InputSource, SendTap, Track, TrackArpeggiator, TrackId, TrackSend,
-    STUDIO_TRACK_COLORS,
+    AutomationTarget, GrooveTemplate, InputSource, SendTap, Track, TrackArpeggiator, TrackId,
+    TrackSend, STUDIO_TRACK_COLORS,
 };
 
 #[cfg(test)]
@@ -157,5 +161,91 @@ mod tests {
         assert_eq!(trk.clips.len(), 1);
         assert_eq!(trk.clips[0].id, glued_id);
         assert!((trk.clips[0].length_beats - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn milestone9_vca_mix_recall_chord_follow_and_demo_song() {
+        let mut proj = build_demo_project(48_000);
+        assert!(
+            proj.tracks.len() >= 8,
+            "Afterglow Copper demo should be a full multi-track arrangement"
+        );
+        assert!(
+            proj.chord_track.len() >= 16,
+            "demo needs a real chord lane across the song"
+        );
+        assert_eq!(proj.vca_groups.len(), 2);
+        assert!(proj.title.contains("Afterglow"));
+        assert!((proj.loop_end_beat - proj.loop_start_beat) >= 32.0);
+
+        // Mix A stored; Mix B/C present
+        assert!(proj.mix_snapshots[0].is_some());
+        assert!(proj.mix_snapshots[1].is_some());
+        assert!(proj.mix_snapshots[2].is_some());
+
+        // VCA mute/solo membership
+        let rhythm = proj.vca_groups[0].id;
+        let members: Vec<_> = proj
+            .tracks
+            .iter()
+            .filter(|t| t.vca_group_id == Some(rhythm))
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(members.iter().any(|n| n.contains("Kit")));
+        assert!(members.iter().any(|n| n.contains("Sub")));
+
+        // Mix recall round-trip
+        let lead_idx = proj
+            .tracks
+            .iter()
+            .position(|t| t.name.starts_with("06"))
+            .expect("hook lead");
+        let balanced = proj.tracks[lead_idx].gain_db;
+        assert!(proj.recall_mix_snapshot(1));
+        let forward = proj.tracks[lead_idx].gain_db;
+        assert!(
+            forward > balanced,
+            "Mix B should push the lead forward ({forward} vs {balanced})"
+        );
+        assert!(proj.recall_mix_snapshot(0));
+        assert!((proj.tracks[lead_idx].gain_db - balanced).abs() < 0.01);
+
+        // Chord snap for harmonic follow
+        let ch = ChordEvent::new(0.0, 4.0, 9, ChordQuality::Min9); // Am9
+        let snapped = ch.snap_pitch_to_chord(61); // C# → nearest Am9 tone
+        let iv = (snapped as i32 - 9).rem_euclid(12) as u8;
+        assert!(
+            ch.quality.intervals().iter().any(|&i| i % 12 == iv),
+            "snapped {snapped} should be an Am9 chord tone"
+        );
+
+        // Generate arrangement from chords creates new tracks
+        let before = proj.tracks.len();
+        let created =
+            proj.generate_arrangement_from_chords(VoicingStyle::OpenSpreadPad, true, true, true);
+        assert!(!created.is_empty());
+        assert!(proj.tracks.len() > before);
+
+        // Stem splitter smoke (offline HPSS)
+        let buf = AudioBuffer::from_stereo(
+            48_000,
+            (0..2048)
+                .map(|i| ((i as f32) * 0.01).sin() * 0.3)
+                .collect(),
+            (0..2048)
+                .map(|i| ((i as f32) * 0.013).sin() * 0.3)
+                .collect(),
+            None,
+        );
+        // Keep model-only test free of dsp dep — just verify demo audio beds exist
+        let gtr = proj
+            .tracks
+            .iter()
+            .find(|t| t.name.contains("Guitar"))
+            .expect("comp guitar track");
+        assert!(!gtr.clips.is_empty());
+        assert!(gtr.clips[0].takes.len() >= 3);
+        let _ = buf;
+        let _ = rhythm;
     }
 }

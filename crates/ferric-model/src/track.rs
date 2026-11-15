@@ -7,21 +7,53 @@ pub type TrackId = Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InputSource {
+    /// Stereo hardware pair `stereo_pair` → channels `(pair*2, pair*2+1)` plus all MIDI.
     AudioAndMidi { stereo_pair: u8 },
+    /// Mono hardware channel index (0-based).
     AudioMono { channel: u8 },
     MidiAll,
     ResampleTrackOutput,
 }
 
 impl InputSource {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            InputSource::AudioAndMidi { .. } => "In 1/2 + All MIDI",
-            InputSource::AudioMono { channel: 0 } => "Mic / Guitar In 1 (Mono)",
-            InputSource::AudioMono { .. } => "Inst In 2 (Mono)",
-            InputSource::MidiAll => "All MIDI Inputs",
-            InputSource::ResampleTrackOutput => "Resample Track Out",
+            InputSource::AudioAndMidi { stereo_pair } => {
+                let a = stereo_pair as u16 * 2 + 1;
+                let b = a + 1;
+                format!("In {a}/{b} + MIDI")
+            }
+            InputSource::AudioMono { channel } => {
+                format!("In {} (Mono)", channel as u16 + 1)
+            }
+            InputSource::MidiAll => "All MIDI Inputs".into(),
+            InputSource::ResampleTrackOutput => "Resample Track Out".into(),
         }
+    }
+
+    /// Hardware channel indices used by this source (empty for MIDI-only / resample).
+    pub fn hardware_channels(self) -> Option<(u8, Option<u8>)> {
+        match self {
+            InputSource::AudioAndMidi { stereo_pair } => {
+                let l = stereo_pair.saturating_mul(2);
+                Some((l, Some(l.saturating_add(1))))
+            }
+            InputSource::AudioMono { channel } => Some((channel, None)),
+            InputSource::MidiAll | InputSource::ResampleTrackOutput => None,
+        }
+    }
+
+    pub fn all_hardware_choices() -> Vec<InputSource> {
+        let mut v = Vec::with_capacity(20);
+        for pair in 0..8u8 {
+            v.push(InputSource::AudioAndMidi { stereo_pair: pair });
+        }
+        for ch in 0..16u8 {
+            v.push(InputSource::AudioMono { channel: ch });
+        }
+        v.push(InputSource::MidiAll);
+        v.push(InputSource::ResampleTrackOutput);
+        v
     }
 }
 
@@ -270,6 +302,134 @@ impl Default for TrackArpeggiator {
     }
 }
 
+/// Non-destructive MPC Groove Pool Template per Track (applied live in `AudioGraphCore` without
+/// mutating stored MIDI clip grid coordinates!).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GrooveTemplate {
+    #[default]
+    Straight,
+    Mpc54Tight,
+    Mpc58Classic,
+    Mpc62BoomBap,
+    Mpc66TripletSwing,
+    Mpc71HeavyPocket,
+    LaidBackNeoSoul,
+    PushedUrgent16ths,
+}
+
+impl GrooveTemplate {
+    pub const ALL: &'static [GrooveTemplate] = &[
+        GrooveTemplate::Straight,
+        GrooveTemplate::Mpc54Tight,
+        GrooveTemplate::Mpc58Classic,
+        GrooveTemplate::Mpc62BoomBap,
+        GrooveTemplate::Mpc66TripletSwing,
+        GrooveTemplate::Mpc71HeavyPocket,
+        GrooveTemplate::LaidBackNeoSoul,
+        GrooveTemplate::PushedUrgent16ths,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            GrooveTemplate::Straight => "Straight 50% (Grid)",
+            GrooveTemplate::Mpc54Tight => "MPC-60 54% Tight",
+            GrooveTemplate::Mpc58Classic => "MPC-3000 58% Pocket",
+            GrooveTemplate::Mpc62BoomBap => "MPC 62% Boom-Bap",
+            GrooveTemplate::Mpc66TripletSwing => "MPC 66.7% Triplet",
+            GrooveTemplate::Mpc71HeavyPocket => "SP-1200 71% Heavy",
+            GrooveTemplate::LaidBackNeoSoul => "Dilla / Neo-Soul Drag",
+            GrooveTemplate::PushedUrgent16ths => "Pushed Rush (+Pocket)",
+        }
+    }
+
+    pub fn short_badge(self) -> &'static str {
+        match self {
+            GrooveTemplate::Straight => "50%",
+            GrooveTemplate::Mpc54Tight => "MPC 54%",
+            GrooveTemplate::Mpc58Classic => "MPC 58%",
+            GrooveTemplate::Mpc62BoomBap => "MPC 62%",
+            GrooveTemplate::Mpc66TripletSwing => "MPC 67%",
+            GrooveTemplate::Mpc71HeavyPocket => "SP 71%",
+            GrooveTemplate::LaidBackNeoSoul => "DILLA",
+            GrooveTemplate::PushedUrgent16ths => "PUSH",
+        }
+    }
+
+    /// Computes `(beat_offset, velocity_multiplier)` for a note starting at `beat` scaled by `amount` (`0.0..=1.0`).
+    #[inline]
+    pub fn transform_note(self, beat: f64, amount: f32) -> (f64, f32) {
+        let amt = amount.clamp(0.0, 1.0) as f64;
+        if self == GrooveTemplate::Straight || amt <= 1e-4 {
+            return (0.0, 1.0);
+        }
+        // Position within a 1/8-note pair (0.5 beats = two 1/16th steps: `0.00` = downbeat 16th, `0.25` = upbeat 16th)
+        let pos_in_eighth = beat.rem_euclid(0.5);
+        let is_odd_16th = (pos_in_eighth - 0.25).abs() < 0.09;
+
+        match self {
+            GrooveTemplate::Straight => (0.0, 1.0),
+            GrooveTemplate::Mpc54Tight => {
+                if is_odd_16th {
+                    (0.5 * (0.54 - 0.50) * amt, 1.0 + 0.05 * amt as f32)
+                } else {
+                    (0.0, 1.0)
+                }
+            }
+            GrooveTemplate::Mpc58Classic => {
+                if is_odd_16th {
+                    (0.5 * (0.58 - 0.50) * amt, 1.0 + 0.08 * amt as f32)
+                } else {
+                    (0.0, 1.0)
+                }
+            }
+            GrooveTemplate::Mpc62BoomBap => {
+                if is_odd_16th {
+                    (0.5 * (0.62 - 0.50) * amt, 1.0 + 0.10 * amt as f32)
+                } else {
+                    (0.0, 0.96)
+                }
+            }
+            GrooveTemplate::Mpc66TripletSwing => {
+                if is_odd_16th {
+                    (0.5 * (0.6667 - 0.50) * amt, 1.0 + 0.10 * amt as f32)
+                } else {
+                    (0.0, 1.0)
+                }
+            }
+            GrooveTemplate::Mpc71HeavyPocket => {
+                if is_odd_16th {
+                    (0.5 * (0.71 - 0.50) * amt, 1.0 + 0.12 * amt as f32)
+                } else {
+                    (0.0, 0.95)
+                }
+            }
+            GrooveTemplate::LaidBackNeoSoul => {
+                // Backbeat snares & odd 16ths drag slightly behind the grid for warm human pocket
+                let beat_in_bar = beat.rem_euclid(4.0);
+                let is_backbeat = (beat_in_bar - 1.0).abs() < 0.08 || (beat_in_bar - 3.0).abs() < 0.08;
+                if is_odd_16th {
+                    (0.048 * amt, 0.92)
+                } else if is_backbeat {
+                    (0.026 * amt, 1.06)
+                } else {
+                    (0.0, 1.0)
+                }
+            }
+            GrooveTemplate::PushedUrgent16ths => {
+                if is_odd_16th {
+                    (-0.018 * amt, 1.05)
+                } else {
+                    (0.0, 1.0)
+                }
+            }
+        }
+    }
+}
+
+fn default_groove_amount() -> f32 {
+    1.0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
     pub id: TrackId,
@@ -289,6 +449,17 @@ pub struct Track {
     pub input_source: InputSource,
     #[serde(default)]
     pub arpeggiator: TrackArpeggiator,
+    /// Non-destructive MPC / Pocket Groove template applied at playback & bounce time.
+    #[serde(default)]
+    pub groove_template: GrooveTemplate,
+    #[serde(default = "default_groove_amount")]
+    pub groove_amount: f32,
+    /// When `true`, MIDI notes on this track automatically snap to the active global `ChordTrack` harmony!
+    #[serde(default)]
+    pub follow_chord_track: bool,
+    /// Optional VCA Console Fader Group controlling this track's post-automation gain & mute/solo!
+    #[serde(default)]
+    pub vca_group_id: Option<Uuid>,
     pub fx_chain: Vec<FxSlot>,
     pub modulators: Vec<ModulatorSlot>,
     pub sends: Vec<TrackSend>,
@@ -328,6 +499,10 @@ impl Track {
             phase_invert: false,
             input_source: InputSource::AudioAndMidi { stereo_pair: 0 },
             arpeggiator: TrackArpeggiator::default(),
+            groove_template: GrooveTemplate::Straight,
+            groove_amount: 1.0,
+            follow_chord_track: false,
+            vca_group_id: None,
             fx_chain: Vec::new(),
             modulators: Vec::new(),
             sends: Vec::new(),

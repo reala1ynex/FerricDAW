@@ -73,11 +73,13 @@ pub fn build_app_icon() -> egui::IconData {
     }
 }
 
-pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
+/// Returns `true` when the user clicks **Start Night Current Tutorial**.
+pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) -> bool {
     if !*open {
-        return;
+        return false;
     }
-    egui::Window::new("❓ FerricDAW v1.0 — Studio Quickstart & Shortcut Guide")
+    let mut start_tutorial = false;
+    egui::Window::new("❓ FerricDAW v1.1.1 — Studio Quickstart & Shortcut Guide")
         .open(open)
         .collapsible(false)
         .resizable(true)
@@ -93,7 +95,7 @@ pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.label(
-                    RichText::new("Welcome to FerricDAW v1.0")
+                    RichText::new("Welcome to FerricDAW v1.1.1")
                         .size(16.0)
                         .strong()
                         .color(ACCENT_FERRIC),
@@ -105,6 +107,36 @@ pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
                     .size(11.5)
                     .color(TEXT_DIM),
                 );
+                ui.add_space(8.0);
+                egui::Frame::new()
+                    .fill(BG_DEEP)
+                    .corner_radius(6)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("🎓 Build Night Current (in-app tutorial)")
+                                .strong()
+                                .color(ACCENT_FERRIC),
+                        );
+                        ui.label(
+                            RichText::new(
+                                "Step-by-step coach that walks you through the whole dark-techno song — chords, Generate Arr, drums, hook, sidechain, mix, bounce.",
+                            )
+                            .size(11.5)
+                            .color(TEXT_MAIN),
+                        );
+                        ui.add_space(6.0);
+                        if ui
+                            .button(
+                                RichText::new("Start Night Current Tutorial")
+                                    .strong()
+                                    .color(ACCENT_TEAL),
+                            )
+                            .clicked()
+                        {
+                            start_tutorial = true;
+                        }
+                    });
                 ui.separator();
 
                 // Section 1: Hardware Rig
@@ -119,6 +151,7 @@ pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
                                 .color(ACCENT_TEAL),
                         );
                         ui.label("• Click '🎹 Rig / DS-10' in the left Browser -> '🚀 Spawn LPK25 + DS-10 Hybrid Tracks' to create armed USB MIDI + Stereo Line-In channels in 1 click.");
+                        ui.label("• DS Line-In: Out=Speakers, In=External Microphone (Realtek). Keep Windows Mic Boost at 0%. Raise DS headphone volume, use Ferric +6 dB trim — not Mic Boost (hiss).");
                         ui.label("• Use 'Buffer: 64..1024 smp' to tune real-time latency, and click '📡 Loopback Ping' to calibrate sample-accurate overdub offset.");
                         ui.label("• Play a beat on external gear (like KORG DS-10) over 3.5mm Line-In and click '⚡ Lock BPM' (or tap 'TAP' 4x) to lock FerricDAW's tempo.");
                     });
@@ -140,6 +173,11 @@ pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
                         ui.label("• Multi-Take Swipe Comping: Loop-record or right-click any clip -> 'Show Multi-Take Swipe-Comp Lanes', then drag across takes to build seamless crossfaded comps.");
                         ui.label("• Auto-Crossfades & Glue: Overlap any two audio clips on a track for automatic Equal-Power crossfades, or select multiple clips and press Ctrl+G to Glue/Consolidate.");
                         ui.label("• Dynamic Conductor: Click '🎼 Tempo / Meter Map' above the timeline to draw linear tempo ramps and mid-song 3/4, 6/8, or 7/8 time-signature changes.");
+                        ui.label("• Chord Lane + CoF: Toggle '🎹 Chord Lane' to edit harmony, drop Progression presets, Generate Pad/Bass/Arp, or enable ♮ Chord-Follow on a track header.");
+                        ui.label("• VCA & Mix Recall: Mixing Console → + VCA strips + Mix A/B/C/D capture/recall for instant console compares.");
+                        ui.label("• Pro I/O: Hardware Rig → WASAPI Shared / Low Buffer / ASIO (falls back honestly if missing) + multi-channel In 1..16; sandboxed CLAP/VST3 by default (🛡 Sandbox on FX card).");
+                        ui.label("• Bounce MP3/OGG: Mastering Bounce now offers lossy delivery formats beside WAV/FLAC.");
+                        ui.label("• Stem Split: Right-click an audio clip → Split to 4 Stems (Drums / Bass / Mids / Highs).");
                     });
 
                 ui.add_space(8.0);
@@ -165,7 +203,7 @@ pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
                             ("Drag Empty Timeline", "Rubber-Band Marquee Multi-Clip Selection"),
                             ("Ctrl + Wheel / Shift + Wheel", "Zoom Timeline Horizontally / Pan Song Horizontally"),
                             ("Shift + Drag Automation Pt", "Bend Exponential / Logarithmic Bezier Curve Tension"),
-                            ("Ctrl + B", "Mastering Bounce (Lossless FLAC / WAV, -14 LUFS, True-Peak, TPDF Dither)"),
+                            ("Ctrl + B", "Mastering Bounce (WAV / FLAC / MP3 / OGG, -14 LUFS, True-Peak, TPDF Dither)"),
                             ("Ctrl + S / Ctrl + O", "Save / Open Lossless Session Bundle (.ferric + _Audio/ folder)"),
                             ("Ctrl + Z / Ctrl + Y", "Instant Undo / Redo (< 1 ms Arc-backed snapshots)"),
                         ];
@@ -177,4 +215,8 @@ pub fn render_quickstart_help_modal(ctx: &Context, open: &mut bool) {
                     });
             });
         });
+    if start_tutorial {
+        *open = false;
+    }
+    start_tutorial
 }

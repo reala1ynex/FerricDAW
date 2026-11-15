@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-app"
-version = "1.0.0"
+version = "1.1.1"
 dependencies = [
  "eframe",
  "egui",
@@ -1142,7 +1142,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-dsp"
-version = "1.0.0"
+version = "1.1.1"
 dependencies = [
  "ferric-model",
  "rustfft",
@@ -1151,12 +1151,14 @@ dependencies = [
 
 [[package]]
 name = "ferric-engine"
-version = "1.0.0"
+version = "1.1.1"
 dependencies = [
  "base64",
  "cpal",
+ "env_logger",
  "ferric-dsp",
  "ferric-model",
+ "ferric-plugin-bridge",
  "hound",
  "libloading",
  "log",
@@ -1170,7 +1172,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-model"
-version = "1.0.0"
+version = "1.1.1"
 dependencies = [
  "base64",
  "midly",
@@ -1179,6 +1181,19 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "uuid",
+]
+
+[[package]]
+name = "ferric-plugin-bridge"
+version = "1.1.1"
+dependencies = [
+ "ferric-dsp",
+ "ferric-model",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

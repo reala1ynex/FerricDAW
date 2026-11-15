@@ -1,12 +1,28 @@
-# FerricDAW v1.0
+# FerricDAW v1.1.1
 
 **Full-Fledged, Ultra-Lightweight Open-Source Hybrid Digital Audio Workstation in 100% Pure Rust.**
 
-FerricDAW combines **REAPER's** universal *"Track = Anything"* architecture, multi-take swipe comping, and ~9.4 MB native standalone binary with **Bitwig/Ableton** hybrid session clip launching, modulators, **WSOLA time-stretching**, **Scale-Aware Vocal Auto-Pitch**, **Bezier automation**, **full `.CLAP` + `.VST3` plugin hosting with native Win32 `HWND` editors**, **Lossless `FLAC` + `-14 LUFS` Mastering**, **Dynamic Tempo/Meter Conductor Maps**, and dedicated **Akai LPK25 + Nintendo DS (KORG DS-10)** hardware integration.
+FerricDAW combines **REAPER's** universal *"Track = Anything"* architecture, multi-take swipe comping, and a tiny native standalone binary with **Bitwig/Ableton** hybrid session clip launching, modulators, **WSOLA time-stretching**, **Scale-Aware Vocal Auto-Pitch**, **Bezier automation**, **full `.CLAP` + `.VST3` plugin hosting** (in-process editors + **out-of-process sandbox**), **Lossless `FLAC` / Lossy `MP3`/`OGG` + `-14 LUFS` Mastering**, **VCA console groups**, **Chord Lane songwriter**, **Dynamic Tempo/Meter Conductor Maps**, and dedicated **Akai LPK25 + Nintendo DS (KORG DS-10)** hardware integration.
+
+**Tutorial song:** **Night Current** — in-app **🎓 Tutorial** coach (also Ferric menu / Ctrl+K). Written twin: `docs/BEGINNER_GUIDE.md`. Finish line: `demo/NightCurrent-Demo.wav` (128 BPM dark techno, Cm–Ab–Eb–Bb). Factory session **Afterglow Copper** is a separate playground.
 
 ---
 
-## Complete v1.0 Studio Feature Set
+## Windows portable (send this out)
+
+Unzip `FerricDAW-v1.1.1-win-x64.zip` and run **`ferricdaw.exe`**. Keep `ferric-plugin-bridge.exe` next to it — **plugins that crash run in a worker, not the DAW**. First launch offers **Night Current Tutorial / Afterglow playground / Empty**. Play **`demo/NightCurrent-Demo.wav`** (or **A/B vs demo** after bounce) — that’s the tutorial finish line.
+
+Optional DS Line-In helper (Realtek External Mic, Mic Boost off):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\SetDs10Capture.ps1
+```
+
+**DS tip:** Speakers out + External Microphone in. Windows **Mic Boost = 0%**. Turn up the DS headphone volume; use Ferric **+6 dB** trim — Mic Boost causes hiss.
+
+---
+
+## Complete v1.1 Studio Feature Set
 
 1. **REAPER Universal Track Graph & Pro Mixing (`ferric-model` & `ferric-engine`):**
    - Every track simultaneously supports Audio clips, MIDI clips, Folder Submix children, Session Launcher loops, Instruments, Audio FX, Modulators, and Pre-FX / Pre-Fader / Post-Fader Aux Sends.
@@ -28,6 +44,11 @@ FerricDAW combines **REAPER's** universal *"Track = Anything"* architecture, mul
    - Pure-Rust RFC 9639 **Lossless Stereo `FLAC` (16/24-bit + MD5)** & **`WAV` (16/24/32f)** export with **ITU-R BS.1770-4 Integrated `-14 LUFS` Normalization**, **4x True-Peak (`dBTP`) Lookahead Limiter**, and **Triangular `TPDF` Dither**.
 7. **Akai LPK25 + Nintendo DS (KORG DS-10) Hardware Rig:**
    - Multi-port USB MIDI hot-plugging (`CC64` Sustain, Pitch-Bend, Mod Wheel), simultaneous LPK25 MIDI + DS-10 Stereo Line-In multitrack recording, automatic Line-In BPM detector, **Tap Tempo**, and an interactive **KORG DS-10 KAOSS X-Y Pad**.
+8. **Milestone 9 — Studio Console & Harmony Arranger:**
+   - **VCA Groups** (engine-wired gain/mute/solo) + **Mix A/B/C/D** recall, interactive **Chord Lane** + Circle of Fifths / Progression presets, **Generate Arrangement**, **Chord-Follow** MIDI snap, and offline **4-stem HPSS split**.
+9. **Milestone 10 — Pro I/O & Crash-Safe Plugins:**
+   - **WASAPI Shared / Exclusive / ASIO** driver selector, **16-channel hardware I/O matrix**, default **out-of-process `ferric-plugin-bridge` sandbox** for CLAP/VST3, and **MP3 / OGG** mastering bounce.
+10. **v1.1.1 polish:** Stable maximized window, sticky resizable lower dock, DS capture gain staging (Mic Boost off / +6 dB), and UI FPS fix (no per-frame WASAPI device scans).
 
 ---
 
@@ -35,6 +56,11 @@ FerricDAW combines **REAPER's** universal *"Track = Anything"* architecture, mul
 
 ```powershell
 cargo run --release
+# Optional: place the sandboxed plugin worker next to the DAW binary
+cargo build --release -p ferric-engine --bin ferric-plugin-bridge
+
+# Package portable zip
+powershell -ExecutionPolicy Bypass -File tools\Package-WindowsRelease.ps1
 ```
 
 ### Run Full Workspace & Real Plugin Verification Suite

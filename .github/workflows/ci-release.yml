@@ -60,7 +60,13 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist/FerricDAW | Out-Null
           Copy-Item target/release/ferricdaw.exe dist/FerricDAW/
+          if (Test-Path target/release/ferric-plugin-bridge.exe) {
+            Copy-Item target/release/ferric-plugin-bridge.exe dist/FerricDAW/
+          }
           Copy-Item README.md, LICENSE-MIT, LICENSE-APACHE dist/FerricDAW/
+          if (Test-Path tools/SetDs10Capture.ps1) {
+            Copy-Item tools/SetDs10Capture.ps1 dist/FerricDAW/
+          }
           Compress-Archive -Path dist/FerricDAW/* -DestinationPath dist/FerricDAW-${{ github.ref_name }}-win-x64.zip -Force
 
       - name: Publish GitHub Release

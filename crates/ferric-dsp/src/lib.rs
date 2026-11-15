@@ -4,6 +4,7 @@ pub mod effects;
 pub mod instruments;
 pub mod metering;
 pub mod sampler;
+pub mod stem_splitter;
 pub mod tempo_arp;
 pub mod tuner;
 pub mod warp_pitch;
@@ -22,6 +23,7 @@ pub use metering::{
     SPECTRUM_BANDS, VECTORSCOPE_POINTS,
 };
 pub use sampler::SamplePlayerProcessor;
+pub use stem_splitter::{split_audio_to_4_stems, FourStemSplit};
 pub use tempo_arp::{ArpRuntime, MidiExpression, OnsetBpmDetector};
 pub use tuner::{ChromaticTuner, TunerReading};
 pub use warp_pitch::{
