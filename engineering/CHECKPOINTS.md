@@ -11,10 +11,10 @@
 ## CP-2026-11-15-B — P0/P1 repair + engineering system (this session)
 
 - **Stage:** Dirty-close, updater harden, autosave/MIDI banners, ASIO honesty, README 1.1.4, CI function-test, full `/engineering` set
-- **Commit:** *(filled after checkpoint commit)*
-- **Branch:** *(filled after checkpoint commit)*
+- **Commit:** `4875ef9`
+- **Branch:** `master`
 - **Files:** `main.rs`, `update.rs`, `piano_roll.rs`, `browser.rs`, `audio_backend.rs`, `README.md`, `ci-release.yml`, `engineering/*`
-- **Tests:** *(filled after suite re-run)*
+- **Tests:** `cargo test --workspace` PASS; function-test **57/57** PASS (re-run after sleep recovery)
 - **Completed reqs:** R-05, R-08(export UX), R-10 honesty, R-14 harden, R-18, R-19 CI, R-20
 - **Outstanding:** I-05 (egui hit-test), I-12 (operator gh auth), I-13 (true ASIO), I-14 (Mac/Linux ship)
-- **Next:** Adversarial spot-check; classify RELEASE_READINESS; optional republish only if version bump required (no bump — docs/security fixes candidate for 1.1.5 later)
+- **Next:** Optional v1.1.5 publish for dirty-close + updater harden in the wild
