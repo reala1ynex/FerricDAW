@@ -1394,7 +1394,8 @@ impl ArrangementState {
                 cell,
                 ui.id().with(("sess_slot", project.tracks[t_idx].id, s_idx)),
                 Sense::click(),
-            );
+            )
+            .on_hover_text("Click to create a 4-bar sketch loop");
 
             if let Some(slot) = &project.tracks[t_idx].session_slots[s_idx] {
                 let is_playing_slot = active_slot == Some(s_idx);
@@ -1427,19 +1428,19 @@ impl ArrangementState {
                     actions.push(ArrangementAction::ProjectMutated("Toggle Session Clip"));
                 }
             } else {
-                ui.painter()
-                    .rect_filled(cell, 4, Color32::from_rgb(18, 20, 26));
-                ui.painter().rect_stroke(
-                    cell,
-                    4,
-                    Stroke::new(1.0_f32, Color32::from_rgb(35, 38, 48)),
-                    StrokeKind::Inside,
-                );
+                // Keep empty launcher slots quiet instead of painting a row of
+                // unexplained dark boxes. The action affordance appears on hover.
                 if resp.hovered() {
+                    ui.painter().rect_stroke(
+                        cell,
+                        4,
+                        Stroke::new(1.0_f32, BORDER_SUBTLE),
+                        StrokeKind::Inside,
+                    );
                     ui.painter().text(
                         cell.center(),
                         Align2::CENTER_CENTER,
-                        "+ Loop",
+                        "+",
                         FontId::proportional(10.0),
                         TEXT_DIM,
                     );

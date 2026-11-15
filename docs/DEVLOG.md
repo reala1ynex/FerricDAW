@@ -83,3 +83,9 @@ Earlier cut: icon, version info, F1 quickstart, and studio workflow polish.
 - Visual loop rechecked Hardware, Samples, Presets/Plugins, Ferric menu, FX dock, Launch dock, and Kaoss surface; no remaining obvious mismatch was observed in those inspected surfaces.
 - Verification: warning-denied workspace check, workspace tests, and Windows function test 59/59 passed.
 
+## 2026-11-15 — v1.1.10 arrangement cleanup
+
+- Removed the painted dark rectangles for unused Session launcher slots; empty slots stay clean and reveal a `+` affordance only on hover.
+- Preserved click-to-create 4-bar sketch loops and added an explicit hover hint so the interaction remains discoverable without visual noise.
+- Verification follows after the release build: warning-denied workspace check, workspace tests, Windows function test, and a final visual pass.
+

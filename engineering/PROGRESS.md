@@ -2,7 +2,11 @@
 
 **Last updated:** 2026-11-15  
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
-**Latest release:** v1.1.9; remaining coverage limits are recorded under I-05.
+**Latest release:** v1.1.10; remaining coverage limits are recorded under I-05.
+
+## v1.1.10 release candidate — arrangement cleanup
+
+- Unused Session launcher slots no longer render as unexplained dark boxes; they are visually quiet until hovered, then show a deliberate `+` affordance and tooltip.
 
 ## v1.1.9 release candidate — visual contrast follow-up
 
