@@ -396,7 +396,10 @@ impl ArrangementState {
         telem: &EngineTelemetry,
         actions: &mut Vec<ArrangementAction>,
     ) {
-        let header_w = 238.0_f32;
+        // The header owns eight compact controls plus input/monitor rows. Keep
+        // the full control cluster inside its card instead of letting the final
+        // freeze/import buttons spill into the session area.
+        let header_w = 300.0_f32;
         let session_col_w = 92.0_f32;
         let num_scenes = project.scenes.len();
         let session_w = if self.show_session_launcher {

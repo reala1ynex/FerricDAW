@@ -2,11 +2,26 @@
 
 **Last updated:** 2026-11-15  
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
-**Latest release:** v1.1.11; remaining coverage limits are recorded under I-05.
+**Latest release:** v1.1.12; remaining coverage limits are recorded under I-05.
+
+## v1.1.12 release candidate — contained track header
+
+- The arrangement track header now reserves enough width for the full compact control cluster, keeping freeze/import actions inside the card instead of spilling into the session area.
+
+## v1.1.12 release verification pending
+
+- Automated gates passed and the final visual loop covered the default arrangement, Samples browser, and Presets/Plugins browser. Publish and remote feed/hash verification remain before this becomes the current release.
 
 ## v1.1.11 release candidate — flat empty-launcher cleanup
 
 - Empty Session launcher regions no longer paint a large background block when unused; populated regions retain the background surface.
+
+## v1.1.11 release verified
+
+- Published `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.11` from commit `1859d32`.
+- Removed the prior v1.1.10 release/tag; remote tag inventory now contains only v1.1.11.
+- Downloaded `latest.json`: starts with `{`, has no UTF-8 BOM, reports version 1.1.11, and its SHA-256 `a0dbc7149acefc30d3033befbe6d6275cd8665ebff05a0aa62c34241b290c7f4` matches the local v1.1.11 zip.
+- Final visual loop rechecked the production arrangement, Samples browser, and Presets/Plugins browser. The refreshed production folder was left locked by the running app; the release zip is the authoritative shipped artifact.
 
 ## v1.1.10 release candidate — arrangement cleanup
 

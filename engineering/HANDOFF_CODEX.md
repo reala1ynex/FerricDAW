@@ -7,9 +7,9 @@
 
 ---
 
-## ★ 2026-11-15 mission status — v1.1.11 shipped
+## ★ 2026-11-15 mission status — v1.1.12 candidate
 
-v1.1.11 is the current public release, tagged after the arrangement cleanup. The release zip and latest feed were independently generated/downloaded and their SHA-256 verified; the v1.1.10 release/tag were removed after verification. Read `PROGRESS.md` and `RELEASE_READINESS.md` for exact visual coverage and the still-open I-05 limitation. The directive below is retained as historical context; do not claim every UI widget was pixel-tested.
+v1.1.12 is the next candidate after the arrangement control-containment cleanup. Automated gates and the inspected visual surfaces pass; publish and remote feed/hash verification remain. Read `PROGRESS.md` and `RELEASE_READINESS.md` for exact visual coverage and the still-open I-05 limitation. The directive below is retained as historical context; do not claim every UI widget was pixel-tested.
 
 ## ★ HISTORICAL MISSION (owner directive)
 

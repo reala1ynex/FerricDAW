@@ -8,6 +8,11 @@ Notes on what shipped and when. Newest first.
 
 ---
 
+## 2026-11-15 — v1.1.12 track-header containment
+
+- Expanded the arrangement track header so its compact mute/solo/record/channel/FX/freeze/import controls remain inside the orange card at the reference layout width.
+- Rechecked the default arrangement, Samples browser, and Presets/Plugins browser visually; no stray control overflow or unexplained launcher boxes remain in the inspected surfaces.
+
 ## 2026-11-15 — v1.1.8 UI polish
 
 - Unified buttons, toggles, menus, and action rows around the compact Ferric chrome: one 24 px geometry, 5 px radius, shared inactive/hover/open/active states, and semantic teal/orange/purple/amber/red accents.
