@@ -8,6 +8,14 @@ Notes on what shipped and when. Newest first.
 
 ---
 
+## 2026-11-15 — v1.1.7 candidate
+
+- Added polyphonic drawbar organ and velocity-sensitive electric piano, with factory presets and palette actions.
+- Reduced per-sample pitch calculation in both instruments; added MIDI and runtime audio tests.
+- Release and final end-user verification remain pending.
+
+---
+
 ## 2026-11-15 — v1.1.6
 
 Current public release.

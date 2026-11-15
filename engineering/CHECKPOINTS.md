@@ -1,5 +1,13 @@
 # Development Checkpoints
 
+## CP-2026-11-15-E — v1.1.7 candidate in progress
+
+- **Base:** `bd4efdb` on `master`; candidate implementation commit `0914940` is local and not yet pushed.
+- **Changes:** Drawbar Organ and Electric Piano with presets, MIDI DSP, UI and function tests; session-save safety fixes I-17/I-18.
+- **Tests:** warning-denied workspace check, workspace tests, and Windows function test (59/59) pass on the candidate; logs in `engineering/last-*.txt`.
+- **Visual:** partial release-build exploration completed; the rebuilt candidate launches to the empty session, but final verification after safety fixes remains open. The alternate `target/ship` release build and package succeed despite the running instance locking the default executable.
+- **Release:** public v1.1.6 unchanged. Do not publish v1.1.7 until final candidate build and visual acceptance are complete; then verify feed/hash before removing the prior release and tag.
+
 ## CP-2026-11-15-A — Pre-finalization baseline
 
 - **Stage:** Start of MASTER PROMPT finalization

@@ -19,12 +19,17 @@
 | I-13 | P2 | Audio | True ASIO needs cpal asio + SDK | By design portable | **Blocked** | N/A | Honesty messaging only |
 | I-14 | P3 | Scope | Mac/Linux portable packaging | Out of scope | **Blocked** | Advisory CI | N-06 |
 | I-15 | P2 | Docs | Version badge inconsistency | Same as I-10 | **Resolved** | README | Merged with I-10 |
+| I-16 | P2 | Audio performance | New instrument prototypes calculated exponential pitch for each voice on every sample | Frequency computed inside real-time sample loop | **Resolved** | DSP runtime and instrument tests; workspace check and tests pass | Note frequency calculated on note-on; pitch bend ratio once per block |
+| I-17 | P1 | Session safety | Save before quitting could continue after a failed save when autosave had cleared the dirty flag; Save before other transitions did not continue | Confirmation used project path and autosave state instead of the save result | **Fixed; release-build visual verification pending** | `save_guard_tests`, workspace and function tests pass | Save returns success; pending action executes only after success |
+| I-18 | P1 | Session safety | Recovery autosave could suppress the unsaved-work guard for a new project | Recovery and user-project dirty state shared one flag | **Fixed; release-build visual verification pending** | `autosave_does_not_clear_unsaved_project_guard`, workspace and function tests pass | Separate project-save dirty flag is retained through recovery autosave |
+| I-19 | P2 | Packaging | A running build locks the default Cargo executable and blocks packaging; alternate Cargo target directories were ignored when copying files | Packaging hard-coded `target/release` | **Resolved** | Alternate target release build and package pass | `Package-WindowsRelease.ps1` now resolves `CARGO_TARGET_DIR` |
+| I-20 | P3 | Packaging docs | START_HERE implied first launch prompts for a session type | Stale packaging text | **Resolved** | Release startup visual smoke and zip contents | Text now states the empty-session startup and menu entry points |
 
-## Severity counts (this finalization pass)
+## Severity counts (including current candidate)
 
 | Severity | Discovered | Resolved | Open/Blocked |
 |----------|------------|----------|--------------|
 | P0 | 2 | 2 | 0 |
-| P1 | 4 | 4 | 0 |
-| P2 | 6 | 4 | 2 (I-05 accepted, I-13 blocked) |
-| P3 | 3 | 1 | 2 (I-12 env, I-14 blocked) |
+| P1 | 6 | 4 | 2 fixed in candidate, final visual verification pending (I-17, I-18) |
+| P2 | 8 | 6 | 2 (I-05 accepted, I-13 blocked) |
+| P3 | 4 | 2 | 2 (I-12 env, I-14 blocked) |

@@ -2,7 +2,7 @@
 
 A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX. Session clips, CLAP/VST3 plugins (crash-isolated), and a portable Windows build you can unzip and run.
 
-**Current version:** [1.1.6](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.6)  
+**Current public version:** [1.1.6](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.6)
 **Owner:** Patrick Rudolph ([@reala1ynex](https://github.com/reala1ynex))  
 **Devlog:** [`docs/DEVLOG.md`](docs/DEVLOG.md) · **Authors:** [`AUTHORS.md`](AUTHORS.md)
 

@@ -4,6 +4,17 @@
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
 **Active goal:** ★ ACTIVE MISSION in `HANDOFF_CODEX.md` — flaw review, more instruments, visual run, same tests, GitHub ship (target **v1.1.7+**).
 
+## Current v1.1.7 work in progress
+
+- Added drawbar organ and electric piano processors, instrument controls, factory presets, palette actions, and function-test cases.
+- Removed per-sample exponential pitch calculations (I-16). Warning-denied workspace check, workspace tests, and function-test 59/59 passed on the v1.1.7 candidate; logs in `last-*.txt`. Release build succeeded.
+- Release-build visual exploration has covered empty startup, hardware, browser and dock surfaces, tutorial entry, both new instrument insertions, XY movement, update and bounce dialogs, and dirty-close Cancel and Save (test project `visual-check-session-1.1.7.ferric`). This is partial: the complete tutorial, Afterglow, actual bounce, dirty-close Discard and exhaustive controls remain unverified.
+- v1.1.7 is a local candidate only. Public release remains v1.1.6; do not publish until all mandated gates are satisfied.
+- Subsequent review found I-17 in save-before-transition handling. The code now checks the actual save result and focused success/failure tests pass; rerun all three suites and rebuild/recheck the release binary because earlier results predate this fix.
+- I-18 separates recovery-autosave state from unsaved-project state; its focused regression test passes.
+- After I-18, all three mandated suites passed again: warning-denied check, workspace tests, and function test 59/59. A release rebuild compiled the candidate but failed at the final copy because an earlier v1.1.7 test instance had `target/release/ferricdaw.exe` open. Do not assume the top-level release executable includes I-17/I-18. The new release visual pass and publication remain pending.
+- The alternate `target/ship` release build and Windows package now succeed without closing the open session (I-19). The v1.1.7 candidate launched to an empty session; local feed begins with `{`, has no BOM, and matches zip SHA-256 `cb9839c55ed1aae1da4a9f8ff91d9e68cc742e38b4b6f348f3ee5ede74722f04`. This is local package evidence, not verification of a remote release. A full final visual acceptance and publication remain open.
+
 ## Completed (prior sessions)
 
 - [x] `/engineering` registries + **HANDOFF_CODEX.md**

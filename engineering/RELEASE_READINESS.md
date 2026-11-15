@@ -1,6 +1,8 @@
 # Release Readiness
 
-**Classification:** **CONDITIONALLY READY**
+**Classification:** **v1.1.7 CANDIDATE NOT YET READY**
+
+The table below describes the previously shipped v1.1.6, not the current candidate. Final tests, comprehensive visual run, and release verification for v1.1.7 are pending; do not publish based on the old evidence.
 
 **App version:** **1.1.6**  
 **Release:** https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.6  
