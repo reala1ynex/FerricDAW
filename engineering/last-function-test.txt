@@ -1,6 +1,6 @@
 Building ferric-app…
    Compiling ferric-app v1.1.7 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 9.83s
+    Finished `dev` profile [optimized + debuginfo] target(s) in 8.56s
 Running function test: C:\Users\ndrpe\Projects\FerricDAW\target\debug\ferricdaw.exe --function-test
 FerricDAW function test — each button handler, then next
 ========================================================

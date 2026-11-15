@@ -24,6 +24,7 @@
 | I-18 | P1 | Session safety | Recovery autosave could suppress the unsaved-work guard for a new project | Recovery and user-project dirty state shared one flag | **Fixed; release-build visual verification pending** | `autosave_does_not_clear_unsaved_project_guard`, workspace and function tests pass | Separate project-save dirty flag is retained through recovery autosave |
 | I-19 | P2 | Packaging | A running build locks the default Cargo executable and blocks packaging; alternate Cargo target directories were ignored when copying files | Packaging hard-coded `target/release` | **Resolved** | Alternate target release build and package pass | `Package-WindowsRelease.ps1` now resolves `CARGO_TARGET_DIR` |
 | I-20 | P3 | Packaging docs | START_HERE implied first launch prompts for a session type | Stale packaging text | **Resolved** | Release startup visual smoke and zip contents | Text now states the empty-session startup and menu entry points |
+| I-21 | P2 | UI | Bounce settings did not share the reference card and rounded-control styling | Legacy flat dialog rows | **Resolved** | Release visual check: format change and actual WAV export; required suites pass | Bounce settings use `chrome_card`, `chrome_row_label`, and `pill_toggle` |
 
 ## Severity counts (including current candidate)
 
@@ -31,5 +32,5 @@
 |----------|------------|----------|--------------|
 | P0 | 2 | 2 | 0 |
 | P1 | 6 | 4 | 2 fixed in candidate, final visual verification pending (I-17, I-18) |
-| P2 | 8 | 6 | 2 (I-05 accepted, I-13 blocked) |
+| P2 | 9 | 7 | 2 (I-05 accepted, I-13 blocked) |
 | P3 | 4 | 2 | 2 (I-12 env, I-14 blocked) |

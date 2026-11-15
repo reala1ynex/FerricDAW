@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-15
 
-The candidate results below include the I-17 and I-18 session-safety fixes. The release-build visual pass after those fixes is still pending.
+The candidate results below include the I-17 and I-18 session-safety fixes and the bounce chrome change. Release-build visual evidence and its limits are recorded in `PROGRESS.md`.
 
 | ID | Suite | Scope | Command / location | Last result | Covers |
 |----|-------|-------|--------------------|-------------|--------|

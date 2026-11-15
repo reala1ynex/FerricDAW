@@ -2948,37 +2948,34 @@ impl FerricDawApp {
                 );
                 ui.separator();
 
-                ui.horizontal(|ui| {
-                    ui.radio_value(
-                        &mut self.bounce_modal.export_stems,
-                        false,
-                        "Stereo Master Mix",
-                    );
-                    ui.radio_value(
-                        &mut self.bounce_modal.export_stems,
-                        true,
-                        "All Individual Track Stems (Folder)",
-                    );
+                chrome_card(ui, BORDER_SUBTLE, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    chrome_row_label(ui, "Export ->", ACCENT_TEAL);
+                    if pill_toggle(ui, "Stereo Master Mix", !self.bounce_modal.export_stems, ACCENT_TEAL).clicked() {
+                        self.bounce_modal.export_stems = false;
+                    }
+                    if pill_toggle(ui, "Individual Track Stems", self.bounce_modal.export_stems, ACCENT_TEAL).clicked() {
+                        self.bounce_modal.export_stems = true;
+                    }
                 });
 
-                ui.horizontal(|ui| {
-                    ui.label("Container Format:");
+                ui.horizontal_wrapped(|ui| {
+                    chrome_row_label(ui, "Format ->", ACCENT_AMBER);
                     for &fmt in ExportFormat::ALL {
-                        ui.selectable_value(&mut self.bounce_modal.format, fmt, fmt.label());
+                        if pill_toggle(ui, fmt.label(), self.bounce_modal.format == fmt, ACCENT_FERRIC).clicked() {
+                            self.bounce_modal.format = fmt;
+                        }
                     }
                 });
 
-                ui.horizontal(|ui| {
-                    ui.label("Sample Rate:");
+                ui.horizontal_wrapped(|ui| {
+                    chrome_row_label(ui, "Sample rate ->", ACCENT_TEAL);
                     for sr in [44_100_u32, 48_000, 96_000] {
-                        ui.selectable_value(
-                            &mut self.bounce_modal.sample_rate,
-                            sr,
-                            format!("{} Hz", sr),
-                        );
+                        if pill_toggle(ui, &format!("{} Hz", sr), self.bounce_modal.sample_rate == sr, ACCENT_TEAL).clicked() {
+                            self.bounce_modal.sample_rate = sr;
+                        }
                     }
-                    ui.separator();
-                    ui.label("Bit Depth:");
+                    chrome_row_label(ui, "Bit depth ->", ACCENT_AMBER);
                     egui::ComboBox::from_id_salt("bounce_bit_depth")
                         .selected_text(self.bounce_modal.bit_depth.label())
                         .width(145.0)
@@ -2997,6 +2994,7 @@ impl FerricDawApp {
                             }
                         });
                 });
+                });
 
                 if self.bounce_modal.format == ExportFormat::Flac
                     && self.bounce_modal.bit_depth == BitDepth::Float32
@@ -3004,13 +3002,9 @@ impl FerricDawApp {
                     self.bounce_modal.bit_depth = BitDepth::Pcm24;
                 }
 
-                ui.separator();
-                ui.label(
-                    egui::RichText::new("🎚 Mastering Loudness, True-Peak Ceiling & Dither")
-                        .size(11.5)
-                        .strong()
-                        .color(ACCENT_FERRIC),
-                );
+                ui.add_space(5.0);
+                chrome_card(ui, ACCENT_FERRIC, |ui| {
+                chrome_section_title(ui, "🎚 Mastering Loudness, True-Peak Ceiling & Dither", ACCENT_FERRIC);
 
                 ui.horizontal(|ui| {
                     ui.checkbox(
@@ -3045,7 +3039,7 @@ impl FerricDawApp {
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("True-Peak Ceiling:");
+                    chrome_row_label(ui, "True-peak ceiling ->", ACCENT_TEAL);
                     ui.add(
                         egui::DragValue::new(&mut self.bounce_modal.true_peak_ceiling_dbtp)
                             .range(-6.0..=0.0)
@@ -3060,7 +3054,7 @@ impl FerricDawApp {
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("Beat Range:");
+                    chrome_row_label(ui, "Beat range ->", ACCENT_AMBER);
                     ui.add(
                         egui::DragValue::new(&mut self.bounce_modal.start_beat)
                             .range(0.0..=512.0)
@@ -3071,6 +3065,7 @@ impl FerricDawApp {
                             .range(1.0..=1024.0)
                             .prefix("End "),
                     );
+                });
                 });
 
                 let opts = MasteringOptions {

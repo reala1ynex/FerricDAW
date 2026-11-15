@@ -8,17 +8,16 @@ Notes on what shipped and when. Newest first.
 
 ---
 
-## 2026-11-15 — v1.1.7 candidate
+## 2026-11-15 — v1.1.7
 
 - Added polyphonic drawbar organ and velocity-sensitive electric piano, with factory presets and palette actions.
 - Reduced per-sample pitch calculation in both instruments; added MIDI and runtime audio tests.
-- Release and final end-user verification remain pending.
+- Hardened save-before-close and session transitions against failed saves and recovery-autosave state.
+- Matched bounce controls to the existing compact Ferric chrome and made packaging honor `CARGO_TARGET_DIR`.
 
 ---
 
 ## 2026-11-15 — v1.1.6
-
-Current public release.
 
 - UI chrome pass: Samples, Presets/Plugins, DNA, Launch Pad, Mixer recall, FX rack, piano-roll toolbar, routing — same Pad A/B `chrome_card` / `chrome_row_label` recipe as Hardware Rig + Audio I/O + Kaoss
 

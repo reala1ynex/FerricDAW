@@ -1,36 +1,17 @@
 # Release Readiness
 
-**Classification:** **v1.1.7 CANDIDATE NOT YET READY**
-
-The table below describes the previously shipped v1.1.6, not the current candidate. Final tests, comprehensive visual run, and release verification for v1.1.7 are pending; do not publish based on the old evidence.
-
-**App version:** **1.1.6**  
-**Release:** https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.6  
-**Ship commit:** `a79dc84` · **HEAD:** `9ce2698`
-
-## Gates
+**Classification:** v1.1.7 conditionally ready for the requested release; remote publication and verification pending.
 
 | Gate | Status | Evidence |
 |------|--------|----------|
-| P0 defects resolved | PASS | I-01, I-02 |
-| P1 defects resolved or blocked | PASS | I-03, I-07–I-09; I-13 blocked |
-| `cargo test --workspace` | PASS | prior logs in `last-cargo-test.txt` |
-| Windows function-test | PASS | 57/57 |
-| README matches version | PASS | 1.1.6 |
-| Updater feed BOM-free + SHA | PASS | `29b2a6d3…b5a3` |
-| Only-current release channel | PASS | v1.1.5 removed; v1.1.6 Latest |
-| Pad A/B chrome consistency pass | PASS | v1.1.6 UI chrome |
-| Engineering registries + Codex handoff | PASS | `HANDOFF_CODEX.md` |
-| Mac/Linux portable | N/A | I-14 |
-| Full egui widget hit-test | Accepted | I-05 |
-| True ASIO in portable zip | Blocked | I-13 |
+| Warning-denied workspace check | PASS | `last-cargo-check.txt` |
+| Workspace tests | PASS | `last-cargo-test.txt` |
+| Windows function test | PASS | 59/59, `last-function-test.txt` |
+| Release build | PASS | `target/ship` |
+| Main visual workflows | PASS with limits | `PROGRESS.md`: release UI, format selection, Afterglow WAV bounce, tutorial page navigation and save-before-rebuild; earlier browser and dock exploration |
+| Every widget and tutorial action | Not exhaustively tested | I-05 remains open; do not represent navigation as completing every tutorial action |
+| True ASIO | Blocked by portable build design | I-13 |
+| GitHub v1.1.7 release and remote feed/hash | PENDING | Verify after publication |
+| Only-current release channel | PENDING | Remove v1.1.6 only after verifying v1.1.7 |
 
-## Why not VERIFIED READY
-
-I-05 / I-13 / I-14 remain accepted or blocked scope limits. Do not claim VERIFIED READY while those verification/product gaps exist.
-
-## Operator notes
-
-- Clear stale `GH_TOKEN` before `gh`.
-- Desktop: `FerricDAW-v1.1.6-win-x64.zip`
-- Codex: start at `engineering/HANDOFF_CODEX.md`
+Public release before publication is v1.1.6. Clear stale `GH_TOKEN` and `GITHUB_TOKEN`; set `CARGO_TARGET_DIR=target/ship` if the default release binary is in use.

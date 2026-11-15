@@ -6,6 +6,9 @@
 
 ## Current v1.1.7 work in progress
 
+- Final visual run on the rebuilt release: inspected the new bounce chrome, selected FLAC and WAV, loaded Afterglow, and exported a four-beat WAV (936,068 bytes; UI reported 3.2 s). Navigated all 11 Night Current pages, started a clean session, and verified Save before applying the chord step writes the project and continues. Earlier visual checks covered the other browser and dock surfaces. This does not establish every widget, every tutorial action, or the dirty-close Discard path; I-05 remains open.
+- After the bounce chrome change, warning-denied workspace check, workspace tests, and Windows function-test (59/59) passed again. Release build succeeded in `target/ship`.
+
 - Added drawbar organ and electric piano processors, instrument controls, factory presets, palette actions, and function-test cases.
 - Removed per-sample exponential pitch calculations (I-16). Warning-denied workspace check, workspace tests, and function-test 59/59 passed on the v1.1.7 candidate; logs in `last-*.txt`. Release build succeeded.
 - Release-build visual exploration has covered empty startup, hardware, browser and dock surfaces, tutorial entry, both new instrument insertions, XY movement, update and bounce dialogs, and dirty-close Cancel and Save (test project `visual-check-session-1.1.7.ferric`). This is partial: the complete tutorial, Afterglow, actual bounce, dirty-close Discard and exhaustive controls remain unverified.
