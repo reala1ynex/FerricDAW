@@ -1,5 +1,12 @@
 # Development Checkpoints
 
+## CP-2026-11-15-F — v1.1.7 released
+
+- **Tag:** v1.1.7 at `3765857`; release and zip are public.
+- **Validation:** warning-denied check, workspace tests, 59/59 function test; release UI checked and a four-beat Afterglow WAV exported. See `PROGRESS.md` for visual limits.
+- **Feed/zip SHA-256:** `7ef744c94350ecbd79333abcb844be55abdc857506b8249f1d3bc88db6fd9524`; downloaded assets and `/latest` verified.
+- **Channel:** v1.1.6 release and tag removed after validation; v1.1.7 is the only release and version tag.
+
 ## CP-2026-11-15-E — v1.1.7 candidate in progress
 
 - **Base:** `bd4efdb` on `master`; candidate implementation commit `0914940` is local and not yet pushed.

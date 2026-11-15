@@ -2,9 +2,16 @@
 
 **Last updated:** 2026-11-15  
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
-**Active goal:** ★ ACTIVE MISSION in `HANDOFF_CODEX.md` — flaw review, more instruments, visual run, same tests, GitHub ship (target **v1.1.7+**).
+**Latest release:** v1.1.7; remaining coverage limits are recorded under I-05.
 
-## Current v1.1.7 work in progress
+## v1.1.7 release verified
+
+- Published https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.7 at tagged commit `3765857`.
+- Downloaded release zip and feed independently: SHA-256 `7ef744c94350ecbd79333abcb844be55abdc857506b8249f1d3bc88db6fd9524` matches the feed; feed starts with `{` and has no BOM. `/latest` returns the same version and hash.
+- Removed v1.1.6 release and tag after verification. GitHub release list and remote tags show v1.1.7 only.
+- Visual coverage has limits: not every widget, tutorial action, or dirty-close Discard path was exercised. See I-05; do not describe those as verified.
+
+## v1.1.7 implementation and verification history
 
 - Final visual run on the rebuilt release: inspected the new bounce chrome, selected FLAC and WAV, loaded Afterglow, and exported a four-beat WAV (936,068 bytes; UI reported 3.2 s). Navigated all 11 Night Current pages, started a clean session, and verified Save before applying the chord step writes the project and continues. Earlier visual checks covered the other browser and dock surfaces. This does not establish every widget, every tutorial action, or the dirty-close Discard path; I-05 remains open.
 - After the bounce chrome change, warning-denied workspace check, workspace tests, and Windows function-test (59/59) passed again. Release build succeeded in `target/ship`.
@@ -25,7 +32,7 @@
 - [x] Pad A/B chrome pass (v1.1.6)
 - [x] Published v1.1.6; only-current channel
 
-## Assigned to Codex (open)
+## Historical assignment at start of v1.1.7
 
 - [ ] Adversarial flaw review → ISSUE_REGISTRY → fix P0/P1 (+ solid P2s)
 - [ ] Add more instruments (real DSP + palette + presets + function-test)

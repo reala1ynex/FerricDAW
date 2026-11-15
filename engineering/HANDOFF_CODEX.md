@@ -7,7 +7,11 @@
 
 ---
 
-## ★ ACTIVE MISSION — EXECUTE IMMEDIATELY (owner directive)
+## ★ 2026-11-15 mission status — v1.1.7 shipped
+
+v1.1.7 is the current public release, tagged at `3765857`. The release zip and latest feed were independently downloaded and their SHA-256 verified; the v1.1.6 release/tag were removed after verification. Read `PROGRESS.md` and `RELEASE_READINESS.md` for exact visual coverage and the still-open I-05 limitation. The directive below is retained as historical context; do not repeat publication or claim every UI widget was tested.
+
+## ★ HISTORICAL MISSION (owner directive)
 
 Owner wants a **final end-user quality pass**, then ship. Do the real work — not a plan-only reply.
 
