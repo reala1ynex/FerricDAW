@@ -18,6 +18,13 @@
 - Downloaded `latest.json`: starts with `{`, has no UTF-8 BOM, reports version 1.1.8, and its SHA-256 `3e80f96dff18dfa9ed10b51bf7fa6295aad60a0b4feb7e11f6eef6b2e6e0bfec` matches the local v1.1.8 zip.
 - UI polish candidate passed the isolated release visual loop and all mandatory automated suites.
 
+## v1.1.9 release verified
+
+- Published `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.9` from commit `7a46173`.
+- Removed the prior v1.1.8 release/tag after publication; remote tag inventory now contains only v1.1.9.
+- Downloaded `latest.json`: starts with `{`, has no UTF-8 BOM, reports version 1.1.9, and its SHA-256 `c7b53e51fc38a558f49bc3335400c3f20f0efb905824127da9806fb034eb076c` matches the local v1.1.9 zip.
+- Final visual loop rechecked Hardware, Samples, Presets/Plugins, Ferric menu, FX dock, Launch dock, and Kaoss surface after the contrast and legacy-button follow-up.
+
 ## UI polish candidate — 2026-11-15
 
 - Added one shared button/theme system (`StudioUiExt`, semantic accent tokens, unified widget hover/open/active visuals, consistent corner radius and 24 px control height).

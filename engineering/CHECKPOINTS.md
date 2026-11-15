@@ -68,3 +68,11 @@
 - **Verification:** warning-denied check, workspace tests, function-test 59/59, isolated release visual loop, package/feed hash verification.
 - **Channel:** v1.1.7 release and tag removed; v1.1.8 is the only current release.
 
+## CP-2026-11-15-H — v1.1.9 visual contrast follow-up released
+
+- **Commit:** `7a46173` / **Tag:** `v1.1.9`
+- **Release:** `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.9`
+- **Verification:** zero-warning workspace check, workspace tests, Windows function test 59/59, and final visual loop across browser, menu, dock, and arrangement surfaces.
+- **Channel:** v1.1.8 release and tag removed; v1.1.9 is the only current release.
+- **Artifact SHA-256:** `c7b53e51fc38a558f49bc3335400c3f20f0efb905824127da9806fb034eb076c`
+
