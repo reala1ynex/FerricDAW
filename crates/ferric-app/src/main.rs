@@ -208,6 +208,7 @@ struct FerricDawApp {
     tutorial: TutorialCoach,
     pending_destructive: Option<PendingDestructive>,
     dirty_since_autosave: bool,
+    dirty_since_project_save: bool,
     last_autosave_inst: std::time::Instant,
     pending_midi_learn: Option<PendingMidiLearn>,
     keyboard_pads: KeyboardPadRig,
@@ -337,6 +338,7 @@ impl FerricDawApp {
             tutorial: TutorialCoach::default(),
             pending_destructive: None,
             dirty_since_autosave: false,
+            dirty_since_project_save: false,
             last_autosave_inst: std::time::Instant::now(),
             pending_midi_learn: None,
             keyboard_pads: KeyboardPadRig::default(),
@@ -453,11 +455,13 @@ impl FerricDawApp {
     fn snapshot_before(&mut self, label: &'static str) {
         self.history.record(label, self.project.clone());
         self.dirty_since_autosave = true;
+        self.dirty_since_project_save = true;
     }
 
     fn sync_engine(&mut self) {
         self.engine.sync_project(&self.project);
         self.dirty_since_autosave = true;
+        self.dirty_since_project_save = true;
     }
 
     fn autosave_recovery_path() -> PathBuf {
@@ -1040,7 +1044,7 @@ impl FerricDawApp {
     }
 
     fn session_has_user_work(&self) -> bool {
-        self.dirty_since_autosave
+        self.dirty_since_project_save
             || self.project_path.is_some()
             || self.project.chord_track.len() > 2
             || self
@@ -1068,6 +1072,7 @@ impl FerricDawApp {
                 self.selected_clip = None;
                 self.project_path = None;
                 self.sync_engine();
+                self.dirty_since_project_save = false;
                 self.status_banner = "New empty session.".into();
             }
             PendingDestructive::LoadDemo => {
@@ -1165,6 +1170,7 @@ impl FerricDawApp {
         self.selected_clip = None;
         self.bounce_modal.end_beat = 64.0;
         self.dirty_since_autosave = true;
+        self.dirty_since_project_save = true;
         self.sync_engine();
     }
 
@@ -1234,15 +1240,9 @@ impl FerricDawApp {
                         .button(egui::RichText::new("Save…").strong().color(ACCENT_TEAL))
                         .clicked()
                     {
-                        self.save_project_dialog();
-                        if matches!(pending, PendingDestructive::QuitApp)
-                            && self.project_path.is_some()
-                            && !self.dirty_since_autosave
-                        {
-                            self.pending_destructive = None;
-                            self.execute_destructive(PendingDestructive::QuitApp);
-                        }
-                        // Otherwise keep pending so user can discard/cancel after a cancelled save.
+                        let saved = self.save_project_dialog();
+                        self.continue_after_save(saved, pending.clone());
+                        // A cancelled or failed save keeps the pending action and session intact.
                     }
                     if ui
                         .button(egui::RichText::new("Discard & continue").color(ACCENT_AMBER))
@@ -1258,6 +1258,13 @@ impl FerricDawApp {
             });
         if !open {
             self.pending_destructive = None;
+        }
+    }
+
+    fn continue_after_save(&mut self, saved: bool, pending: PendingDestructive) {
+        if saved {
+            self.pending_destructive = None;
+            self.execute_destructive(pending);
         }
     }
 
@@ -1308,6 +1315,30 @@ impl FerricDawApp {
                     t.record_arm = true;
                     t.fx_chain.push(FxSlot::new(FxKind::PolySynth));
                     t.fx_chain.push(FxSlot::new(FxKind::StereoDelay));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddOrganTrack => {
+                self.snapshot_before("Add Drawbar Organ Track");
+                let id = self.project.add_track(format!("{:02} Drawbar Organ", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    t.fx_chain.push(FxSlot::new(FxKind::DrawbarOrgan));
+                }
+                self.selected_track = Some(id);
+                self.bottom_tab = BottomTab::FxAndModulators;
+                self.sync_engine();
+            }
+            PaletteCommand::AddElectricPianoTrack => {
+                self.snapshot_before("Add Electric Piano Track");
+                let id = self.project.add_track(format!("{:02} Electric Piano", self.project.tracks.len() + 1));
+                if let Some(t) = self.project.find_track_mut(id) {
+                    t.input_source = InputSource::MidiAll;
+                    t.record_arm = true;
+                    t.fx_chain.push(FxSlot::new(FxKind::ElectricPiano));
                 }
                 self.selected_track = Some(id);
                 self.bottom_tab = BottomTab::FxAndModulators;
@@ -1546,7 +1577,7 @@ impl FerricDawApp {
                 self.bounce_modal.end_beat = self.project.project_end_beat();
                 self.bounce_modal.open = true;
             }
-            PaletteCommand::SaveProject => self.save_project_dialog(),
+            PaletteCommand::SaveProject => { self.save_project_dialog(); }
             PaletteCommand::LoadDemoProject => {
                 self.request_destructive(PendingDestructive::LoadDemo);
             }
@@ -1609,7 +1640,7 @@ impl FerricDawApp {
         }
     }
 
-    fn save_project_dialog(&mut self) {
+    fn save_project_dialog(&mut self) -> bool {
         let path = self.project_path.clone().or_else(|| {
             rfd::FileDialog::new()
                 .set_title("Save FerricDAW Session (Git-Friendly RON or JSON)")
@@ -1618,9 +1649,7 @@ impl FerricDawApp {
                 .set_file_name("session.ferric")
                 .save_file()
         });
-        if let Some(p) = path {
-            self.save_project_to_path(&p);
-        }
+        path.is_some_and(|p| self.save_project_to_path(&p))
     }
 
     fn save_project_as_dialog(&mut self) {
@@ -1635,7 +1664,7 @@ impl FerricDawApp {
         }
     }
 
-    fn save_project_to_path(&mut self, p: &PathBuf) {
+    fn save_project_to_path(&mut self, p: &PathBuf) -> bool {
         self.engine
             .harvest_plugin_states_into_project(&mut self.project);
         match save_project_bundle(&mut self.project, p) {
@@ -1643,11 +1672,14 @@ impl FerricDawApp {
                 self.project_path = Some(p.clone());
                 self.record_recent_project(p);
                 self.dirty_since_autosave = false;
+                self.dirty_since_project_save = false;
                 self.status_banner =
                     format!("Saved full session & audio bundle to {}", p.display());
+                true
             }
             Err(e) => {
                 self.status_banner = format!("Save error: {}", e);
+                false
             }
         }
     }
@@ -1675,6 +1707,7 @@ impl FerricDawApp {
                 self.arrangement.multi_selected_clips.clear();
                 self.sync_engine();
                 self.dirty_since_autosave = false;
+                self.dirty_since_project_save = false;
                 self.status_banner = format!("Opened session bundle {}", p.display());
             }
             Err(e) => {

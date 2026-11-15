@@ -236,6 +236,8 @@ impl AudioGraphCore {
                 ferric_dsp::DspProcessor::PolySynth(s) => s.all_notes_off(),
                 ferric_dsp::DspProcessor::WavetableSynth(w) => w.all_notes_off(),
                 ferric_dsp::DspProcessor::SamplePlayer(sp) => sp.all_notes_off(),
+                ferric_dsp::DspProcessor::DrawbarOrgan(organ) => organ.all_notes_off(),
+                ferric_dsp::DspProcessor::ElectricPiano(piano) => piano.all_notes_off(),
                 ferric_dsp::DspProcessor::ExternalClap(ext) => ext.reset(),
                 _ => {}
             }

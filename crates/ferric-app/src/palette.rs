@@ -11,6 +11,8 @@ pub enum PaletteCommand {
     ToggleFreezeSelectedTrack,
     AddUniversalTrack,
     AddSynthTrack,
+    AddOrganTrack,
+    AddElectricPianoTrack,
     AddMonoBassTrack,
     AddPrismTrack,
     AddHostDnaTrack,
@@ -265,6 +267,18 @@ impl CommandPalette {
                 shortcut: "",
                 category: "TRACK",
                 cmd: PaletteCommand::AddSynthTrack,
+            },
+            ActionItem {
+                title: "Add Drawbar Organ Track",
+                shortcut: "",
+                category: "TRACK",
+                cmd: PaletteCommand::AddOrganTrack,
+            },
+            ActionItem {
+                title: "Add Electric Piano Track",
+                shortcut: "",
+                category: "TRACK",
+                cmd: PaletteCommand::AddElectricPianoTrack,
             },
             ActionItem {
                 title: "Add MonoBass Track (Glide Sub / Acid Bass)",

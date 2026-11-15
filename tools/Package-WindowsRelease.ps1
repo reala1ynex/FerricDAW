@@ -8,6 +8,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
+$BuildTarget = if ($env:CARGO_TARGET_DIR) {
+    if ([IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) { $env:CARGO_TARGET_DIR }
+    else { Join-Path $Root $env:CARGO_TARGET_DIR }
+} else { Join-Path $Root 'target' }
 
 $CargoToml = Get-Content (Join-Path $Root 'Cargo.toml') -Raw
 if ($CargoToml -match 'version\s*=\s*"([^"]+)"') {
@@ -43,8 +47,8 @@ function Copy-ReleaseFile([string]$Src, [string]$Dst) {
     }
 }
 
-Copy-ReleaseFile (Join-Path $Root 'target\release\ferricdaw.exe') (Join-Path $StageDir 'ferricdaw.exe')
-Copy-ReleaseFile (Join-Path $Root 'target\release\ferric-plugin-bridge.exe') (Join-Path $StageDir 'ferric-plugin-bridge.exe')
+Copy-ReleaseFile (Join-Path $BuildTarget 'release\ferricdaw.exe') (Join-Path $StageDir 'ferricdaw.exe')
+Copy-ReleaseFile (Join-Path $BuildTarget 'release\ferric-plugin-bridge.exe') (Join-Path $StageDir 'ferric-plugin-bridge.exe')
 Copy-Item (Join-Path $Root 'README.md') (Join-Path $StageDir 'README.md') -Force
 Copy-Item (Join-Path $Root 'LICENSE-MIT') (Join-Path $StageDir 'LICENSE-MIT') -Force
 Copy-Item (Join-Path $Root 'LICENSE-APACHE') (Join-Path $StageDir 'LICENSE-APACHE') -Force
@@ -74,7 +78,7 @@ FerricDAW v$Version — Windows portable
 Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in that worker, not the DAW.
 
 1. Double-click ferricdaw.exe
-2. First launch: Night Current tutorial, Afterglow playground, or Empty
+2. FerricDAW opens an empty session. Choose Night Current tutorial or Afterglow playground from the Ferric menu.
 3. Reopen the tutorial anytime: 🎓 Tutorial (Ferric menu / Ctrl+K). Esc closes it.
 4. Target bounce: demo\NightCurrent-Demo.wav
 5. Docs: docs\BEGINNER_GUIDE.md · docs\FEATURE_GUIDE.md · docs\DEVLOG.md · AUTHORS.md · F1 in the app

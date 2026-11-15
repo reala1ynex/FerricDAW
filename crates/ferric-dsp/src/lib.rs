@@ -1,7 +1,9 @@
 pub mod biquad;
 pub mod convolution_ott;
 pub mod effects;
+pub mod electric_piano;
 pub mod instruments;
+pub mod organ;
 pub mod metering;
 pub mod sampler;
 pub mod stem_splitter;
@@ -25,6 +27,8 @@ pub use metering::{
     SPECTRUM_BANDS, VECTORSCOPE_POINTS,
 };
 pub use sampler::SamplePlayerProcessor;
+pub use electric_piano::ElectricPianoProcessor;
+pub use organ::OrganProcessor;
 pub use stem_splitter::{split_audio_to_4_stems, FourStemSplit};
 pub use tempo_arp::{ArpRuntime, MidiExpression, OnsetBpmDetector};
 pub use tuner::{ChromaticTuner, TunerReading};
@@ -82,6 +86,8 @@ pub enum DspProcessor {
     WavetableSynth(WavetableSynthProcessor),
     DrumKit(DrumKitProcessor),
     SamplePlayer(SamplePlayerProcessor),
+    DrawbarOrgan(OrganProcessor),
+    ElectricPiano(ElectricPianoProcessor),
     ChromaticTuner(ChromaticTuner),
     VocalPitch(VocalPitchProcessor),
     NoiseGate(NoiseGateProcessor),
@@ -119,6 +125,8 @@ impl FxRuntimeInstance {
             FxKind::SamplePlayer => {
                 DspProcessor::SamplePlayer(SamplePlayerProcessor::new(sample_rate))
             }
+            FxKind::DrawbarOrgan => DspProcessor::DrawbarOrgan(OrganProcessor::new(sample_rate)),
+            FxKind::ElectricPiano => DspProcessor::ElectricPiano(ElectricPianoProcessor::new(sample_rate)),
             FxKind::ChromaticTuner => {
                 DspProcessor::ChromaticTuner(ChromaticTuner::new(sample_rate))
             }
@@ -279,6 +287,8 @@ impl FxRuntimeInstance {
             DspProcessor::SamplePlayer(p) => {
                 p.process_with_expression(left, right, params, midi_events, midi_expr)
             }
+            DspProcessor::DrawbarOrgan(p) => p.process(left, right, params, midi_events, midi_expr),
+            DspProcessor::ElectricPiano(p) => p.process(left, right, params, midi_events, midi_expr),
             DspProcessor::ChromaticTuner(t) => {
                 t.ref_a4_hz = params.first().copied().unwrap_or(440.0);
                 t.push_block(&left[..frames], &right[..frames]);
@@ -447,6 +457,24 @@ impl ModulatorRuntime {
 mod tests {
     use super::*;
     use std::f32::consts::TAU;
+
+    #[test]
+    fn new_instruments_render_through_runtime_with_sample_accurate_midi() {
+        for kind in [FxKind::DrawbarOrgan, FxKind::ElectricPiano] {
+            let slot = ferric_model::FxSlot::new(kind);
+            let params: Vec<f32> = kind.param_specs().iter().map(|spec| spec.default).collect();
+            let mut runtime = FxRuntimeInstance::new(slot.id, kind, 48_000.0, 1024);
+            let mut left = vec![0.0; 1024];
+            let mut right = left.clone();
+            runtime.process_block(&mut left, &mut right, &params, 1.0, 120.0, &[
+                MidiEvent { sample_offset: 37, note: 69, velocity: 110, is_note_on: true },
+            ]);
+            assert!(left[..37].iter().all(|sample| *sample == 0.0), "{kind:?}");
+            assert!(left[37..].iter().any(|sample| sample.abs() > 0.001), "{kind:?}");
+            assert!(left.iter().chain(&right).all(|sample| sample.is_finite()), "{kind:?}");
+            assert_eq!(left, right, "{kind:?}");
+        }
+    }
 
     #[test]
     fn chromatic_tuner_detects_440hz_a4_within_half_cent() {

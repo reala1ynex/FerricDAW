@@ -34,6 +34,16 @@ fn check_tracks_ge_2(app: &FerricDawApp) -> Result<(), String> {
     }
 }
 
+fn check_organ_track(app: &FerricDawApp) -> Result<(), String> {
+    let track = app.selected_track.and_then(|id| app.project.find_track(id)).ok_or("no selected track")?;
+    if track.fx_chain.iter().any(|fx| fx.kind == FxKind::DrawbarOrgan) { Ok(()) } else { Err("selected track has no organ".into()) }
+}
+
+fn check_electric_piano_track(app: &FerricDawApp) -> Result<(), String> {
+    let track = app.selected_track.and_then(|id| app.project.find_track(id)).ok_or("no selected track")?;
+    if track.fx_chain.iter().any(|fx| fx.kind == FxKind::ElectricPiano) { Ok(()) } else { Err("selected track has no electric piano".into()) }
+}
+
 fn check_tracks_ge_3(app: &FerricDawApp) -> Result<(), String> {
     if app.project.tracks.len() >= 3 {
         Ok(())
@@ -289,6 +299,8 @@ fn catalog() -> Vec<Case> {
             PaletteCommand::AddSynthTrack,
             check_tracks_ge_2
         ),
+        pal!("add_organ_track", "Palette: Add Drawbar Organ", PaletteCommand::AddOrganTrack, check_organ_track),
+        pal!("add_electric_piano_track", "Palette: Add Electric Piano", PaletteCommand::AddElectricPianoTrack, check_electric_piano_track),
         pal!(
             "add_mono_bass",
             "Palette: Add Mono Bass",
@@ -790,5 +802,50 @@ pub fn run() -> i32 {
         0
     } else {
         1
+    }
+}
+
+#[cfg(test)]
+mod save_guard_tests {
+    use super::*;
+
+    #[test]
+    fn failed_save_keeps_pending_action_and_session() {
+        let mut app = FerricDawApp::new_core(None);
+        app.project.add_track("Do not discard");
+        let count = app.project.tracks.len();
+        app.pending_destructive = Some(PendingDestructive::NewEmpty);
+        // A directory cannot be opened as a project file; no user data is overwritten.
+        let saved = app.save_project_to_path(&std::env::temp_dir());
+        assert!(!saved);
+        app.continue_after_save(saved, PendingDestructive::NewEmpty);
+        assert!(app.pending_destructive.is_some());
+        assert_eq!(app.project.tracks.len(), count);
+        assert!(app.status_banner.starts_with("Save error:"));
+    }
+
+    #[test]
+    fn successful_save_continues_pending_transition() {
+        let mut app = FerricDawApp::new_core(None);
+        app.project.add_track("Saved track");
+        app.pending_destructive = Some(PendingDestructive::NewEmpty);
+        let path = std::env::temp_dir().join(format!("ferric-save-guard-{}.ferric", std::process::id()));
+        let saved = app.save_project_to_path(&path);
+        assert!(saved, "{}", app.status_banner);
+        app.continue_after_save(saved, PendingDestructive::NewEmpty);
+        assert!(app.pending_destructive.is_none());
+        assert!(app.project.tracks.iter().all(|track| track.name != "Saved track"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autosave_does_not_clear_unsaved_project_guard() {
+        let mut app = FerricDawApp::new_core(None);
+        app.snapshot_before("Change test session");
+        // Recovery autosave clears only this flag, without saving the user's project.
+        app.dirty_since_autosave = false;
+        assert!(app.session_has_user_work());
+        app.request_destructive(PendingDestructive::NewEmpty);
+        assert!(app.pending_destructive.is_some());
     }
 }

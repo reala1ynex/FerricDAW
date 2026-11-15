@@ -16,6 +16,8 @@ pub enum FxKind {
     WavetableSynth,
     DrumKit,
     SamplePlayer,
+    DrawbarOrgan,
+    ElectricPiano,
     // Studio Utility, Pitch & Dynamics
     ChromaticTuner,
     VocalPitch,
@@ -43,6 +45,8 @@ impl FxKind {
         FxKind::WavetableSynth,
         FxKind::DrumKit,
         FxKind::SamplePlayer,
+        FxKind::DrawbarOrgan,
+        FxKind::ElectricPiano,
         FxKind::ChromaticTuner,
         FxKind::VocalPitch,
         FxKind::NoiseGate,
@@ -66,6 +70,8 @@ impl FxKind {
             FxKind::WavetableSynth => "FerricWave (Wavetable + Granular Cloud Synth)",
             FxKind::DrumKit => "Ferric 8-Pad Studio Drum Kit",
             FxKind::SamplePlayer => "Ferric Chromatic & Slice Sampler",
+            FxKind::DrawbarOrgan => "Ferric Drawbar Organ",
+            FxKind::ElectricPiano => "Ferric Electric Piano",
             FxKind::ChromaticTuner => "Chromatic Strobe Tuner",
             FxKind::VocalPitch => "Vocal Auto-Pitch & Scale Shifter",
             FxKind::NoiseGate => "Hysteresis Studio Gate (+Sidechain)",
@@ -90,6 +96,8 @@ impl FxKind {
             FxKind::WavetableSynth => "WAVE+GRAN",
             FxKind::DrumKit => "DRUMS",
             FxKind::SamplePlayer => "SAMPLER",
+            FxKind::DrawbarOrgan => "ORGAN",
+            FxKind::ElectricPiano => "E-PIANO",
             FxKind::ChromaticTuner => "TUNER",
             FxKind::VocalPitch => "PITCH",
             FxKind::NoiseGate => "GATE",
@@ -115,6 +123,8 @@ impl FxKind {
                 | FxKind::WavetableSynth
                 | FxKind::DrumKit
                 | FxKind::SamplePlayer
+                | FxKind::DrawbarOrgan
+                | FxKind::ElectricPiano
         )
     }
 
@@ -123,6 +133,21 @@ impl FxKind {
     }
 
     pub fn param_specs(self) -> &'static [ParamSpec] {
+        const EPIANO_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Tine Brightness", "%", 0.0, 100.0, 45.0),
+            ParamSpec::new("Decay", "ms", 100.0, 5000.0, 1100.0),
+            ParamSpec::new("Release", "ms", 10.0, 3000.0, 300.0),
+            ParamSpec::new("Output", "dB", -24.0, 12.0, -6.0),
+        ];
+        const ORGAN_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Fundamental", "%", 0.0, 100.0, 100.0),
+            ParamSpec::new("Second Harmonic", "%", 0.0, 100.0, 45.0),
+            ParamSpec::new("Third Harmonic", "%", 0.0, 100.0, 22.0),
+            ParamSpec::new("Fourth Harmonic", "%", 0.0, 100.0, 10.0),
+            ParamSpec::new("Attack", "ms", 1.0, 500.0, 8.0),
+            ParamSpec::new("Release", "ms", 5.0, 2000.0, 80.0),
+            ParamSpec::new("Output", "dB", -24.0, 12.0, -6.0),
+        ];
         const POLYSYNTH_SPECS: &[ParamSpec] = &[
             ParamSpec::new("Waveform", "", 0.0, 3.0, 0.0),
             ParamSpec::new("Sub / Detune", "%", 0.0, 100.0, 28.0),
@@ -298,6 +323,8 @@ impl FxKind {
             FxKind::WavetableSynth => WAVETABLE_SPECS,
             FxKind::DrumKit => DRUMKIT_SPECS,
             FxKind::SamplePlayer => SAMPLER_SPECS,
+            FxKind::DrawbarOrgan => ORGAN_SPECS,
+            FxKind::ElectricPiano => EPIANO_SPECS,
             FxKind::ChromaticTuner => TUNER_SPECS,
             FxKind::VocalPitch => VOCAL_PITCH_SPECS,
             FxKind::NoiseGate => GATE_SPECS,
@@ -698,6 +725,10 @@ pub struct FactoryPreset {
 }
 
 pub const FACTORY_PRESETS: &[FactoryPreset] = &[
+    FactoryPreset { category: "Keys", name: "Soft Electric Piano", kind: FxKind::ElectricPiano, params: &[28.0, 1600.0, 420.0, -6.0], wet_mix: 1.0 },
+    FactoryPreset { category: "Keys", name: "Bright Electric Piano", kind: FxKind::ElectricPiano, params: &[68.0, 900.0, 230.0, -7.0], wet_mix: 1.0 },
+    FactoryPreset { category: "Keys", name: "Warm Drawbars", kind: FxKind::DrawbarOrgan, params: &[100.0, 45.0, 22.0, 10.0, 8.0, 80.0, -6.0], wet_mix: 1.0 },
+    FactoryPreset { category: "Keys", name: "Bright Drawbars", kind: FxKind::DrawbarOrgan, params: &[80.0, 70.0, 50.0, 25.0, 3.0, 120.0, -8.0], wet_mix: 1.0 },
     FactoryPreset {
         category: "HostDNA",
         name: "Init from Host (placeholder seed)",
@@ -1019,6 +1050,30 @@ impl ModulatorSlot {
                 value: value.clamp(0.0, 1.0),
             },
             routings: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod new_instrument_tests {
+    use super::*;
+
+    #[test]
+    fn new_instruments_round_trip_and_presets_fit_parameter_bounds() {
+        for kind in [FxKind::DrawbarOrgan, FxKind::ElectricPiano] {
+            assert!(kind.is_instrument());
+            assert!(FxKind::ALL.contains(&kind));
+            let serialized = serde_json::to_string(&FxSlot::new(kind)).unwrap();
+            let restored: FxSlot = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(restored.kind, kind);
+            let presets: Vec<_> = FACTORY_PRESETS.iter().filter(|p| p.kind == kind).collect();
+            assert!(presets.len() >= 2);
+            for preset in presets {
+                assert_eq!(preset.params.len(), kind.param_specs().len());
+                for (value, spec) in preset.params.iter().zip(kind.param_specs()) {
+                    assert!((*value >= spec.min) && (*value <= spec.max));
+                }
+            }
         }
     }
 }
