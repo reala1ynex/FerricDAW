@@ -29,4 +29,4 @@ ferricdaw.exe (ferric-app)
 
 - `tools/Package-WindowsRelease.ps1` → zip + BOM-free `latest.json`.
 - `tools/Publish-GitHubRelease.ps1` / tag CI job uploads assets.
-- Single current Windows x64 channel (v1.1.4).
+- Single current Windows x64 channel (v1.1.5).

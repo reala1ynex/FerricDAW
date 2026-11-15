@@ -1,10 +1,4 @@
-﻿## v1.1.4
-- Function test harness: `ferricdaw.exe --function-test` / `tools\FunctionTest-Windows.ps1` (every button handler, then next)
-- Cold start opens empty session; Afterglow only from menu
-- Tutorial Apply skips rebuild when step already complete; Esc overlay race fixed
-- Hardware Rig + Kaoss use Pad A/B `chrome_card`; Audio I/O tip wraps; recording offset syncs browser state
-- Package START_HERE / demo README without UTF-8 BOM
-# FerricDAW Devlog
+﻿# FerricDAW Devlog
 
 Notes on what shipped and when. Newest first.
 
@@ -14,16 +8,37 @@ Notes on what shipped and when. Newest first.
 
 ---
 
-## 2026-11-15 — v1.1.3
+## 2026-11-15 — v1.1.5
 
 Current public release.
+
+- Dirty window-close guard (CancelClose + Save / Discard / Cancel)
+- Updater requires SHA-256 and GitHub HTTPS hosts only
+- Autosave and MIDI export failures surface in the status banner
+- ASIO picker honesty labels + WASAPI fallback status
+- CI runs Windows function-test; `/engineering` registries for continuity
+- README / release channel: current version only
+
+Grab it: [Releases · v1.1.5](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.5)
+
+---
+
+## 2026-11-15 — v1.1.4
+
+- Function test harness: `ferricdaw.exe --function-test` / `tools\FunctionTest-Windows.ps1`
+- Cold start opens empty session; Afterglow only from menu
+- Tutorial Apply skips rebuild when step already complete; Esc overlay race fixed
+- Hardware Rig + Kaoss use Pad A/B `chrome_card`; recording offset syncs browser state
+- Package START_HERE / demo README without UTF-8 BOM
+
+---
+
+## 2026-11-15 — v1.1.3
 
 - Fix **Backspace/Delete** for selected piano-roll MIDI notes
 - Kaoss **Write XY automation** while Play/Rec (FxParam lanes)
 - Hardware Rig Audio I/O chrome matched to Pad A/B rows
 - Auto-update feed: `latest.json` UTF-8 without BOM (fixes invalid JSON parse)
-
-Grab it: [Releases · v1.1.3](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.3)
 
 ---
 
@@ -39,43 +54,4 @@ Grab it: [Releases · v1.1.3](https://github.com/reala1ynex/FerricDAW/releases/t
 
 ## 2026-11-14 — v1.1.1
 
-- Night Current in-app tutorial + `demo/NightCurrent-Demo.wav`
-- Plugin bridge sandbox as the default crash path
-- Hardware Rig, dual keyboard pads, Line-In helpers
-- First-run chooser (tutorial / Afterglow / empty)
-
----
-
-## 2026-11 — v1.1.0
-
-- FerricWave (wavetable + granular)
-- Pitch editing blobs, convolution IR, OTT, vectorscope
-- Groove / Velocity DNA, HostDNA, Chord Storyboard
-- Golden Bounce, Scene Launch Pad, Plugin Playground
-
----
-
-## 2026-11 — v1.0.0
-
-- First “ship it” cut: icon, version info, F1 quickstart
-- Clip glue, recent sessions, CLI open
-- CI packaging workflow
-
----
-
-## Earlier milestones (v0.2 → v0.6)
-
-Built up in order:
-
-- Core hybrid tracks, WSOLA warp, vocal auto-pitch, sampler, automation
-- Multitrack MIDI + audio record, drum grid, arp, autosave
-- CLAP + VST3 hosting with real params, state, floating editors
-- FLAC bounce, −14 LUFS, true-peak limiter, latency ping
-- Tempo/meter conductor, marquee edit, auto-crossfades
-
----
-
-## What’s next (loose)
-
-Whatever gets used: tighter tutorial feedback, more honest I/O status, and keeping the portable updater boring and reliable.
-
+Earlier cut: icon, version info, F1 quickstart, and studio workflow polish.

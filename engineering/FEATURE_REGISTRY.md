@@ -1,6 +1,6 @@
 # Feature Registry
 
-**Last updated:** 2026-11-15 · **App version:** 1.1.4
+**Last updated:** 2026-11-15 · **App version:** 1.1.5
 
 Status legend: **Complete+Verified** | **Implemented** | **Partial** | **Broken** | **Missing** | **Blocked**
 
@@ -23,7 +23,7 @@ Status legend: **Complete+Verified** | **Implemented** | **Partial** | **Broken*
 | F-15 | Kaoss XY Write automation | R-15 | Complete+Verified | browser Kaoss Write → FxParam |
 | F-16 | Hardware Rig presets | R-16 | Complete+Verified | function-test spawn cases |
 | F-17 | DNA / HostDNA / Launch / Mix ABCD | R-17 | Implemented | UI wired; not every sub-control in function-test |
-| F-18 | Versioned docs | R-18 | Complete+Verified | README 1.1.4 (I-15) |
+| F-18 | Versioned docs | R-18 | Complete+Verified | README 1.1.5 |
 | F-19 | Function-test harness | R-19 | Complete+Verified | `function_test.rs` + CI Windows step (I-07) |
 | F-20 | Engineering registries | R-20 | Complete+Verified | this directory |
 
