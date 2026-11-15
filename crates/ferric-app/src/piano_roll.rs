@@ -1,6 +1,7 @@
 use crate::theme::{
-    pill_toggle, studio_knob, track_color32, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL,
-    BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, studio_knob, track_color32,
+    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
+    TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_dsp::{
@@ -151,16 +152,18 @@ impl PianoRollState {
         let root_pc = project.root_pitch_class;
         let scale = project.musical_scale;
 
-        // MIDI toolbar — horizontally scrollable so nothing clips on narrow docks
+        // MIDI toolbar — Pad A/B chrome family, horizontally scrollable
         egui::ScrollArea::horizontal()
             .id_salt("piano_roll_toolbar_scroll")
             .show(ui, |ui| {
+                chrome_card(ui, BORDER_SUBTLE, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 5.0;
                     if let Some(clip) = project
                         .find_track_mut(track_id)
                         .and_then(|t| t.find_clip_mut(clip_id))
                     {
+                        chrome_row_label(ui, "Clip ->", ACCENT_FERRIC);
                         ui.add(
                             egui::TextEdit::singleline(&mut clip.name)
                                 .desired_width(100.0)
@@ -181,6 +184,7 @@ impl PianoRollState {
                     {
                         self.scale_lock = !self.scale_lock;
                     }
+                    chrome_row_label(ui, "Key ->", ACCENT_TEAL);
                     egui::ComboBox::from_id_salt("pr_root")
                         .selected_text(
                             NOTE_PITCH_CLASSES[(project.root_pitch_class as usize) % 12],
@@ -191,6 +195,7 @@ impl PianoRollState {
                                 ui.selectable_value(&mut project.root_pitch_class, i as u8, nm);
                             }
                         });
+                    chrome_row_label(ui, "Scale ->", ACCENT_AMBER);
                     egui::ComboBox::from_id_salt("pr_scale")
                         .selected_text(project.musical_scale.label())
                         .width(110.0)
@@ -200,6 +205,7 @@ impl PianoRollState {
                             }
                         });
 
+                    chrome_row_label(ui, "Stamp ->", TEXT_DIM);
                     egui::ComboBox::from_id_salt("pr_chord_stamp")
                         .selected_text(self.chord_stamp.label())
                         .width(100.0)
@@ -307,6 +313,7 @@ impl PianoRollState {
                             .color(TEXT_DIM),
                         );
                     }
+                });
                 });
             });
 
@@ -1400,7 +1407,9 @@ pub fn render_fx_and_modulators_panel(
         .map(|t| (t.id, t.name.clone()))
         .collect();
 
+    chrome_card(ui, ACCENT_FERRIC, |ui| {
     ui.horizontal(|ui| {
+        chrome_section_title(ui, "FX Rack", ACCENT_FERRIC);
         if pill_toggle(ui, "Track FX & Modulators", !*inspect_master, ACCENT_FERRIC).clicked() {
             *inspect_master = false;
         }
@@ -1521,6 +1530,7 @@ pub fn render_fx_and_modulators_panel(
                 }
             }
         }
+    });
     });
 
     ui.separator();

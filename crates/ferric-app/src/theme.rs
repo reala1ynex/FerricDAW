@@ -237,6 +237,7 @@ pub fn stereo_level_meter(ui: &mut Ui, peak_l_db: f32, peak_r_db: f32, height: f
 }
 
 /// Dim section caption used above control clusters (menus, strips, docks).
+#[allow(dead_code)]
 pub fn section_label(ui: &mut Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
@@ -277,6 +278,16 @@ pub fn chrome_card(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut 
 /// Colored label used on Pad A/B-style picker rows (`Pad A ->`, `In ->`, …).
 pub fn chrome_row_label(ui: &mut Ui, text: &str, color: Color32) {
     ui.label(egui::RichText::new(text).size(12.0).color(color));
+}
+
+/// Strong section title inside a chrome card (matches Hardware Rig / Pad strip headers).
+pub fn chrome_section_title(ui: &mut Ui, text: &str, color: Color32) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(11.5)
+            .strong()
+            .color(color),
+    );
 }
 
 #[allow(dead_code)]

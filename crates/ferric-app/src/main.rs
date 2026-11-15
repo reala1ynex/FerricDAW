@@ -39,8 +39,9 @@ use palette::{CommandPalette, PaletteCommand};
 use piano_roll::{render_fx_and_modulators_panel, DockAction, PianoRollState};
 use std::path::PathBuf;
 use theme::{
-    apply_studio_theme, chrome_card, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED,
-    ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BG_PANEL, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    apply_studio_theme, chrome_card, chrome_row_label, chrome_section_title, pill_toggle,
+    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BG_PANEL,
+    BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use update::UpdateService;
 
@@ -2129,112 +2130,111 @@ impl FerricDawApp {
     }
 
     fn render_dna_strip(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(
-                egui::RichText::new("DNA")
-                    .size(11.0)
-                    .strong()
-                    .color(ACCENT_FERRIC),
-            )
-            .on_hover_text(
-                "Feel = live timing pocket · Velocity = live accents · Apply writes Feel into notes",
-            );
-            ui.label(egui::RichText::new("Feel").size(10.5).color(TEXT_DIM));
-            ui.spacing_mut().slider_width = 88.0;
-            let mut feel_pct = (self.project.dna_feel * 100.0).round();
-            if ui
-                .add(egui::Slider::new(&mut feel_pct, 0.0..=100.0).show_value(true))
-                .changed()
-            {
-                self.project.dna_feel = (feel_pct / 100.0).clamp(0.0, 1.0);
-                self.sync_engine();
-            }
-            egui::ComboBox::from_id_salt("dna_groove_tmpl")
-                .selected_text(match self.project.dna_groove_template {
-                    GrooveTemplate::Straight => "Straight",
-                    GrooveTemplate::Mpc58Classic => "Techno Pocket",
-                    GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
-                    GrooveTemplate::PushedUrgent16ths => "Push",
-                    other => other.short_badge(),
-                })
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    for &tmpl in GrooveTemplate::ALL {
-                        let label = match tmpl {
-                            GrooveTemplate::Straight => "Straight",
-                            GrooveTemplate::Mpc58Classic => "Techno Pocket",
-                            GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
-                            GrooveTemplate::PushedUrgent16ths => "Push",
-                            other => other.label(),
-                        };
-                        if ui
-                            .selectable_value(
-                                &mut self.project.dna_groove_template,
-                                tmpl,
-                                label,
-                            )
-                            .changed()
-                        {
-                            self.sync_engine();
+        chrome_card(ui, ACCENT_FERRIC, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                chrome_section_title(ui, "DNA", ACCENT_FERRIC);
+                ui.label(
+                    egui::RichText::new("Feel = timing · Velocity = accents · Apply writes Feel")
+                        .size(10.0)
+                        .color(TEXT_DIM),
+                );
+                chrome_row_label(ui, "Feel ->", ACCENT_TEAL);
+                ui.spacing_mut().slider_width = 88.0;
+                let mut feel_pct = (self.project.dna_feel * 100.0).round();
+                if ui
+                    .add(egui::Slider::new(&mut feel_pct, 0.0..=100.0).show_value(true))
+                    .changed()
+                {
+                    self.project.dna_feel = (feel_pct / 100.0).clamp(0.0, 1.0);
+                    self.sync_engine();
+                }
+                egui::ComboBox::from_id_salt("dna_groove_tmpl")
+                    .selected_text(match self.project.dna_groove_template {
+                        GrooveTemplate::Straight => "Straight",
+                        GrooveTemplate::Mpc58Classic => "Techno Pocket",
+                        GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
+                        GrooveTemplate::PushedUrgent16ths => "Push",
+                        other => other.short_badge(),
+                    })
+                    .width(130.0)
+                    .show_ui(ui, |ui| {
+                        for &tmpl in GrooveTemplate::ALL {
+                            let label = match tmpl {
+                                GrooveTemplate::Straight => "Straight",
+                                GrooveTemplate::Mpc58Classic => "Techno Pocket",
+                                GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
+                                GrooveTemplate::PushedUrgent16ths => "Push",
+                                other => other.label(),
+                            };
+                            if ui
+                                .selectable_value(
+                                    &mut self.project.dna_groove_template,
+                                    tmpl,
+                                    label,
+                                )
+                                .changed()
+                            {
+                                self.sync_engine();
+                            }
                         }
-                    }
-                });
-            ui.separator();
-            ui.label(egui::RichText::new("Velocity").size(10.5).color(TEXT_DIM));
-            ui.spacing_mut().slider_width = 88.0;
-            let mut vel_pct = (self.project.dna_velocity * 100.0).round();
-            if ui
-                .add(egui::Slider::new(&mut vel_pct, 0.0..=100.0).show_value(true))
-                .changed()
-            {
-                self.project.dna_velocity = (vel_pct / 100.0).clamp(0.0, 1.0);
-                self.sync_engine();
-            }
-            egui::ComboBox::from_id_salt("dna_accent_shape")
-                .selected_text(self.project.dna_accent_shape.label())
-                .width(110.0)
-                .show_ui(ui, |ui| {
-                    for &shape in VelocityAccentShape::ALL {
-                        if ui
-                            .selectable_value(
-                                &mut self.project.dna_accent_shape,
-                                shape,
-                                shape.label(),
-                            )
-                            .changed()
-                        {
-                            self.sync_engine();
+                    });
+                ui.separator();
+                chrome_row_label(ui, "Velocity ->", ACCENT_AMBER);
+                ui.spacing_mut().slider_width = 88.0;
+                let mut vel_pct = (self.project.dna_velocity * 100.0).round();
+                if ui
+                    .add(egui::Slider::new(&mut vel_pct, 0.0..=100.0).show_value(true))
+                    .changed()
+                {
+                    self.project.dna_velocity = (vel_pct / 100.0).clamp(0.0, 1.0);
+                    self.sync_engine();
+                }
+                egui::ComboBox::from_id_salt("dna_accent_shape")
+                    .selected_text(self.project.dna_accent_shape.label())
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        for &shape in VelocityAccentShape::ALL {
+                            if ui
+                                .selectable_value(
+                                    &mut self.project.dna_accent_shape,
+                                    shape,
+                                    shape.label(),
+                                )
+                                .changed()
+                            {
+                                self.sync_engine();
+                            }
                         }
-                    }
-                });
-            if ui
-                .small_button("Apply drums")
-                .on_hover_text(
-                    "Writes Feel groove into drum/kit note timing (undoable) · Velocity stays live",
-                )
-                .clicked()
-            {
-                self.snapshot_before("Apply DNA to Drums");
-                self.project.apply_dna_to_tracks(true);
-                self.sync_engine();
-                self.status_banner =
-                    "DNA Feel template applied to drums (Velocity DNA stays live).".into();
-            }
-            if ui
-                .small_button("Apply all MIDI")
-                .on_hover_text(
-                    "Writes Feel groove into all MIDI tracks (undoable) · Velocity stays live",
-                )
-                .clicked()
-            {
-                self.snapshot_before("Apply DNA to All MIDI");
-                self.project.apply_dna_to_tracks(false);
-                self.sync_engine();
-                self.status_banner =
-                    "DNA Feel template applied to MIDI instruments (Velocity DNA stays live)."
-                        .into();
-            }
+                    });
+                if ui
+                    .small_button("Apply drums")
+                    .on_hover_text(
+                        "Writes Feel groove into drum/kit note timing (undoable) · Velocity stays live",
+                    )
+                    .clicked()
+                {
+                    self.snapshot_before("Apply DNA to Drums");
+                    self.project.apply_dna_to_tracks(true);
+                    self.sync_engine();
+                    self.status_banner =
+                        "DNA Feel template applied to drums (Velocity DNA stays live).".into();
+                }
+                if ui
+                    .small_button("Apply all MIDI")
+                    .on_hover_text(
+                        "Writes Feel groove into all MIDI tracks (undoable) · Velocity stays live",
+                    )
+                    .clicked()
+                {
+                    self.snapshot_before("Apply DNA to All MIDI");
+                    self.project.apply_dna_to_tracks(false);
+                    self.sync_engine();
+                    self.status_banner =
+                        "DNA Feel template applied to MIDI instruments (Velocity DNA stays live)."
+                            .into();
+                }
+            });
         });
     }
 
@@ -3384,31 +3384,30 @@ impl FerricDawApp {
 
     fn render_launch_pad(&mut self, ui: &mut egui::Ui) {
         self.launch_pad_focused = true;
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Scene Launch Pad")
-                    .strong()
-                    .color(ACCENT_FERRIC),
-            );
-            ui.label(egui::RichText::new("Quantize").size(10.5).color(TEXT_DIM));
-            for q in [LaunchQuantize::Bar, LaunchQuantize::Beat, LaunchQuantize::Quarter] {
-                if pill_toggle(ui, q.label(), self.launch_quantize == q, ACCENT_TEAL).clicked() {
-                    self.launch_quantize = q;
+        chrome_card(ui, ACCENT_FERRIC, |ui| {
+            ui.horizontal(|ui| {
+                chrome_section_title(ui, "Scene Launch Pad", ACCENT_FERRIC);
+                chrome_row_label(ui, "Quantize ->", ACCENT_TEAL);
+                for q in [LaunchQuantize::Bar, LaunchQuantize::Beat, LaunchQuantize::Quarter] {
+                    if pill_toggle(ui, q.label(), self.launch_quantize == q, ACCENT_TEAL).clicked()
+                    {
+                        self.launch_quantize = q;
+                    }
                 }
-            }
-            ui.separator();
-            ui.checkbox(&mut self.mix_morph_enabled, "Mix morph");
-            ui.add(
-                egui::DragValue::new(&mut self.mix_morph_beats)
-                    .range(0.25..=32.0)
-                    .prefix("over ")
-                    .suffix(" beats"),
-            );
-            ui.label(
-                egui::RichText::new("Keys 1–8 fire scenes while this tab is focused")
-                    .size(10.0)
-                    .color(TEXT_DIM),
-            );
+                ui.separator();
+                ui.checkbox(&mut self.mix_morph_enabled, "Mix morph");
+                ui.add(
+                    egui::DragValue::new(&mut self.mix_morph_beats)
+                        .range(0.25..=32.0)
+                        .prefix("over ")
+                        .suffix(" beats"),
+                );
+                ui.label(
+                    egui::RichText::new("Keys 1–8 fire scenes while this tab is focused")
+                        .size(10.0)
+                        .color(TEXT_DIM),
+                );
+            });
         });
         ui.add_space(6.0);
         let scene_labels: Vec<(usize, String)> = self
@@ -3452,8 +3451,9 @@ impl FerricDawApp {
             self.queue_scene_launch(i);
         }
         ui.add_space(8.0);
+        chrome_card(ui, BORDER_SUBTLE, |ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Mix morph target").size(10.5).color(TEXT_DIM));
+            chrome_row_label(ui, "Mix morph target ->", ACCENT_AMBER);
             for (slot, name) in [(0, "Mix A"), (1, "Mix B"), (2, "Mix C"), (3, "Mix D")] {
                 let filled = self
                     .project
@@ -3485,6 +3485,7 @@ impl FerricDawApp {
                     }
                 }
             }
+        });
         });
     }
 

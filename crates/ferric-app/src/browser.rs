@@ -1,6 +1,6 @@
 use crate::theme::{
-    chrome_card, chrome_row_label, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP,
-    BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC,
+    ACCENT_TEAL, BG_DEEP, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_engine::{
@@ -935,118 +935,128 @@ impl StudioBrowserState {
         bpm: f64,
         actions: &mut Vec<BrowserAction>,
     ) {
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Filter WAV / FLAC / MP3 / OGG / MID...")
-                    .desired_width(145.0),
-            );
-            if ui
-                .small_button("+ Folder")
-                .on_hover_text("Add Sample Pack or Recording Folder")
-                .clicked()
-            {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    self.scan_folder(&dir);
-                    self.user_folders.push(dir);
+        chrome_card(ui, BORDER_SUBTLE, |ui| {
+            ui.horizontal(|ui| {
+                chrome_row_label(ui, "Filter ->", ACCENT_TEAL);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text("WAV / FLAC / MP3 / OGG / MID...")
+                        .desired_width(160.0),
+                );
+                if ui
+                    .small_button("+ Folder")
+                    .on_hover_text("Add Sample Pack or Recording Folder")
+                    .clicked()
+                {
+                    if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                        self.scan_folder(&dir);
+                        self.user_folders.push(dir);
+                    }
                 }
-            }
+            });
         });
+        ui.add_space(6.0);
 
         egui::ScrollArea::vertical()
             .id_salt("samples_browser_scroll")
             .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("Built-In Studio Pack (1-Click Audition / Drop / Slice)")
-                        .size(10.5)
-                        .strong()
-                        .color(ACCENT_TEAL),
-                );
-                for idx in 0..4 {
-                    let (name, buf) = synthesize_browser_sample(idx, sample_rate, bpm);
-                    if !self.search.is_empty()
-                        && !name.to_lowercase().contains(&self.search.to_lowercase())
-                    {
-                        continue;
-                    }
-                    ui.horizontal(|ui| {
-                        if ui.small_button("▶").on_hover_text("Audition Preview").clicked() {
-                            actions.push(BrowserAction::PreviewSample(buf.clone()));
-                        }
-                        if ui
-                            .small_button("+Trk")
-                            .on_hover_text("Drop onto Selected Track at Playhead")
-                            .clicked()
+                chrome_card(ui, ACCENT_TEAL, |ui| {
+                    chrome_section_title(
+                        ui,
+                        "Built-In Studio Pack (Audition / Drop / Slice)",
+                        ACCENT_TEAL,
+                    );
+                    for idx in 0..4 {
+                        let (name, buf) = synthesize_browser_sample(idx, sample_rate, bpm);
+                        if !self.search.is_empty()
+                            && !name.to_lowercase().contains(&self.search.to_lowercase())
                         {
-                            actions.push(BrowserAction::DropSampleOnTrack {
-                                name: name.clone(),
-                                buffer: buf.clone(),
-                            });
+                            continue;
                         }
-                        if ui
-                            .small_button("🎹Slice")
-                            .on_hover_text("Load into Chromatic/Slice Sampler on Selected Track!")
-                            .clicked()
-                        {
-                            actions.push(BrowserAction::LoadIntoSampler {
-                                name: name.clone(),
-                                buffer: buf,
-                            });
-                        }
-                        ui.add(egui::Label::new(egui::RichText::new(name).size(10.5)).truncate());
-                    });
-                }
-
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Disk Audio & MIDI Files ({})",
-                        self.scanned_files.len()
-                    ))
-                    .size(10.5)
-                    .strong()
-                    .color(TEXT_DIM),
-                );
-
-                let q = self.search.to_lowercase();
-                for path in self.scanned_files.clone() {
-                    let fname = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("file")
-                        .to_string();
-                    if !q.is_empty() && !fname.to_lowercase().contains(&q) {
-                        continue;
-                    }
-                    let is_midi = path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "mid" | "midi"))
-                        .unwrap_or(false);
-
-                    ui.horizontal(|ui| {
-                        if is_midi {
-                            if ui.small_button("🎹 Import .MID").clicked() {
-                                actions.push(BrowserAction::ImportMidiFile(path.clone()));
+                        ui.horizontal(|ui| {
+                            if ui.small_button("▶").on_hover_text("Audition Preview").clicked() {
+                                actions.push(BrowserAction::PreviewSample(buf.clone()));
                             }
-                        } else {
-                            if ui.small_button("▶").clicked() {
-                                if let Ok(buf) = import_audio_file(&path, sample_rate) {
-                                    actions.push(BrowserAction::PreviewSample(buf));
+                            if ui
+                                .small_button("+Trk")
+                                .on_hover_text("Drop onto Selected Track at Playhead")
+                                .clicked()
+                            {
+                                actions.push(BrowserAction::DropSampleOnTrack {
+                                    name: name.clone(),
+                                    buffer: buf.clone(),
+                                });
+                            }
+                            if ui
+                                .small_button("🎹Slice")
+                                .on_hover_text(
+                                    "Load into Chromatic/Slice Sampler on Selected Track!",
+                                )
+                                .clicked()
+                            {
+                                actions.push(BrowserAction::LoadIntoSampler {
+                                    name: name.clone(),
+                                    buffer: buf,
+                                });
+                            }
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(name).size(10.5)).truncate(),
+                            );
+                        });
+                    }
+                });
+
+                ui.add_space(6.0);
+
+                chrome_card(ui, BORDER_SUBTLE, |ui| {
+                    chrome_section_title(
+                        ui,
+                        &format!("Disk Audio & MIDI Files ({})", self.scanned_files.len()),
+                        TEXT_MAIN,
+                    );
+
+                    let q = self.search.to_lowercase();
+                    for path in self.scanned_files.clone() {
+                        let fname = path
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("file")
+                            .to_string();
+                        if !q.is_empty() && !fname.to_lowercase().contains(&q) {
+                            continue;
+                        }
+                        let is_midi = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "mid" | "midi"))
+                            .unwrap_or(false);
+
+                        ui.horizontal(|ui| {
+                            if is_midi {
+                                if ui.small_button("🎹 Import .MID").clicked() {
+                                    actions.push(BrowserAction::ImportMidiFile(path.clone()));
+                                }
+                            } else {
+                                if ui.small_button("▶").clicked() {
+                                    if let Ok(buf) = import_audio_file(&path, sample_rate) {
+                                        actions.push(BrowserAction::PreviewSample(buf));
+                                    }
+                                }
+                                if ui.small_button("+Trk").clicked() {
+                                    if let Ok(buf) = import_audio_file(&path, sample_rate) {
+                                        actions.push(BrowserAction::DropSampleOnTrack {
+                                            name: fname.clone(),
+                                            buffer: buf,
+                                        });
+                                    }
                                 }
                             }
-                            if ui.small_button("+Trk").clicked() {
-                                if let Ok(buf) = import_audio_file(&path, sample_rate) {
-                                    actions.push(BrowserAction::DropSampleOnTrack {
-                                        name: fname.clone(),
-                                        buffer: buf,
-                                    });
-                                }
-                            }
-                        }
-                        ui.add(egui::Label::new(egui::RichText::new(fname).size(10.5)).truncate());
-                    });
-                }
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(fname).size(10.5)).truncate(),
+                            );
+                        });
+                    }
+                });
             });
     }
 
@@ -1060,186 +1070,189 @@ impl StudioBrowserState {
         egui::ScrollArea::vertical()
             .id_salt("presets_clap_scroll")
             .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("Curated Studio FX & Synth Presets")
-                        .size(11.0)
-                        .strong()
-                        .color(ACCENT_FERRIC),
-                );
-                for preset in FACTORY_PRESETS {
-                    ui.horizontal(|ui| {
-                        if ui.small_button("+ Load").clicked() {
-                            actions.push(BrowserAction::ApplyPreset(preset.clone()));
-                        }
-                        ui.label(
-                            egui::RichText::new(format!("[{}]", preset.category))
-                                .size(9.5)
-                                .color(ACCENT_TEAL),
-                        );
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(preset.name).size(10.5)).truncate(),
-                        );
-                    });
-                }
-
-                ui.separator();
-                ui.label(
-                    egui::RichText::new("🛡 Plugin Playground (sandbox audition → insert)")
-                        .size(11.0)
-                        .strong()
-                        .color(ACCENT_TEAL),
-                );
-                ui.label(
-                    egui::RichText::new(
-                        "Audition runs sandboxed. Crash quarantines the plugin. Survive → Insert into selected track.",
-                    )
-                    .size(10.0)
-                    .color(TEXT_DIM),
-                );
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "CLAP & VST3 Plugins ({})",
-                            self.external_plugins.len()
-                        ))
-                        .size(11.0)
-                        .strong()
-                        .color(ACCENT_AMBER),
-                    );
-                    if ui
-                        .small_button("⟳ Scan")
-                        .on_hover_text(
-                            "Rescan standard CommonProgramFiles\\CLAP and CommonProgramFiles\\VST3 directories",
-                        )
-                        .clicked()
-                    {
-                        self.rescan_plugins();
-                    }
-                    if ui
-                        .small_button("+ Dir")
-                        .on_hover_text("Add & scan a custom .clap or .vst3 plugin directory")
-                        .clicked()
-                    {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            if !self.custom_plugin_dirs.contains(&dir) {
-                                self.custom_plugin_dirs.push(dir);
+                chrome_card(ui, ACCENT_FERRIC, |ui| {
+                    chrome_section_title(ui, "Curated Studio FX & Synth Presets", ACCENT_FERRIC);
+                    for preset in FACTORY_PRESETS {
+                        ui.horizontal(|ui| {
+                            if ui.small_button("+ Load").clicked() {
+                                actions.push(BrowserAction::ApplyPreset(preset.clone()));
                             }
-                            self.rescan_plugins();
-                        }
+                            ui.label(
+                                egui::RichText::new(format!("[{}]", preset.category))
+                                    .size(9.5)
+                                    .color(ACCENT_TEAL),
+                            );
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(preset.name).size(10.5))
+                                    .truncate(),
+                            );
+                        });
                     }
                 });
 
-                // Search + Format Filter Pills (All / CLAP / VST3)
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.plugin_search)
-                            .hint_text("Search Vital, Surge, FabFilter...")
-                            .desired_width(120.0),
+                ui.add_space(6.0);
+
+                chrome_card(ui, ACCENT_TEAL, |ui| {
+                    chrome_section_title(
+                        ui,
+                        "Plugin Playground (sandbox audition → insert)",
+                        ACCENT_TEAL,
                     );
-                    if pill_toggle(ui, "All", self.plugin_format_filter.is_none(), ACCENT_TEAL)
-                        .clicked()
-                    {
-                        self.plugin_format_filter = None;
-                    }
-                    if pill_toggle(
-                        ui,
-                        "CLAP",
-                        self.plugin_format_filter == Some(ExternalPluginFormat::Clap),
-                        ACCENT_FERRIC,
-                    )
-                    .clicked()
-                    {
-                        self.plugin_format_filter = Some(ExternalPluginFormat::Clap);
-                    }
-                    if pill_toggle(
-                        ui,
-                        "VST3",
-                        self.plugin_format_filter == Some(ExternalPluginFormat::Vst3),
-                        ACCENT_AMBER,
-                    )
-                    .clicked()
-                    {
-                        self.plugin_format_filter = Some(ExternalPluginFormat::Vst3);
-                    }
-                });
-
-                if self.quarantine_count > 0 {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "🛡 {} crashed plugin(s) quarantined",
-                                self.quarantine_count
-                            ))
-                            .size(9.5)
-                            .color(ACCENT_AMBER),
-                        );
-                        if ui.small_button("Reset").clicked() {
-                            actions.push(BrowserAction::ClearPluginQuarantine);
-                            self.rescan_plugins();
-                        }
-                    });
-                }
-
-                let pq = self.plugin_search.trim().to_lowercase();
-                let filtered: Vec<&DiscoveredExternalPlugin> = self
-                    .external_plugins
-                    .iter()
-                    .filter(|p| {
-                        self.plugin_format_filter
-                            .map(|f| p.format == f)
-                            .unwrap_or(true)
-                            && (pq.is_empty()
-                                || p.name.to_lowercase().contains(&pq)
-                                || p.vendor.to_lowercase().contains(&pq))
-                    })
-                    .collect();
-
-                if filtered.is_empty() {
                     ui.label(
                         egui::RichText::new(
-                            "No matching .clap or .vst3 plugins found. Install any Windows CLAP or VST3 synth/effect & click '⟳ Scan' or '+ Dir'!",
+                            "Audition runs sandboxed. Crash quarantines the plugin. Survive → Insert into selected track.",
                         )
                         .size(10.0)
                         .color(TEXT_DIM),
                     );
-                } else {
-                    for plug in filtered {
+                });
+
+                ui.add_space(6.0);
+
+                chrome_card(ui, ACCENT_AMBER, |ui| {
+                    ui.horizontal(|ui| {
+                        chrome_section_title(
+                            ui,
+                            &format!("CLAP & VST3 Plugins ({})", self.external_plugins.len()),
+                            ACCENT_AMBER,
+                        );
+                        if ui
+                            .small_button("⟳ Scan")
+                            .on_hover_text(
+                                "Rescan standard CommonProgramFiles\\CLAP and CommonProgramFiles\\VST3 directories",
+                            )
+                            .clicked()
+                        {
+                            self.rescan_plugins();
+                        }
+                        if ui
+                            .small_button("+ Dir")
+                            .on_hover_text("Add & scan a custom .clap or .vst3 plugin directory")
+                            .clicked()
+                        {
+                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                                if !self.custom_plugin_dirs.contains(&dir) {
+                                    self.custom_plugin_dirs.push(dir);
+                                }
+                                self.rescan_plugins();
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        chrome_row_label(ui, "Search ->", ACCENT_TEAL);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.plugin_search)
+                                .hint_text("Vital, Surge, FabFilter...")
+                                .desired_width(140.0),
+                        );
+                        if pill_toggle(ui, "All", self.plugin_format_filter.is_none(), ACCENT_TEAL)
+                            .clicked()
+                        {
+                            self.plugin_format_filter = None;
+                        }
+                        if pill_toggle(
+                            ui,
+                            "CLAP",
+                            self.plugin_format_filter == Some(ExternalPluginFormat::Clap),
+                            ACCENT_FERRIC,
+                        )
+                        .clicked()
+                        {
+                            self.plugin_format_filter = Some(ExternalPluginFormat::Clap);
+                        }
+                        if pill_toggle(
+                            ui,
+                            "VST3",
+                            self.plugin_format_filter == Some(ExternalPluginFormat::Vst3),
+                            ACCENT_AMBER,
+                        )
+                        .clicked()
+                        {
+                            self.plugin_format_filter = Some(ExternalPluginFormat::Vst3);
+                        }
+                    });
+
+                    if self.quarantine_count > 0 {
                         ui.horizontal(|ui| {
-                            if ui
-                                .small_button("▶ Audition")
-                                .on_hover_text("Sandbox audition in Plugin Playground")
-                                .clicked()
-                            {
-                                actions.push(BrowserAction::AuditionPlugin(plug.clone()));
-                            }
-                            if ui
-                                .small_button("+ Insert")
-                                .on_hover_text("Insert sandboxed plugin on selected track")
-                                .clicked()
-                            {
-                                actions.push(BrowserAction::LoadExternalPlugin(plug.clone()));
-                            }
-                            let badge_col = match plug.format {
-                                ExternalPluginFormat::Clap => ACCENT_FERRIC,
-                                ExternalPluginFormat::Vst3 => ACCENT_AMBER,
-                            };
                             ui.label(
-                                egui::RichText::new(format!("[{}]", plug.format.badge()))
-                                    .size(9.5)
-                                    .monospace()
-                                    .color(badge_col),
+                                egui::RichText::new(format!(
+                                    "{} crashed plugin(s) quarantined",
+                                    self.quarantine_count
+                                ))
+                                .size(9.5)
+                                .color(ACCENT_AMBER),
                             );
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!("{} — {}", plug.name, plug.vendor))
-                                        .size(10.5),
-                                )
-                                .truncate(),
-                            );
+                            if ui.small_button("Reset").clicked() {
+                                actions.push(BrowserAction::ClearPluginQuarantine);
+                                self.rescan_plugins();
+                            }
                         });
                     }
-                }
+
+                    let pq = self.plugin_search.trim().to_lowercase();
+                    let filtered: Vec<&DiscoveredExternalPlugin> = self
+                        .external_plugins
+                        .iter()
+                        .filter(|p| {
+                            self.plugin_format_filter
+                                .map(|f| p.format == f)
+                                .unwrap_or(true)
+                                && (pq.is_empty()
+                                    || p.name.to_lowercase().contains(&pq)
+                                    || p.vendor.to_lowercase().contains(&pq))
+                        })
+                        .collect();
+
+                    if filtered.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No matching .clap or .vst3 plugins found. Install any Windows CLAP or VST3 synth/effect & click Scan or + Dir.",
+                            )
+                            .size(10.0)
+                            .color(TEXT_DIM),
+                        );
+                    } else {
+                        for plug in filtered {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .small_button("▶ Audition")
+                                    .on_hover_text("Sandbox audition in Plugin Playground")
+                                    .clicked()
+                                {
+                                    actions.push(BrowserAction::AuditionPlugin(plug.clone()));
+                                }
+                                if ui
+                                    .small_button("+ Insert")
+                                    .on_hover_text("Insert sandboxed plugin on selected track")
+                                    .clicked()
+                                {
+                                    actions.push(BrowserAction::LoadExternalPlugin(plug.clone()));
+                                }
+                                let badge_col = match plug.format {
+                                    ExternalPluginFormat::Clap => ACCENT_FERRIC,
+                                    ExternalPluginFormat::Vst3 => ACCENT_AMBER,
+                                };
+                                ui.label(
+                                    egui::RichText::new(format!("[{}]", plug.format.badge()))
+                                        .size(9.5)
+                                        .monospace()
+                                        .color(badge_col),
+                                );
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "{} — {}",
+                                            plug.name, plug.vendor
+                                        ))
+                                        .size(10.5),
+                                    )
+                                    .truncate(),
+                                );
+                            });
+                        }
+                    }
+                });
             });
     }
 }

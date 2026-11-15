@@ -1,8 +1,8 @@
 use crate::piano_roll::DockAction;
 use crate::theme::{
-    pill_toggle, section_label, stereo_level_meter, studio_knob, track_color32, vertical_fader,
-    ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
-    TEXT_DIM, TEXT_MAIN,
+    chrome_card, chrome_row_label, chrome_section_title, pill_toggle, stereo_level_meter,
+    studio_knob, track_color32, vertical_fader, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED,
+    ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Color32, Stroke, Ui};
 use ferric_engine::EngineTelemetry;
@@ -17,57 +17,60 @@ pub fn render_mixer_console(
     telem: &EngineTelemetry,
     actions: &mut Vec<DockAction>,
 ) {
-    // Mix A/B/C/D recall strip — instant console snapshot compare!
-    ui.horizontal(|ui| {
-        section_label(ui, "MIX RECALL");
-        for slot in 0..4 {
-            let letter = ['A', 'B', 'C', 'D'][slot];
-            let occupied = project
-                .mix_snapshots
-                .get(slot)
-                .and_then(|s| s.as_ref())
-                .is_some();
-            let snap_name = project
-                .mix_snapshots
-                .get(slot)
-                .and_then(|s| s.as_ref())
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| format!("Mix {letter}"));
-            ui.horizontal(|ui| {
-                if pill_toggle(
-                    ui,
-                    &format!("Mix {letter}"),
-                    occupied,
-                    if occupied { ACCENT_FERRIC } else { TEXT_DIM },
-                )
-                .on_hover_text(format!(
-                    "Click filled Mix {letter} to recall '{snap_name}' · empty slot or ⬇ stores current mix"
-                ))
-                .clicked()
-                {
-                    if occupied {
-                        actions.push(DockAction::RecallMix(slot));
-                    } else {
+    // Mix A/B/C/D recall strip — Pad A/B chrome family
+    chrome_card(ui, ACCENT_FERRIC, |ui| {
+        ui.horizontal(|ui| {
+            chrome_section_title(ui, "Mix Recall", ACCENT_FERRIC);
+            chrome_row_label(ui, "Slot ->", ACCENT_TEAL);
+            for slot in 0..4 {
+                let letter = ['A', 'B', 'C', 'D'][slot];
+                let occupied = project
+                    .mix_snapshots
+                    .get(slot)
+                    .and_then(|s| s.as_ref())
+                    .is_some();
+                let snap_name = project
+                    .mix_snapshots
+                    .get(slot)
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| format!("Mix {letter}"));
+                ui.horizontal(|ui| {
+                    if pill_toggle(
+                        ui,
+                        &format!("Mix {letter}"),
+                        occupied,
+                        if occupied { ACCENT_FERRIC } else { TEXT_DIM },
+                    )
+                    .on_hover_text(format!(
+                        "Click filled Mix {letter} to recall '{snap_name}' · empty slot or ⬇ stores current mix"
+                    ))
+                    .clicked()
+                    {
+                        if occupied {
+                            actions.push(DockAction::RecallMix(slot));
+                        } else {
+                            actions.push(DockAction::StoreMix(slot));
+                        }
+                    }
+                    if ui
+                        .small_button("⬇")
+                        .on_hover_text(format!("Store current mix into Mix {letter}"))
+                        .clicked()
+                    {
                         actions.push(DockAction::StoreMix(slot));
                     }
-                }
-                if ui
-                    .small_button("⬇")
-                    .on_hover_text(format!("Store current mix into Mix {letter}"))
-                    .clicked()
-                {
-                    actions.push(DockAction::StoreMix(slot));
-                }
-            });
-        }
-        ui.separator();
-        if ui
-            .small_button("+ VCA")
-            .on_hover_text("Add a VCA Master Group (scales member track faders + mute/solo)")
-            .clicked()
-        {
-            actions.push(DockAction::AddVcaGroup);
-        }
+                });
+            }
+            ui.separator();
+            if ui
+                .small_button("+ VCA")
+                .on_hover_text("Add a VCA Master Group (scales member track faders + mute/solo)")
+                .clicked()
+            {
+                actions.push(DockAction::AddVcaGroup);
+            }
+        });
     });
     ui.add_space(4.0);
 
@@ -577,21 +580,19 @@ pub fn render_routing_matrix(
     project: &mut Project,
     actions: &mut Vec<DockAction>,
 ) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("Track Routing Matrix")
-                .strong()
-                .color(ACCENT_FERRIC),
-        );
-        ui.label(
-            egui::RichText::new(
-                "Click crosspoints to toggle Post-Fader Aux Sends • Folder column assigns submix parent (cycle-safe DAG).",
-            )
-            .size(11.0)
-            .color(TEXT_DIM),
-        );
+    chrome_card(ui, ACCENT_FERRIC, |ui| {
+        ui.horizontal(|ui| {
+            chrome_section_title(ui, "Track Routing Matrix", ACCENT_FERRIC);
+            ui.label(
+                egui::RichText::new(
+                    "Click crosspoints to toggle Post-Fader Aux Sends · Folder column assigns submix parent (cycle-safe DAG).",
+                )
+                .size(11.0)
+                .color(TEXT_DIM),
+            );
+        });
     });
-    ui.separator();
+    ui.add_space(6.0);
 
     let tracks_meta: Vec<(TrackId, String)> = project
         .tracks

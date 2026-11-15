@@ -8,9 +8,17 @@ Notes on what shipped and when. Newest first.
 
 ---
 
-## 2026-11-15 — v1.1.5
+## 2026-11-15 — v1.1.6
 
 Current public release.
+
+- UI chrome pass: Samples, Presets/Plugins, DNA, Launch Pad, Mixer recall, FX rack, piano-roll toolbar, routing — same Pad A/B `chrome_card` / `chrome_row_label` recipe as Hardware Rig + Audio I/O + Kaoss
+
+Grab it: [Releases · v1.1.6](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.6)
+
+---
+
+## 2026-11-15 — v1.1.5
 
 - Dirty window-close guard (CancelClose + Save / Discard / Cancel)
 - Updater requires SHA-256 and GitHub HTTPS hosts only
@@ -18,8 +26,6 @@ Current public release.
 - ASIO picker honesty labels + WASAPI fallback status
 - CI runs Windows function-test; `/engineering` registries for continuity
 - README / release channel: current version only
-
-Grab it: [Releases · v1.1.5](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.5)
 
 ---
 

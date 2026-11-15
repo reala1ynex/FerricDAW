@@ -7,7 +7,9 @@ use egui::{Key, Ui};
 use ferric_model::TrackId;
 use std::collections::HashSet;
 
-use crate::theme::{ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, TEXT_DIM, TEXT_MAIN};
+use crate::theme::{
+    chrome_row_label, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, TEXT_DIM,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PadBLayout {
@@ -353,12 +355,12 @@ impl KeyboardPadRig {
         });
 
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Pad B source").color(TEXT_MAIN));
+            chrome_row_label(ui, "Pad B source ->", ACCENT_TEAL);
             ui.selectable_value(&mut self.pad_b_source, PadBSource::Numpad, "Numpad");
             ui.selectable_value(&mut self.pad_b_source, PadBSource::NumberRow, "Number row");
         });
         ui.horizontal(|ui| {
-            ui.label("Pad B layout");
+            chrome_row_label(ui, "Pad B layout ->", ACCENT_AMBER);
             ui.selectable_value(&mut self.pad_b_layout, PadBLayout::Chromatic, "Chromatic");
             ui.selectable_value(&mut self.pad_b_layout, PadBLayout::DrumGrid, "Drum grid");
         });
@@ -393,7 +395,7 @@ fn track_picker(
     color: egui::Color32,
 ) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).color(color));
+        chrome_row_label(ui, label, color);
         egui::ComboBox::from_id_salt(label)
             .selected_text(match *slot {
                 None => "Selected track".to_string(),
@@ -403,6 +405,7 @@ fn track_picker(
                     .map(|(_, n)| n.clone())
                     .unwrap_or_else(|| "Missing track".into()),
             })
+            .width(200.0)
             .show_ui(ui, |ui| {
                 ui.selectable_value(slot, None, "Selected track");
                 for (id, name) in tracks {
