@@ -300,10 +300,20 @@ impl StudioBrowserState {
                             self.selected_audio_driver,
                             AudioDriverKind::WasapiExclusive
                         );
+                        let want_asio =
+                            matches!(self.selected_audio_driver, AudioDriverKind::Asio);
                         let live_excl = self.live_exclusive;
-                        let status = match (want_excl, live_excl) {
-                            (true, true) => "Exclusive ● locked",
-                            (true, false) => "Exclusive → Shared fallback",
+                        let asio_fell_back = want_asio
+                            && self
+                                .driver_honesty_note
+                                .as_ref()
+                                .map(|n| n.to_ascii_lowercase().contains("asio"))
+                                .unwrap_or(false);
+                        let status = match (want_asio, asio_fell_back, want_excl, live_excl) {
+                            (true, true, _, _) => "ASIO → WASAPI fallback",
+                            (true, false, _, _) => "ASIO requested",
+                            (false, _, true, true) => "Exclusive ● locked",
+                            (false, _, true, false) => "Exclusive → Shared fallback",
                             _ => "Shared",
                         };
                         let buf = self

@@ -42,6 +42,8 @@ pub enum DockAction {
         length_beats: f64,
         notes: Vec<MidiNote>,
     },
+    /// Surface success/failure to the top status banner (e.g. MIDI export).
+    StatusMessage(String),
 }
 
 pub struct PianoRollState {
@@ -261,7 +263,19 @@ impl PianoRollState {
                                 if let Some(TakeContent::Midi { notes, cc_points }) =
                                     clip.takes.get(clip.active_take).map(|t| &t.content)
                                 {
-                                    let _ = export_smf_clip(&path, project.bpm, notes, cc_points);
+                                    match export_smf_clip(&path, project.bpm, notes, cc_points) {
+                                        Ok(()) => actions.push(DockAction::StatusMessage(format!(
+                                            "✓ Exported MIDI → {}",
+                                            path.display()
+                                        ))),
+                                        Err(e) => actions.push(DockAction::StatusMessage(format!(
+                                            "MIDI export failed: {e}"
+                                        ))),
+                                    }
+                                } else {
+                                    actions.push(DockAction::StatusMessage(
+                                        "MIDI export failed: active take is not MIDI.".into(),
+                                    ));
                                 }
                             }
                         }

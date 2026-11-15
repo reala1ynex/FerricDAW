@@ -83,7 +83,7 @@ impl UpdateService {
 
     pub fn feed_configured() -> bool {
         let u = Self::feed_url();
-        !u.contains("OWNER/") && u.starts_with("http")
+        feed_url_is_allowed(&u)
     }
 
     pub fn poll(&mut self) {
@@ -230,11 +230,39 @@ fn exe_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
+/// Reject non-HTTPS / non-GitHub release hosts (portable updater threat model).
+pub fn feed_url_is_allowed(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    if lower.contains("owner/") || lower.contains("..") {
+        return false;
+    }
+    if !(lower.starts_with("https://github.com/")
+        || lower.starts_with("https://objects.githubusercontent.com/")
+        || lower.starts_with("https://release-assets.githubusercontent.com/")
+        || lower.starts_with("https://github-releases.githubusercontent.com/"))
+    {
+        // Allow any https://*.githubusercontent.com/ path used by Releases CDN.
+        if let Some(rest) = lower.strip_prefix("https://") {
+            let host = rest.split('/').next().unwrap_or("");
+            if host.ends_with(".githubusercontent.com") && !host.contains('@') {
+                return true;
+            }
+        }
+        return false;
+    }
+    true
+}
+
 fn fetch_feed(url: &str) -> Result<UpdateFeed, String> {
     if url.contains("OWNER/") {
         return Err(
             "Update feed not configured yet — set GitHub Releases URL (update_feed.url)."
                 .into(),
+        );
+    }
+    if !feed_url_is_allowed(url) {
+        return Err(
+            "Update feed URL must be HTTPS on github.com / GitHub release CDN hosts.".into(),
         );
     }
     let agent = ureq::AgentBuilder::new()
@@ -263,11 +291,32 @@ fn fetch_feed(url: &str) -> Result<UpdateFeed, String> {
             "latest.json is not JSON (got: {preview}…). Check the release asset."
         ));
     }
-    serde_json::from_str::<UpdateFeed>(trimmed)
-        .map_err(|e| format!("Invalid latest.json: {e}"))
+    let feed: UpdateFeed = serde_json::from_str(trimmed)
+        .map_err(|e| format!("Invalid latest.json: {e}"))?;
+    validate_feed(&feed)?;
+    Ok(feed)
+}
+
+pub fn validate_feed(feed: &UpdateFeed) -> Result<(), String> {
+    if feed.version.trim().is_empty() {
+        return Err("latest.json missing version.".into());
+    }
+    if feed.sha256.trim().is_empty() {
+        return Err("latest.json missing required sha256 — refusing update.".into());
+    }
+    if feed.sha256.len() != 64 || !feed.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("latest.json sha256 must be a 64-char hex digest.".into());
+    }
+    if !feed_url_is_allowed(&feed.url) {
+        return Err(
+            "latest.json zip URL must be HTTPS on github.com / GitHub release CDN hosts.".into(),
+        );
+    }
+    Ok(())
 }
 
 fn download_zip(feed: &UpdateFeed) -> Result<PathBuf, String> {
+    validate_feed(feed)?;
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(600))
@@ -295,7 +344,7 @@ fn download_zip(feed: &UpdateFeed) -> Result<PathBuf, String> {
     }
     drop(file);
     let digest = hex::encode(hasher.finalize());
-    if !feed.sha256.is_empty() && !feed.sha256.eq_ignore_ascii_case(&digest) {
+    if !feed.sha256.eq_ignore_ascii_case(&digest) {
         let _ = std::fs::remove_file(&out);
         return Err(format!(
             "SHA-256 mismatch (got {digest}, expected {}).",
@@ -341,10 +390,33 @@ mod tests {
 
     #[test]
     fn feed_parses_with_bom() {
-        let raw = "\u{feff}{\"version\":\"1.1.3\",\"url\":\"https://example.com/x.zip\",\"sha256\":\"abc\",\"notes\":\"n\"}";
+        let raw = "\u{feff}{\"version\":\"1.1.4\",\"url\":\"https://github.com/reala1ynex/FerricDAW/releases/download/v1.1.4/x.zip\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"notes\":\"n\"}";
         let trimmed = raw.trim_start_matches('\u{feff}').trim();
         let feed: UpdateFeed = serde_json::from_str(trimmed).unwrap();
-        assert_eq!(feed.version, "1.1.3");
-        assert!(feed.url.contains("example.com"));
+        assert_eq!(feed.version, "1.1.4");
+        validate_feed(&feed).expect("github feed with sha should validate");
+    }
+
+    #[test]
+    fn reject_non_github_url_and_missing_sha() {
+        assert!(!feed_url_is_allowed("http://github.com/x"));
+        assert!(!feed_url_is_allowed("https://evil.example/x.zip"));
+        assert!(feed_url_is_allowed(
+            "https://github.com/reala1ynex/FerricDAW/releases/latest/download/latest.json"
+        ));
+        let bad = UpdateFeed {
+            version: "1.0.0".into(),
+            url: "https://evil.example/x.zip".into(),
+            sha256: String::new(),
+            notes: String::new(),
+        };
+        assert!(validate_feed(&bad).is_err());
+        let no_sha = UpdateFeed {
+            version: "1.0.0".into(),
+            url: "https://github.com/reala1ynex/FerricDAW/releases/download/v1/x.zip".into(),
+            sha256: String::new(),
+            notes: String::new(),
+        };
+        assert!(validate_feed(&no_sha).is_err());
     }
 }

@@ -25,7 +25,9 @@ impl AudioDriverKind {
         match self {
             AudioDriverKind::WasapiShared => "WASAPI Shared",
             AudioDriverKind::WasapiExclusive => "WASAPI Exclusive",
-            AudioDriverKind::Asio => "ASIO (if installed)",
+            // Portable builds ship without cpal's `asio` feature — selection still
+            // attempts ASIO host discovery and falls back with an honesty note.
+            AudioDriverKind::Asio => "ASIO (WASAPI if unavailable)",
         }
     }
 
@@ -38,7 +40,7 @@ impl AudioDriverKind {
                 "True exclusive-mode WASAPI — locks the output device for lower latency. Falls back to Shared if the device rejects exclusive."
             }
             AudioDriverKind::Asio => {
-                "Uses the ASIO cpal host when ASIO4ALL / an interface driver is installed; otherwise falls back to WASAPI and says so in the status bar."
+                "Requests the ASIO cpal host when this build includes it and ASIO4ALL / an interface driver is installed. Portable Windows releases usually fall back to WASAPI Shared — watch the amber honesty note after switching."
             }
         }
     }

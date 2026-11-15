@@ -170,6 +170,8 @@ enum PendingDestructive {
     LoadDemo,
     OpenPath(PathBuf),
     TutorialApply(NightCurrentStep),
+    /// User tried to close the window with unsaved / in-progress work.
+    QuitApp,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -477,9 +479,15 @@ impl FerricDawApp {
             }
             self.engine
                 .harvest_plugin_states_into_project(&mut self.project);
-            if save_project_bundle(&mut self.project, &path).is_ok() {
-                self.dirty_since_autosave = false;
-                self.last_autosave_inst = std::time::Instant::now();
+            match save_project_bundle(&mut self.project, &path) {
+                Ok(()) => {
+                    self.dirty_since_autosave = false;
+                    self.last_autosave_inst = std::time::Instant::now();
+                }
+                Err(e) => {
+                    self.status_banner = format!("Autosave failed: {e}");
+                    self.last_autosave_inst = std::time::Instant::now();
+                }
             }
         }
     }
@@ -1080,6 +1088,9 @@ impl FerricDawApp {
                     step.letter()
                 );
             }
+            PendingDestructive::QuitApp => {
+                self.quit_for_update = true;
+            }
         }
     }
 
@@ -1189,10 +1200,14 @@ impl FerricDawApp {
                     "Apply tutorial step (rebuilds song)?"
                 }
             }
+            PendingDestructive::QuitApp => "Quit FerricDAW with unsaved work?",
         };
         let detail = match &pending {
             PendingDestructive::TutorialApply(_) => {
                 "This rebuilds the tutorial project through the current step and replaces clips/FX. Save first if you care about the current session."
+            }
+            PendingDestructive::QuitApp => {
+                "Your session has unsaved or in-progress work. Save before quitting, discard and quit, or cancel."
             }
             _ => "You have unsaved or in-progress work. Save before continuing, discard, or cancel.",
         };
@@ -1219,7 +1234,14 @@ impl FerricDawApp {
                         .clicked()
                     {
                         self.save_project_dialog();
-                        // Keep pending so user can confirm again after save.
+                        if matches!(pending, PendingDestructive::QuitApp)
+                            && self.project_path.is_some()
+                            && !self.dirty_since_autosave
+                        {
+                            self.pending_destructive = None;
+                            self.execute_destructive(PendingDestructive::QuitApp);
+                        }
+                        // Otherwise keep pending so user can discard/cancel after a cancelled save.
                     }
                     if ui
                         .button(egui::RichText::new("Discard & continue").color(ACCENT_AMBER))
@@ -3791,6 +3813,17 @@ impl eframe::App for FerricDawApp {
             }
         }
 
+        // Dirty close guard — CancelClose + confirm modal (I-01).
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quit_for_update
+            && self.session_has_user_work()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.pending_destructive.is_none() {
+                self.pending_destructive = Some(PendingDestructive::QuitApp);
+            }
+        }
+
         if self.quit_for_update {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -4231,6 +4264,9 @@ impl eframe::App for FerricDawApp {
                         match act {
                             DockAction::ProjectMutated(_lbl) => {
                                 need_sync = true;
+                            }
+                            DockAction::StatusMessage(msg) => {
+                                self.status_banner = msg;
                             }
                             DockAction::RecallMix(slot) => {
                                 self.snapshot_before("Recall Mix Snapshot");
