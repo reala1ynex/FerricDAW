@@ -1,3 +1,9 @@
+﻿## v1.1.4
+- Function test harness: `ferricdaw.exe --function-test` / `tools\FunctionTest-Windows.ps1` (every button handler, then next)
+- Cold start opens empty session; Afterglow only from menu
+- Tutorial Apply skips rebuild when step already complete; Esc overlay race fixed
+- Hardware Rig + Kaoss use Pad A/B `chrome_card`; Audio I/O tip wraps; recording offset syncs browser state
+- Package START_HERE / demo README without UTF-8 BOM
 # FerricDAW Devlog
 
 Notes on what shipped and when. Newest first.
@@ -72,3 +78,4 @@ Built up in order:
 ## What’s next (loose)
 
 Whatever gets used: tighter tutorial feedback, more honest I/O status, and keeping the portable updater boring and reliable.
+

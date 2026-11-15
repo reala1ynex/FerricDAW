@@ -67,7 +67,8 @@ foreach ($doc in @('BEGINNER_GUIDE.md', 'FEATURE_GUIDE.md', 'NIGHT_CURRENT_DEMO.
     if (Test-Path $src) { Copy-Item $src (Join-Path $DocsOut $doc) -Force }
 }
 
-@"
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$startHere = @"
 FerricDAW v$Version — Windows portable
 
 Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in that worker, not the DAW.
@@ -81,9 +82,10 @@ Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in tha
 7. Owner: Patrick Rudolph (github.com/reala1ynex) · Issues on the GitHub repo
 
 Space = play/stop · Ctrl+K = palette · F1 = help · Ferric → Check for Updates
-"@ | Set-Content -Path (Join-Path $StageDir 'START_HERE.txt') -Encoding UTF8
+"@
+[System.IO.File]::WriteAllText((Join-Path $StageDir 'START_HERE.txt'), $startHere, $utf8NoBom)
 
-@"
+$demoReadme = @"
 Night Current — tutorial demo
 
 128 BPM · dark techno · Cm–Ab–Eb–Bb · 16 bars
@@ -91,7 +93,8 @@ Intro → groove → hook → stack → bigger hook
 
 Same recipe as the in-app tutorial and docs\BEGINNER_GUIDE.md.
 In Ferric: Tutorial → Play demo WAV to compare without leaving the app.
-"@ | Set-Content -Path (Join-Path $DemoDir 'README.txt') -Encoding UTF8
+"@
+[System.IO.File]::WriteAllText((Join-Path $DemoDir 'README.txt'), $demoReadme, $utf8NoBom)
 
 if ($GitHubOwner) {
     $FeedUrl = "https://github.com/$GitHubOwner/$GitHubRepo/releases/latest/download/latest.json"

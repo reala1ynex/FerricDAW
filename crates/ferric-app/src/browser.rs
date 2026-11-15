@@ -1,6 +1,6 @@
 use crate::theme::{
     chrome_card, chrome_row_label, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP,
-    BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_engine::{
@@ -269,13 +269,8 @@ impl StudioBrowserState {
         egui::ScrollArea::vertical()
             .id_salt("hw_rig_scroll")
             .show(ui, |ui| {
-                // Hardware Rig Theater — desk layout + skins
-                egui::Frame::new()
-                    .fill(BG_DEEP)
-                    .stroke(Stroke::new(1.2_f32, ACCENT_TEAL))
-                    .corner_radius(6)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
+                // Hardware Rig Theater — desk layout + skins (Pad A/B chrome)
+                chrome_card(ui, ACCENT_TEAL, |ui| {
                         ui.label(
                             egui::RichText::new("🎭 Hardware Rig Theater")
                                 .size(12.0)
@@ -411,15 +406,10 @@ impl StudioBrowserState {
                                 );
                             }
                         }
-                    });
+                });
                 ui.add_space(6.0);
 
-                egui::Frame::new()
-                    .fill(BG_ELEVATED)
-                    .stroke(Stroke::new(1.2_f32, ACCENT_FERRIC))
-                    .corner_radius(6)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
+                chrome_card(ui, ACCENT_FERRIC, |ui| {
                         ui.label(
                             egui::RichText::new("⚡ Hardware Studio Rig")
                                 .size(12.0)
@@ -493,7 +483,7 @@ impl StudioBrowserState {
                         {
                             actions.push(BrowserAction::SpawnDualKeyboardStudio);
                         }
-                    });
+                });
 
                 ui.add_space(6.0);
 
@@ -883,12 +873,15 @@ impl StudioBrowserState {
                             }),
                         );
                         if telem.input_peak_db < -50.0 {
-                            ui.colored_label(
-                                ACCENT_AMBER,
-                                egui::RichText::new(
-                                    "No usable input. Set Windows Recording → External Microphone / Line-In as Default, Mic Boost = 0%, raise Ferric Line-In Gain, use a TRS cable into the mic/combo jack — not Steam/AMD Array.",
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "No usable input. Set Windows Recording → External Microphone / Line-In as Default. Mic Boost = 0%. Raise Ferric Line-In Gain. Use TRS into the mic/combo jack — not Steam/AMD Array.",
+                                    )
+                                    .size(10.0)
+                                    .color(ACCENT_AMBER),
                                 )
-                                .size(10.0),
+                                .wrap(),
                             );
                         }
                         if let Some(det_bpm) = telem.detected_input_bpm {

@@ -2,6 +2,7 @@
 
 mod arrangement;
 mod browser;
+mod function_test;
 mod help_modal;
 mod host_fingerprint;
 mod keyboard_pads;
@@ -27,10 +28,10 @@ use ferric_engine::{
     EngineCommand, EngineHandle, ExportFormat, MasteringOptions,
 };
 use ferric_model::{
-    build_demo_project, build_tutorial_project_through, import_smf_file, AutomationTarget, ClipId,
-    FxKind, FxSlot, GrooveTemplate, HistoryManager, InputSource, MidiLearnMapping, MixSnapshot,
-    ModulatorSlot, NightCurrentStep, Project, Take, TakeContent, TimelineClip, Track, TrackId,
-    VelocityAccentShape, VoicingStyle,
+    build_demo_project, build_tutorial_project_through, import_smf_file, night_current_step_complete,
+    AutomationTarget, ClipId, FxKind, FxSlot, GrooveTemplate, HistoryManager, InputSource,
+    MidiLearnMapping, MixSnapshot, ModulatorSlot, NightCurrentStep, Project, Take, TakeContent,
+    TimelineClip, Track, TrackId, VelocityAccentShape, VoicingStyle,
 };
 use host_fingerprint::{compute_host_seed, format_host_seed, random_host_seed};
 use mixer::{render_mixer_console, render_routing_matrix};
@@ -38,8 +39,8 @@ use palette::{CommandPalette, PaletteCommand};
 use piano_roll::{render_fx_and_modulators_panel, DockAction, PianoRollState};
 use std::path::PathBuf;
 use theme::{
-    apply_studio_theme, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL,
-    BG_DEEP, BG_ELEVATED, BG_PANEL, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    apply_studio_theme, chrome_card, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED,
+    ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BG_PANEL, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use update::UpdateService;
 
@@ -229,25 +230,38 @@ struct FerricDawApp {
 impl FerricDawApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_studio_theme(&cc.egui_ctx);
+        Self::new_core(Self::cli_open_path_from_args())
+    }
 
-        let cli_path = std::env::args_os().nth(1).map(PathBuf::from);
+    fn cli_open_path_from_args() -> Option<PathBuf> {
+        std::env::args_os()
+            .skip(1)
+            .map(PathBuf::from)
+            .find(|p| {
+                let s = p.to_string_lossy();
+                !s.starts_with('-') && p.exists()
+            })
+    }
+
+    /// Headless constructor for `--function-test` (no egui window required).
+    fn new_core(cli_path: Option<PathBuf>) -> Self {
         let first_run = !Self::first_run_done_marker().exists() && cli_path.is_none();
 
-        let (initial_project, show_first_run) = if first_run {
-            let mut p = Project::new_empty("Untitled Session");
-            let _ = p.add_track("01 Audio / MIDI");
-            (p, true)
-        } else {
-            (build_demo_project(48_000), false)
-        };
-
-        let engine = EngineHandle::start(&initial_project);
-        let project = if !show_first_run && engine.sample_rate != 48_000 {
-            build_demo_project(engine.sample_rate)
-        } else if engine.sample_rate != 48_000 && show_first_run {
+        // First launch: empty + chooser. Later launches: empty (playground via Ferric menu).
+        let empty_session = || {
             let mut p = Project::new_empty("Untitled Session");
             let _ = p.add_track("01 Audio / MIDI");
             p
+        };
+        let (initial_project, show_first_run) = if first_run {
+            (empty_session(), true)
+        } else {
+            (empty_session(), false)
+        };
+
+        let engine = EngineHandle::start(&initial_project);
+        let project = if engine.sample_rate != 48_000 {
+            empty_session()
         } else {
             initial_project
         };
@@ -1100,7 +1114,15 @@ impl FerricDawApp {
                     self.tutorial.step = step;
                 }
                 if step.is_build_step() {
-                    self.request_destructive(PendingDestructive::TutorialApply(step));
+                    // Already built through this step — don't wipe manual edits with a rebuild.
+                    if night_current_step_complete(&self.project, step) {
+                        self.status_banner = format!(
+                            "Step {} already in place — no rebuild. Next when ready.",
+                            step.letter()
+                        );
+                    } else {
+                        self.request_destructive(PendingDestructive::TutorialApply(step));
+                    }
                 }
             }
         }
@@ -3708,6 +3730,7 @@ impl FerricDawApp {
                     self.engine.set_input_gain_db(db);
                 }
                 BrowserAction::SetRecordingOffsetSamples(smp) => {
+                    self.browser.recording_offset_samples = smp;
                     self.engine.set_recording_offset_samples(smp);
                     let ms = (smp as f32 * 1000.0) / (self.engine.sample_rate.max(8_000) as f32);
                     self.status_banner = format!(
@@ -3847,6 +3870,14 @@ impl eframe::App for FerricDawApp {
         if let Some(cmd) = self.palette.show(ctx) {
             self.execute_palette_command(cmd);
         }
+        // Snapshot before modals so Esc that closes bounce/help this frame
+        // cannot also dismiss the tutorial coach.
+        let overlay_at_frame_start = self.palette.open
+            || self.bounce_modal.open
+            || self.show_help_modal
+            || self.pending_destructive.is_some()
+            || self.show_first_run
+            || self.show_update_modal;
         self.render_first_run_modal(ctx);
         self.render_bounce_modal(ctx);
         self.render_destructive_confirm_modal(ctx);
@@ -3855,11 +3886,13 @@ impl eframe::App for FerricDawApp {
             self.start_night_current_tutorial();
         }
         {
-            let overlay = self.palette.open
+            let overlay = overlay_at_frame_start
+                || self.palette.open
                 || self.bounce_modal.open
                 || self.show_help_modal
                 || self.pending_destructive.is_some()
-                || self.show_first_run;
+                || self.show_first_run
+                || self.show_update_modal;
             let action = self.tutorial.show(ctx, &self.project, overlay);
             self.handle_tutorial_action(action);
         }
@@ -4159,15 +4192,17 @@ impl eframe::App for FerricDawApp {
                             );
                         }
                         BottomTab::KaossPad => {
-                            self.kaoss_pad.ui(
-                                ui,
-                                &mut self.project,
-                                self.selected_track,
-                                telem.playhead_beat,
-                                telem.is_playing,
-                                telem.is_recording,
-                                &mut kaoss_actions,
-                            );
+                            chrome_card(ui, ACCENT_FERRIC, |ui| {
+                                self.kaoss_pad.ui(
+                                    ui,
+                                    &mut self.project,
+                                    self.selected_track,
+                                    telem.playhead_beat,
+                                    telem.is_playing,
+                                    telem.is_recording,
+                                    &mut kaoss_actions,
+                                );
+                            });
                         }
                         BottomTab::MixingConsole => {
                             render_mixer_console(
@@ -4551,6 +4586,13 @@ impl eframe::App for FerricDawApp {
 
 fn main() -> eframe::Result<()> {
     env_logger::init();
+    if std::env::args().any(|a| a == "--function-test") {
+        let code = function_test::run();
+        if code == 0 {
+            return Ok(());
+        }
+        std::process::exit(code);
+    }
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("FerricDAW v{}", env!("CARGO_PKG_VERSION")))
