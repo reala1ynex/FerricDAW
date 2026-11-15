@@ -42,7 +42,7 @@
 ## CP-2026-11-15-E — Codex handoff
 
 - **Stage:** Full Codex continuity package
-- **Commit:** *(this commit)*
+- **Commit:** `31b76b8`
 - **Artifact:** `engineering/HANDOFF_CODEX.md`
 - **Registries:** PROGRESS / RELEASE_READINESS / ARCHITECTURE synced to 1.1.6
 - **Next:** none required unless owner opens new work
