@@ -1,6 +1,6 @@
 use crate::theme::{
-    pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE,
-    TEXT_DIM, TEXT_MAIN,
+    chrome_card, chrome_row_label, pill_toggle, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_TEAL, BG_DEEP,
+    BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use ferric_engine::{
@@ -497,123 +497,103 @@ impl StudioBrowserState {
 
                 ui.add_space(6.0);
 
-                egui::Frame::new()
-                    .fill(BG_ELEVATED)
-                    .stroke(Stroke::new(1.0_f32, ACCENT_AMBER))
-                    .corner_radius(6)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        keyboard_pads.render_panel(ui, pad_tracks, selected_track);
-                    });
+                chrome_card(ui, ACCENT_AMBER, |ui| {
+                    keyboard_pads.render_panel(ui, pad_tracks, selected_track);
+                });
 
                 ui.add_space(6.0);
 
                 // USB MIDI Status
-                egui::Frame::new()
-                    .fill(BG_ELEVATED)
-                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                    .corner_radius(6)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("🎹 USB MIDI Controllers")
-                                    .size(11.5)
-                                    .strong(),
-                            );
-                            if ui
-                                .small_button("⟳ Rescan USB")
-                                .on_hover_text("Hot-plug detect any USB MIDI controller")
-                                .clicked()
-                            {
-                                actions.push(BrowserAction::RescanMidi);
-                            }
-                        });
-
-                        if midi_ports.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No USB MIDI plugged in yet — connect a controller and click Rescan USB.",
-                                )
-                                .size(10.5)
-                                .color(ACCENT_AMBER),
-                            );
-                        } else {
-                            for name in midi_ports {
-                                let col = if has_lpk25 { ACCENT_TEAL } else { TEXT_MAIN };
-                                ui.label(
-                                    egui::RichText::new(format!("● {}", name))
-                                        .size(11.0)
-                                        .color(col),
-                                );
-                            }
+                chrome_card(ui, BORDER_SUBTLE, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("USB MIDI Controllers")
+                                .size(11.5)
+                                .strong()
+                                .color(TEXT_MAIN),
+                        );
+                        if ui
+                            .small_button("Rescan USB")
+                            .on_hover_text("Hot-plug detect any USB MIDI controller")
+                            .clicked()
+                        {
+                            actions.push(BrowserAction::RescanMidi);
                         }
-
-                        ui.horizontal(|ui| {
-                            if let Some(n) = telem.last_midi_note {
-                                let pc = NOTE_PITCH_CLASSES[(n as usize) % 12];
-                                let oct = (n as i32 / 12) - 1;
-                                ui.label(
-                                    egui::RichText::new(format!("Last Note: {}{} (#{})", pc, oct, n))
-                                        .size(10.5)
-                                        .monospace()
-                                        .color(ACCENT_TEAL),
-                                );
-                            }
-                            if telem.sustain_down {
-                                ui.label(
-                                    egui::RichText::new("[SUSTAIN]")
-                                        .size(10.0)
-                                        .strong()
-                                        .color(ACCENT_AMBER),
-                                );
-                            }
-                        });
                     });
+
+                    if midi_ports.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "No USB MIDI plugged in yet — connect a controller and click Rescan USB.",
+                            )
+                            .size(10.5)
+                            .color(ACCENT_AMBER),
+                        );
+                    } else {
+                        for name in midi_ports {
+                            let col = if has_lpk25 { ACCENT_TEAL } else { TEXT_MAIN };
+                            ui.label(
+                                egui::RichText::new(format!("● {}", name))
+                                    .size(11.0)
+                                    .color(col),
+                            );
+                        }
+                    }
+
+                    ui.horizontal(|ui| {
+                        if let Some(n) = telem.last_midi_note {
+                            let pc = NOTE_PITCH_CLASSES[(n as usize) % 12];
+                            let oct = (n as i32 / 12) - 1;
+                            ui.label(
+                                egui::RichText::new(format!("Last Note: {}{} (#{})", pc, oct, n))
+                                    .size(10.5)
+                                    .monospace()
+                                    .color(ACCENT_TEAL),
+                            );
+                        }
+                        if telem.sustain_down {
+                            ui.label(
+                                egui::RichText::new("[SUSTAIN]")
+                                    .size(10.0)
+                                    .strong()
+                                    .color(ACCENT_AMBER),
+                            );
+                        }
+                    });
+                });
 
                 ui.add_space(6.0);
 
-                // Audio Line-In / Output Selector + Input Trim & Live Peak Meter
-                egui::Frame::new()
-                    .fill(BG_ELEVATED)
-                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                    .corner_radius(6)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("Audio Interface / Line-In")
-                                .size(11.5)
-                                .strong(),
+                // Audio I/O — same row chrome as Pad A / Pad B pickers
+                chrome_card(ui, BORDER_SUBTLE, |ui| {
+                    ui.label(
+                        egui::RichText::new("Audio I/O")
+                            .size(11.5)
+                            .strong()
+                            .color(TEXT_MAIN),
+                    );
+                    if realtek_combo_jack_risk(active_out, active_in)
+                        || active_out.to_lowercase().contains("headphone")
+                    {
+                        ui.colored_label(
+                            ACCENT_AMBER,
+                            egui::RichText::new(
+                                "Combo-jack trap: Out is Headphones. Prefer Speakers + External Mic / Line-In.",
+                            )
+                            .size(10.5),
                         );
-                        ui.label(
-                            egui::RichText::new(format!("Out: {}", active_out))
-                                .size(10.0)
-                                .color(TEXT_DIM),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!("In:  {}", active_in))
-                                .size(10.0)
-                                .color(ACCENT_TEAL),
-                        );
-                        if realtek_combo_jack_risk(active_out, active_in)
-                            || active_out.to_lowercase().contains("headphone")
-                        {
-                            ui.colored_label(
-                                ACCENT_AMBER,
-                                egui::RichText::new(
-                                    "⚠ Combo-jack trap: Output is Headphones. DS cable on the same Realtek jack mutes Speakers — click “Force Speakers + Line-In” above, or set Out=Speakers and In=External Microphone.",
-                                )
-                                .size(10.5),
-                            );
-                        }
+                    }
 
+                    ui.horizontal(|ui| {
+                        chrome_row_label(ui, "In ->", ACCENT_TEAL);
                         egui::ComboBox::from_id_salt("hw_in_picker")
                             .selected_text(
                                 self.selected_in
                                     .as_deref()
+                                    .or(Some(active_in))
                                     .unwrap_or("Switch Line/Mic Input..."),
                             )
-                            .width(210.0)
+                            .width(200.0)
                             .show_ui(ui, |ui| {
                                 let inputs = self.audio_inputs.clone();
                                 for dev in &inputs {
@@ -634,14 +614,18 @@ impl StudioBrowserState {
                                     }
                                 }
                             });
+                    });
 
+                    ui.horizontal(|ui| {
+                        chrome_row_label(ui, "Out ->", ACCENT_FERRIC);
                         egui::ComboBox::from_id_salt("hw_out_picker")
                             .selected_text(
                                 self.selected_out
                                     .as_deref()
+                                    .or(Some(active_out))
                                     .unwrap_or("Switch Speaker/Headphone Out..."),
                             )
-                            .width(210.0)
+                            .width(200.0)
                             .show_ui(ui, |ui| {
                                 let outputs = self.audio_outputs.clone();
                                 for dev in &outputs {
@@ -662,10 +646,13 @@ impl StudioBrowserState {
                                     }
                                 }
                             });
+                    });
 
+                    ui.horizontal(|ui| {
+                        chrome_row_label(ui, "Driver ->", ACCENT_AMBER);
                         egui::ComboBox::from_id_salt("hw_driver_picker")
                             .selected_text(self.selected_audio_driver.label())
-                            .width(210.0)
+                            .width(200.0)
                             .show_ui(ui, |ui| {
                                 for &drv in AudioDriverKind::ALL {
                                     if ui
@@ -686,6 +673,7 @@ impl StudioBrowserState {
                                     }
                                 }
                             });
+                    });
 
                         // Multi-channel device matrix summary (cached — WASAPI enum every frame kills FPS)
                         ui.collapsing("I/O Channel Matrix", |ui| {
@@ -721,46 +709,53 @@ impl StudioBrowserState {
                             );
                         });
 
-                        // Low-Latency Hardware Buffer Size Selector!
+                        // Buffer — Pad A/B row chrome
                         let buf_ms = (telem.buffer_size_frames as f32 * 1000.0)
                             / (telem.sample_rate.max(8_000) as f32);
                         let buf_lbl = match self.selected_buffer_size {
                             None => format!(
-                                "Buffer: Auto ({} smp / {:.1} ms)",
+                                "Auto ({} smp / {:.1} ms)",
                                 telem.buffer_size_frames, buf_ms
                             ),
                             Some(n) => format!(
-                                "Buffer: {} smp ({:.1} ms)",
+                                "{} smp ({:.1} ms)",
                                 n,
                                 (n as f32 * 1000.0) / (telem.sample_rate.max(8_000) as f32)
                             ),
                         };
-                        egui::ComboBox::from_id_salt("hw_buf_size_picker")
-                            .selected_text(buf_lbl)
-                            .width(210.0)
-                            .show_ui(ui, |ui| {
-                                for (opt, label) in [
-                                    (None, "Driver Default (Auto)"),
-                                    (Some(64), "64 samples (~1.3 ms Ultra-Low)"),
-                                    (Some(128), "128 samples (~2.7 ms Live Tracking)"),
-                                    (Some(256), "256 samples (~5.3 ms Balanced)"),
-                                    (Some(512), "512 samples (~10.7 ms Mixing)"),
-                                    (Some(1024), "1024 samples (~21.3 ms Heavy Mastering)"),
-                                ] {
-                                    if ui
-                                        .selectable_label(self.selected_buffer_size == opt, label)
-                                        .clicked()
-                                    {
-                                        self.selected_buffer_size = opt;
-                                        actions.push(BrowserAction::SwitchAudioDevices {
-                                            output: self.selected_out.clone(),
-                                            input: self.selected_in.clone(),
-                                            buffer_size: self.selected_buffer_size,
-                                            recording_offset_samples: self.recording_offset_samples,
-                                        });
+                        ui.horizontal(|ui| {
+                            chrome_row_label(ui, "Buffer ->", TEXT_DIM);
+                            egui::ComboBox::from_id_salt("hw_buf_size_picker")
+                                .selected_text(buf_lbl)
+                                .width(200.0)
+                                .show_ui(ui, |ui| {
+                                    for (opt, label) in [
+                                        (None, "Driver Default (Auto)"),
+                                        (Some(64), "64 samples (~1.3 ms Ultra-Low)"),
+                                        (Some(128), "128 samples (~2.7 ms Live Tracking)"),
+                                        (Some(256), "256 samples (~5.3 ms Balanced)"),
+                                        (Some(512), "512 samples (~10.7 ms Mixing)"),
+                                        (Some(1024), "1024 samples (~21.3 ms Heavy Mastering)"),
+                                    ] {
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_buffer_size == opt,
+                                                label,
+                                            )
+                                            .clicked()
+                                        {
+                                            self.selected_buffer_size = opt;
+                                            actions.push(BrowserAction::SwitchAudioDevices {
+                                                output: self.selected_out.clone(),
+                                                input: self.selected_in.clone(),
+                                                buffer_size: self.selected_buffer_size,
+                                                recording_offset_samples: self
+                                                    .recording_offset_samples,
+                                            });
+                                        }
                                     }
-                                }
-                            });
+                                });
+                        });
 
                         // Round-Trip Latency Offset & 1-Click Loopback Ping Calibrator!
                         ui.horizontal(|ui| {
@@ -1249,13 +1244,17 @@ impl StudioBrowserState {
 /// Interactive Kaoss / XY performance pad.
 /// Drag sculpts the selected track's instrument (and insert FX) live — cutoff, resonance, morph, space.
 /// Optional scale-locked note trigger rides on top of that effect morph.
+/// With **Write XY automation** on, play/record captures the morph as automation lanes.
 pub struct KaossPadState {
     pub x: f32,
     pub y: f32,
     pub note_trigger_mode: bool,
+    /// When true, dragging during play or record writes FxParam automation for the morph.
+    pub write_xy_automation: bool,
     pub octave: u8,
     active_note: Option<u8>,
     trail: Vec<Pos2>,
+    last_write_beat: f64,
 }
 
 impl Default for KaossPadState {
@@ -1264,109 +1263,142 @@ impl Default for KaossPadState {
             x: 0.5,
             y: 0.5,
             note_trigger_mode: false,
+            write_xy_automation: true,
             octave: 4,
             active_note: None,
             trail: Vec::with_capacity(24),
+            last_write_beat: f64::NEG_INFINITY,
         }
     }
 }
 
-/// Apply Kaoss XY as a live effect on the track instrument + insert FX chain.
-fn apply_kaoss_xy_to_track(track: &mut ferric_model::Track, x: f32, y: f32) -> bool {
-    let mut touched = false;
+/// Apply Kaoss XY; returns `(fx_id, param_index)` pairs that changed (for automation write).
+fn apply_kaoss_xy_to_track(
+    track: &mut ferric_model::Track,
+    x: f32,
+    y: f32,
+) -> Vec<(ferric_model::FxId, usize)> {
+    let mut touched: Vec<(ferric_model::FxId, usize)> = Vec::new();
+    let mut push = |fx: &mut FxSlot, idxs: &[usize]| {
+        for &i in idxs {
+            touched.push((fx.id, i));
+        }
+    };
     for fx in &mut track.fx_chain {
         match fx.kind {
             FxKind::PolySynth => {
                 fx.set_param(2, 120.0 * (100.0_f32).powf(x));
                 fx.set_param(3, 0.12 + y * 0.72);
                 fx.set_param(1, y * 70.0);
-                touched = true;
+                push(fx, &[2, 3, 1]);
             }
             FxKind::MonoBass => {
                 fx.set_param(2, 40.0 * (200.0_f32).powf(x));
                 fx.set_param(3, 0.08 + y * 0.82);
                 fx.set_param(4, y * 95.0);
-                touched = true;
+                push(fx, &[2, 3, 4]);
             }
             FxKind::PrismSynth | FxKind::HostDna => {
                 fx.set_param(0, x * 100.0);
                 fx.set_param(1, y * 85.0);
                 fx.set_param(4, 180.0 * (90.0_f32).powf(x));
                 fx.set_param(5, 0.08 + y * 0.7);
-                touched = true;
+                push(fx, &[0, 1, 4, 5]);
             }
             FxKind::WavetableSynth => {
                 fx.set_param(1, x * 100.0);
                 fx.set_param(4, y * 80.0);
                 fx.set_param(6, 120.0 * (150.0_f32).powf(x));
                 fx.set_param(7, 0.08 + y * 0.72);
-                touched = true;
+                push(fx, &[1, 4, 6, 7]);
             }
             FxKind::SamplePlayer => {
                 fx.set_param(3, 180.0 * (85.0_f32).powf(x));
                 fx.set_param(4, 0.10 + y * 0.72);
-                touched = true;
+                push(fx, &[3, 4]);
             }
             FxKind::DrumKit => {
                 fx.set_param(0, 35.0 + x * 65.0);
                 fx.set_param(4, y * 90.0);
-                touched = true;
+                push(fx, &[0, 4]);
             }
             FxKind::ParametricEq => {
                 fx.set_param(6, 800.0 * (12.0_f32).powf(x));
                 fx.set_param(7, -6.0 + y * 14.0);
                 fx.set_param(8, 0.5 + y * 4.0);
-                touched = true;
+                push(fx, &[6, 7, 8]);
             }
             FxKind::StereoDelay => {
                 fx.set_param(2, y * 82.0);
                 fx.set_param(4, 900.0 + x * 9000.0);
-                touched = true;
+                push(fx, &[2, 4]);
             }
             FxKind::PlateHallReverb => {
                 fx.set_param(1, 18.0 + y * 78.0);
                 fx.set_param(2, x * 90.0);
-                touched = true;
+                push(fx, &[1, 2]);
             }
             FxKind::TapeSaturator => {
                 fx.set_param(0, x * 18.0);
                 fx.set_param(1, y * 90.0);
-                touched = true;
+                push(fx, &[0, 1]);
             }
             FxKind::AmpCabSim => {
                 fx.set_param(0, x * 30.0);
                 fx.set_param(5, y * 100.0);
-                touched = true;
+                push(fx, &[0, 5]);
             }
             FxKind::Compressor => {
                 fx.set_param(0, -42.0 + x * 36.0);
                 fx.set_param(1, 1.5 + y * 12.0);
-                touched = true;
+                push(fx, &[0, 1]);
             }
             FxKind::MultibandOtt => {
                 fx.set_param(0, x * 100.0);
                 fx.set_param(1, 10.0 + y * 240.0);
-                touched = true;
+                push(fx, &[0, 1]);
             }
             FxKind::ExternalClap => {
                 fx.set_param(0, x * 100.0);
                 fx.set_param(1, y * 100.0);
-                touched = true;
+                push(fx, &[0, 1]);
             }
             _ => {}
         }
     }
 
     // Audio / empty racks: insert a performable EQ so Kaoss always has an effect target.
-    if !touched {
+    if touched.is_empty() {
         let mut eq = FxSlot::new(FxKind::ParametricEq);
         eq.set_param(6, 800.0 * (12.0_f32).powf(x));
         eq.set_param(7, -6.0 + y * 14.0);
         eq.set_param(8, 0.5 + y * 4.0);
+        let id = eq.id;
         track.fx_chain.push(eq);
-        touched = true;
+        touched.extend([(id, 6), (id, 7), (id, 8)]);
     }
     touched
+}
+
+fn write_kaoss_automation(
+    track: &mut ferric_model::Track,
+    touched: &[(ferric_model::FxId, usize)],
+    playhead_beat: f64,
+) {
+    use ferric_model::{AutomationMode, AutomationTarget};
+    if matches!(track.automation_mode, AutomationMode::Off | AutomationMode::Read) {
+        track.automation_mode = AutomationMode::Write;
+    }
+    for &(fx_id, param_index) in touched {
+        let Some(fx) = track.fx_chain.iter().find(|f| f.id == fx_id) else {
+            continue;
+        };
+        let val = fx.param(param_index);
+        let norm = fx.normalize_param(param_index, val);
+        let lane_idx =
+            track.ensure_automation_lane(AutomationTarget::FxParam { fx_id, param_index });
+        track.automation_lanes[lane_idx].upsert_point(playhead_beat, norm);
+    }
 }
 
 impl KaossPadState {
@@ -1375,6 +1407,9 @@ impl KaossPadState {
         ui: &mut Ui,
         project: &mut Project,
         selected_track: Option<TrackId>,
+        playhead_beat: f64,
+        is_playing: bool,
+        is_recording: bool,
         actions: &mut Vec<BrowserAction>,
     ) {
         ui.horizontal(|ui| {
@@ -1388,14 +1423,15 @@ impl KaossPadState {
                     .size(11.0)
                     .color(TEXT_DIM),
             );
-            ui.checkbox(
-                &mut self.note_trigger_mode,
-                "Also trigger scale notes",
-            );
+            ui.checkbox(&mut self.write_xy_automation, "Write XY automation")
+                .on_hover_text(
+                    "While Play or Rec is on, pad moves are written as FxParam automation on the selected track.",
+                );
+            ui.checkbox(&mut self.note_trigger_mode, "Also trigger scale notes");
             ui.label(egui::RichText::new("Octave:").size(11.0).color(TEXT_DIM));
             ui.add(egui::DragValue::new(&mut self.octave).range(2..=6));
             ui.separator();
-            ui.label(egui::RichText::new("Session Key:").size(11.0).color(TEXT_DIM));
+            chrome_row_label(ui, "Key ->", ACCENT_TEAL);
             egui::ComboBox::from_id_salt("kaoss_root_key")
                 .selected_text(NOTE_PITCH_CLASSES[(project.root_pitch_class as usize) % 12])
                 .width(54.0)
@@ -1404,6 +1440,7 @@ impl KaossPadState {
                         ui.selectable_value(&mut project.root_pitch_class, i as u8, nm);
                     }
                 });
+            chrome_row_label(ui, "Scale ->", ACCENT_AMBER);
             egui::ComboBox::from_id_salt("kaoss_scale_mode")
                 .selected_text(project.musical_scale.label())
                 .width(155.0)
@@ -1412,6 +1449,22 @@ impl KaossPadState {
                         ui.selectable_value(&mut project.musical_scale, sc, sc.label());
                     }
                 });
+            if self.write_xy_automation && (is_playing || is_recording) {
+                ui.label(
+                    egui::RichText::new(if is_recording {
+                        "● REC → automation"
+                    } else {
+                        "● PLAY → automation"
+                    })
+                    .size(11.0)
+                    .strong()
+                    .color(if is_recording {
+                        ACCENT_AMBER
+                    } else {
+                        ACCENT_TEAL
+                    }),
+                );
+            }
         });
 
         let pad_size = Vec2::new(ui.available_width().min(540.0), (ui.available_height() - 8.0).max(130.0));
@@ -1450,7 +1503,15 @@ impl KaossPadState {
 
                 if let Some(tid) = selected_track {
                     if let Some(trk) = project.find_track_mut(tid) {
-                        if apply_kaoss_xy_to_track(trk, self.x, self.y) {
+                        let touched = apply_kaoss_xy_to_track(trk, self.x, self.y);
+                        if !touched.is_empty() {
+                            let should_write = self.write_xy_automation
+                                && (is_playing || is_recording)
+                                && (playhead_beat - self.last_write_beat).abs() >= 1.0 / 64.0;
+                            if should_write {
+                                write_kaoss_automation(trk, &touched, playhead_beat);
+                                self.last_write_beat = playhead_beat;
+                            }
                             actions.push(BrowserAction::ProjectMutated);
                         }
                     }

@@ -1896,11 +1896,45 @@ impl FerricDawApp {
                 return;
             }
         }
-        // Delete/Backspace on selected MIDI note tiles is handled in the piano roll.
+        // Selected MIDI notes: Backspace / Delete (authoritative — piano roll also handles as backup).
+        if !ctrl
+            && !self.piano_roll.selected_notes.is_empty()
+            && ctx.input(|i| i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete))
+        {
+            if let Some((tid, cid)) = self.selected_clip {
+                self.snapshot_before("Delete MIDI Notes");
+                let kill = self.piano_roll.selected_notes.clone();
+                if let Some(clip) = self
+                    .project
+                    .find_track_mut(tid)
+                    .and_then(|t| t.find_clip_mut(cid))
+                {
+                    let active = clip.active_take.min(clip.takes.len().saturating_sub(1));
+                    if let Some(TakeContent::Midi { notes, .. }) =
+                        clip.takes.get_mut(active).map(|t| &mut t.content)
+                    {
+                        let before = notes.len();
+                        notes.retain(|n| !kill.contains(&n.id));
+                        if notes.len() != before {
+                            self.status_banner = format!(
+                                "Deleted {} MIDI note{}",
+                                before - notes.len(),
+                                if before - notes.len() == 1 { "" } else { "s" }
+                            );
+                        }
+                    }
+                }
+                self.piano_roll.selected_notes.clear();
+                self.sync_engine();
+            }
+            return;
+        }
+
+        // Delete selected timeline clip(s) — only when no MIDI notes are selected.
         if !ctrl
             && !shift
             && self.piano_roll.selected_notes.is_empty()
-            && ctx.input(|i| i.key_pressed(Key::Delete))
+            && ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace))
         {
             if self.arrangement.multi_selected_clips.len() > 1 {
                 self.snapshot_before("Delete Selected Clips");
@@ -4129,6 +4163,9 @@ impl eframe::App for FerricDawApp {
                                 ui,
                                 &mut self.project,
                                 self.selected_track,
+                                telem.playhead_beat,
+                                telem.is_playing,
+                                telem.is_recording,
                                 &mut kaoss_actions,
                             );
                         }

@@ -264,6 +264,21 @@ pub fn pill_toggle(ui: &mut Ui, text: &str, active: bool, active_color: Color32)
     )
 }
 
+/// Shared Hardware Rig / Pads chrome: elevated inset card.
+pub fn chrome_card(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .fill(BG_ELEVATED)
+        .stroke(Stroke::new(1.0_f32, accent))
+        .corner_radius(6)
+        .inner_margin(8.0)
+        .show(ui, add_contents);
+}
+
+/// Colored label used on Pad A/B-style picker rows (`Pad A ->`, `In ->`, …).
+pub fn chrome_row_label(ui: &mut Ui, text: &str, color: Color32) {
+    ui.label(egui::RichText::new(text).size(12.0).color(color));
+}
+
 #[allow(dead_code)]
 pub fn draw_badge(painter: &egui::Painter, pos: Pos2, text: &str, bg: Color32, fg: Color32) {
     let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(9.5), fg);

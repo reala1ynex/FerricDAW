@@ -738,16 +738,19 @@ impl PianoRollState {
                     self.drag_pitch_accum = 0.0;
                 }
 
-                // Backspace / Delete removes selected note tiles (not the whole clip).
+                // Backup: main.rs also deletes selected notes on Backspace/Delete (runs earlier).
                 if !self.selected_notes.is_empty()
                     && ui.input(|i| {
                         i.key_pressed(Key::Backspace) || i.key_pressed(Key::Delete)
                     })
                 {
                     let kill = self.selected_notes.clone();
+                    let before = notes.len();
                     notes.retain(|n| !kill.contains(&n.id));
-                    self.selected_notes.clear();
-                    actions.push(DockAction::ProjectMutated("Delete MIDI Notes"));
+                    if notes.len() != before {
+                        self.selected_notes.clear();
+                        actions.push(DockAction::ProjectMutated("Delete MIDI Notes"));
+                    }
                 }
 
                 // Click empty grid cell -> Insert Single Note OR Full Chord Stamp (Scale-Aware)!

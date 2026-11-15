@@ -246,7 +246,24 @@ fn fetch_feed(url: &str) -> Result<UpdateFeed, String> {
         .set("User-Agent", "FerricDAW-Updater")
         .call()
         .map_err(|e| format!("Update check failed: {e}"))?;
-    resp.into_json::<UpdateFeed>()
+    let mut body = resp
+        .into_string()
+        .map_err(|e| format!("Could not read latest.json: {e}"))?;
+    // PowerShell Set-Content -Encoding utf8 historically wrote a BOM; strip it.
+    if body.starts_with('\u{feff}') {
+        body = body.trim_start_matches('\u{feff}').to_string();
+    }
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err("latest.json was empty.".into());
+    }
+    if !trimmed.starts_with('{') {
+        let preview: String = trimmed.chars().take(80).collect();
+        return Err(format!(
+            "latest.json is not JSON (got: {preview}…). Check the release asset."
+        ));
+    }
+    serde_json::from_str::<UpdateFeed>(trimmed)
         .map_err(|e| format!("Invalid latest.json: {e}"))
 }
 
@@ -320,5 +337,14 @@ mod tests {
         assert!(!version_is_newer("1.1.1", "1.1.1"));
         assert!(!version_is_newer("1.0.9", "1.1.0"));
         assert!(version_is_newer("v2.0.0", "1.9.9"));
+    }
+
+    #[test]
+    fn feed_parses_with_bom() {
+        let raw = "\u{feff}{\"version\":\"1.1.3\",\"url\":\"https://example.com/x.zip\",\"sha256\":\"abc\",\"notes\":\"n\"}";
+        let trimmed = raw.trim_start_matches('\u{feff}').trim();
+        let feed: UpdateFeed = serde_json::from_str(trimmed).unwrap();
+        assert_eq!(feed.version, "1.1.3");
+        assert!(feed.url.contains("example.com"));
     }
 }

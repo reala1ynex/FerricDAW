@@ -95,7 +95,11 @@ In Ferric: Tutorial → Play demo WAV to compare without leaving the app.
 
 if ($GitHubOwner) {
     $FeedUrl = "https://github.com/$GitHubOwner/$GitHubRepo/releases/latest/download/latest.json"
-    Set-Content -Path (Join-Path $StageDir 'update_feed.url') -Value $FeedUrl -Encoding ascii
+    [System.IO.File]::WriteAllText(
+        (Join-Path $StageDir 'update_feed.url'),
+        $FeedUrl,
+        [System.Text.UTF8Encoding]::new($false)
+    )
     Write-Host "Update feed: $FeedUrl" -ForegroundColor Cyan
 }
 
@@ -128,7 +132,9 @@ $Latest = [ordered]@{
     notes   = "FerricDAW v$Version portable Windows x64"
 }
 $LatestPath = Join-Path $Root 'dist\latest.json'
-$Latest | ConvertTo-Json -Compress | Set-Content -Path $LatestPath -Encoding utf8
+# UTF-8 *without* BOM — PowerShell's utf8 encoding adds EF BB BF and breaks serde/ureq JSON parse.
+$json = ($Latest | ConvertTo-Json -Compress)
+[System.IO.File]::WriteAllText($LatestPath, $json, [System.Text.UTF8Encoding]::new($false))
 
 # Optional local folder refresh — skip entirely if anything inside is locked (don't delete).
 $DistDir = Join-Path $Root 'dist\FerricDAW'
