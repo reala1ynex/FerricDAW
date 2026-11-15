@@ -17,4 +17,16 @@
 - **Tests:** `cargo test --workspace` PASS; function-test **57/57** PASS (re-run after sleep recovery)
 - **Completed reqs:** R-05, R-08(export UX), R-10 honesty, R-14 harden, R-18, R-19 CI, R-20
 - **Outstanding:** I-05 (egui hit-test), I-12 (operator gh auth), I-13 (true ASIO), I-14 (Mac/Linux ship)
-- **Next:** Optional v1.1.5 publish for dirty-close + updater harden in the wild
+- **Next:** *(done — see CP-2026-11-15-C)*
+
+## CP-2026-11-15-C — v1.1.5 ship
+
+- **Stage:** Version bump, package, GitHub release, only-current cleanup
+- **Commit:** `f14bcd8`
+- **Tag:** `v1.1.5`
+- **Branch:** `master` (pushed)
+- **Assets:** `FerricDAW-v1.1.5-win-x64.zip`, `latest.json` (BOM-free, sha matches zip)
+- **Tests:** packaged `ferricdaw.exe --function-test` **57/57 PASS**
+- **Cleanup:** deleted GitHub release + tag `v1.1.4`
+- **Readiness:** CONDITIONALLY READY (I-05/I-13/I-14 documented limits)
+- **Next:** none required
