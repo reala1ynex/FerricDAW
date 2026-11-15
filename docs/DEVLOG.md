@@ -8,18 +8,26 @@ Notes on what shipped and when. Newest first.
 
 ---
 
-## 2026-11-15 — v1.1.2
+## 2026-11-15 — v1.1.3
 
 Current public release.
 
+- Fix **Backspace/Delete** for selected piano-roll MIDI notes
+- Kaoss **Write XY automation** while Play/Rec (FxParam lanes)
+- Hardware Rig Audio I/O chrome matched to Pad A/B rows
+- Auto-update feed: `latest.json` UTF-8 without BOM (fixes invalid JSON parse)
+
+Grab it: [Releases · v1.1.3](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.3)
+
+---
+
+## 2026-11-15 — v1.1.2
+
 - Portable Windows zip with in-app **Check for Updates** (`latest.json` feed on GitHub Releases)
 - Clearer Night Current tutorial (numbered steps, “Do this step for me”)
-- Docs rewrite — README, beginner guide, feature guide, F1 help (less jargon)
-- Track types (Vocal / MIDI / Instrument / Audio), playhead scrub, piano-roll edit polish
-- Kaoss / XY as live instrument + FX control
+- Docs rewrite — README, beginner guide, feature guide, F1 help
+- Track types, playhead scrub, piano-roll polish, Kaoss XY live morph
 - Packaging scripts for zip + GitHub release upload
-
-Grab it: [Releases · v1.1.2](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.2)
 
 ---
 

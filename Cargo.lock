@@ -1171,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-app"
-version = "1.1.2"
+version = "1.1.3"
 dependencies = [
  "eframe",
  "egui",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-dsp"
-version = "1.1.2"
+version = "1.1.3"
 dependencies = [
  "ferric-model",
  "rustfft",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-engine"
-version = "1.1.2"
+version = "1.1.3"
 dependencies = [
  "base64 0.21.7",
  "cpal",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-model"
-version = "1.1.2"
+version = "1.1.3"
 dependencies = [
  "base64 0.21.7",
  "midly",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-plugin-bridge"
-version = "1.1.2"
+version = "1.1.3"
 dependencies = [
  "ferric-dsp",
  "ferric-model",
