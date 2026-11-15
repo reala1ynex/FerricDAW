@@ -2,7 +2,11 @@
 
 **Last updated:** 2026-11-15  
 **HEAD at prior handoff:** `e0c1af5` / ship `a79dc84` (v1.1.6)  
-**Latest release:** v1.1.10; remaining coverage limits are recorded under I-05.
+**Latest release:** v1.1.11; remaining coverage limits are recorded under I-05.
+
+## v1.1.11 release candidate — flat empty-launcher cleanup
+
+- Empty Session launcher regions no longer paint a large background block when unused; populated regions retain the background surface.
 
 ## v1.1.10 release candidate — arrangement cleanup
 

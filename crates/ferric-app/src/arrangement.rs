@@ -1379,11 +1379,18 @@ impl ArrangementState {
         col_w: f32,
         actions: &mut Vec<ArrangementAction>,
     ) {
-        ui.painter().rect_filled(rect, 0, BG_PANEL);
         let num_scenes = project.scenes.len();
         project.tracks[t_idx].ensure_scene_count(num_scenes);
         let t_col = track_color32(project.tracks[t_idx].color);
         let active_slot = project.tracks[t_idx].active_session_slot;
+        let has_session_content = project.tracks[t_idx]
+            .session_slots
+            .iter()
+            .take(num_scenes)
+            .any(Option::is_some);
+        if has_session_content {
+            ui.painter().rect_filled(rect, 0, BG_PANEL);
+        }
 
         for s_idx in 0..num_scenes {
             let cell = Rect::from_min_size(

@@ -89,3 +89,8 @@ Earlier cut: icon, version info, F1 quickstart, and studio workflow polish.
 - Preserved click-to-create 4-bar sketch loops and added an explicit hover hint so the interaction remains discoverable without visual noise.
 - Verification follows after the release build: warning-denied workspace check, workspace tests, Windows function test, and a final visual pass.
 
+## 2026-11-15 — v1.1.11 flat empty-launcher cleanup
+
+- Empty Session launcher regions no longer paint a large background block when they contain no clips; populated launchers retain their surface.
+- This removes the last unexplained empty rectangle from the default arrangement while preserving hover discovery and click-to-create behavior.
+
