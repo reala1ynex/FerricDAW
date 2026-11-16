@@ -159,7 +159,15 @@ impl UpdateService {
             .clone()
             .ok_or_else(|| "Download the update first.".to_string())?;
         let feed = self.pending.as_ref().ok_or("Check for updates again.")?;
-        let install = exe_dir().ok_or("Could not locate install folder.")?;
+        let running = exe_dir().ok_or("Could not locate install folder.")?;
+        // Never unpack a release into a shared folder such as the Desktop (I-31).
+        let locations = crate::install_hygiene::probe_locations();
+        let relocate = locations.is_shared_folder(&running);
+        let install = if relocate {
+            locations.install_dir.clone()
+        } else {
+            running.clone()
+        };
         let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
         let exe = exe_path.file_name().ok_or("Missing executable name.")?;
         let helper = std::env::temp_dir().join(format!(
@@ -168,7 +176,8 @@ impl UpdateService {
         ));
         std::fs::write(&helper, include_bytes!("apply_update.ps1")).map_err(|e| e.to_string())?;
 
-        let launch = std::process::Command::new("powershell")
+        let mut command = std::process::Command::new("powershell");
+        command
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
             .arg(&helper)
             .arg("-Zip")
@@ -180,8 +189,11 @@ impl UpdateService {
             .arg("-AppPid")
             .arg(std::process::id().to_string())
             .arg("-Sha256")
-            .arg(&feed.sha256)
-            .spawn();
+            .arg(&feed.sha256);
+        if relocate {
+            command.arg("-RelocatedFrom").arg(&running);
+        }
+        let launch = command.spawn();
         if let Err(error) = launch {
             let _ = std::fs::remove_file(&helper);
             return Err(error.to_string());

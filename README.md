@@ -10,9 +10,9 @@ A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX
 
 ## Get the app (Windows)
 
-1. Grab **v1.1.13** from [Releases](https://github.com/reala1ynex/FerricDAW/releases/latest) (current only).
-2. Unzip somewhere permanent.
-3. Run `ferricdaw.exe`.
+1. Grab **v1.1.14** from [Releases](https://github.com/reala1ynex/FerricDAW/releases/latest) (current only).
+2. Unzip into its own folder, for example `%LOCALAPPDATA%\Programs\FerricDAW`. Don't unzip onto the Desktop: the ZIP has no top-level folder.
+3. Run `ferricdaw.exe`. FerricDAW offers to add a desktop shortcut. If it starts from the Desktop or Downloads, it offers to move itself into its own folder.
 4. Keep `ferric-plugin-bridge.exe` next to it — that’s the plugin sandbox.
 
 On first launch you’ll get three choices: **Night Current** tutorial, **Afterglow Copper** playground, or an empty session.

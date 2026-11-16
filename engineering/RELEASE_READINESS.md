@@ -16,6 +16,32 @@
 
 Public release: https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.12. Tagged commit: `4e3c754`. Clear stale `GH_TOKEN` and `GITHUB_TOKEN`; set `CARGO_TARGET_DIR=target/ship` if the default release binary is in use.
 
+## Local 1.1.14 candidate - updater install-location fix (I-31)
+
+**Classification: local candidate on branch `fix/v1.1.14-updater-install-dir`; not pushed, tagged or published.**
+v1.1.13 is the public release.
+
+| Gate (2026-11-16 17:21-17:23 ET) | Status | Evidence |
+|---|---|---|
+| Warning-denied workspace check | PASS | `last-cargo-check.txt` |
+| Workspace tests | PASS, 50 tests (13 new `install_hygiene` tests) | `last-cargo-test.txt` |
+| Windows function test | PASS 63/63 (adds `dirty_session_move_install_guard`) | `last-function-test.txt` |
+| Package | PASS; ZIP carries `ferricdaw-manifest.json` | `CANDIDATE_VERIFICATION.md` |
+| Sandbox update from v1.1.12 (old helper copies 1.1.14 onto a Desktop copy) | PASS | `tools\Sandbox-UpdateTest.ps1 -Scenario from-1.1.12` |
+| Sandbox update from v1.1.13 (v1.1.12 helper dumps 1.1.13 on the Desktop, then the v1.1.13 helper installs 1.1.14 there) | PASS | `-Scenario from-1.1.13` |
+| v1.1.14 helper with `-RelocatedFrom` | PASS | `-Scenario new-updater` |
+| Fresh install desktop-shortcut offer, no duplicates on relaunch | PASS | `grok-evidence\v1.1.14\fresh-*.png` |
+
+In every sandbox run the Desktop ends with only the user's files (plugins
+folder, project, notes, shortcut). The older Downloads copy keeps only its
+`plugins` folder. Settings in `%LOCALAPPDATA%\FerricDAW` are untouched, `%TEMP%`
+leftovers are gone, and the Desktop and Start menu shortcuts point at
+`%LOCALAPPDATA%\Programs\FerricDAW\ferricdaw.exe`. Not tested: a real
+OneDrive-redirected Desktop, or a machine where PowerShell is blocked by policy.
+On such a machine shortcut discovery, retargeting and creation do nothing
+because they use PowerShell. The file cleanup runs in Rust and keeps its
+manifest checks.
+
 ## Local 1.1.13 development candidate
 
 **Classification: local engineering candidate; publication gate open.** The

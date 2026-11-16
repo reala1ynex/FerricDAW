@@ -1,26 +1,39 @@
-   Compiling ferric-app v1.1.13 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
-    Finished `test` profile [optimized + debuginfo] target(s) in 3.65s
-     Running unittests src\main.rs (target\debug\build\ferric-app/cd3bf2573b67c812\out\ferricdaw-cd3bf2573b67c812.exe)
+   Compiling ferric-app v1.1.14 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
+    Finished `test` profile [optimized + debuginfo] target(s) in 4.43s
+     Running unittests src\main.rs (target\debug\build\ferric-app/67529674064b5fc4\out\ferricdaw-67529674064b5fc4.exe)
 
-running 8 tests
+running 21 tests
+test install_hygiene::tests::encoded_command_round_trips ... ok
+test install_hygiene::tests::embedded_manifests_cover_published_packages ... ok
+test install_hygiene::tests::shared_folders_are_detected ... ok
+test install_hygiene::tests::newer_install_is_never_removed ... ok
+test install_hygiene::tests::folder_without_recognised_exe_is_left_alone ... ok
+test install_hygiene::tests::unsafe_manifest_paths_are_ignored ... ok
 test theme::tests::semantic_accents_are_distinct_and_share_the_same_text_safe_surface ... ok
-test update::tests::reject_non_github_url_and_missing_sha ... ok
 test update::tests::feed_parses_with_bom ... ok
-test update::tests::semver_compare ... ok
 test theme::tests::studio_theme_keeps_one_button_geometry_and_neutral_interaction_states ... ok
+test update::tests::reject_non_github_url_and_missing_sha ... ok
+test update::tests::semver_compare ... ok
+test install_hygiene::tests::locked_file_rolls_back_the_whole_folder ... ok
+test install_hygiene::tests::stray_manifest_and_temp_leftovers_are_identified_by_content ... ok
+test install_hygiene::tests::emptied_former_install_folder_is_removed_but_user_folder_kept ... ok
+test install_hygiene::tests::desktop_dump_removes_only_exact_package_files ... ok
+test install_hygiene::tests::update_zip_of_the_running_release_is_recognised_by_its_contents ... ok
+test install_hygiene::tests::install_copy_verifies_and_rolls_back ... ok
+test install_hygiene::tests::discovery_finds_copies_in_every_known_place_and_skips_unsafe_ones ... ok
+test function_test::save_guard_tests::failed_save_keeps_pending_action_and_session ... ok
 test function_test::save_guard_tests::autosave_does_not_clear_unsaved_project_guard ... ok
 test function_test::save_guard_tests::successful_save_continues_pending_transition ... ok
-test function_test::save_guard_tests::failed_save_keeps_pending_action_and_session ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.73s
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.42s
 
-     Running unittests src\lib.rs (target\debug\build\ferric-dsp/c4134083a9132bbe\out\ferric_dsp-c4134083a9132bbe.exe)
+     Running unittests src\lib.rs (target\debug\build\ferric-dsp/c0c72f0118a4d2ac\out\ferric_dsp-c0c72f0118a4d2ac.exe)
 
 running 9 tests
 test tests::new_instruments_render_through_runtime_with_sample_accurate_midi ... ok
 test tests::chromatic_tuner_detects_440hz_a4_within_half_cent ... ok
-test organ::tests::organ_obeys_midi_offset_and_releases ... ok
 test tests::onset_bpm_detector_and_arpeggiator_work_accurately ... ok
+test organ::tests::organ_obeys_midi_offset_and_releases ... ok
 test electric_piano::tests::electric_piano_produces_finite_audio_and_releases ... ok
 test tests::vocal_pitch_corrector_and_sampler_produce_clean_output ... ok
 test tests::heavy_drum_voices_are_distinct_and_legacy_projects_preserve_studio_voice ... ok
@@ -29,7 +42,7 @@ test tests::milestone8_wavetable_convolution_ott_and_melodyne_blobs_verified ...
 
 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
-     Running unittests src\lib.rs (target\debug\build\ferric-engine/989486491475d621\out\ferric_engine-989486491475d621.exe)
+     Running unittests src\lib.rs (target\debug\build\ferric-engine/818e1b47ca2dc7e4\out\ferric_engine-818e1b47ca2dc7e4.exe)
 
 running 10 tests
 test tests::loopback_ping_detector_measures_exact_roundtrip_latency ... ok
@@ -43,22 +56,22 @@ test tests::lossless_flac_encoder_bit_exact_symphonia_roundtrip_16bit_and_24bit 
 test tests::tutorial_night_current_follows_guide_and_writes_demo_wav ... ok
 test tests::offline_master_bounce_and_track_freeze_render_cleanly ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.18s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 33.46s
 
-     Running unittests src\bin\ferric_plugin_bridge.rs (target\debug\build\ferric-engine/b470ccb96d515240\out\ferric_plugin_bridge-b470ccb96d515240.exe)
+     Running unittests src\bin\ferric_plugin_bridge.rs (target\debug\build\ferric-engine/772611f6d412df7a\out\ferric_plugin_bridge-772611f6d412df7a.exe)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests\plugin_bridge_sandbox.rs (target\debug\build\ferric-engine/bfb8326cfa97960e\out\plugin_bridge_sandbox-bfb8326cfa97960e.exe)
+     Running tests\plugin_bridge_sandbox.rs (target\debug\build\ferric-engine/936fb39310979d5e\out\plugin_bridge_sandbox-936fb39310979d5e.exe)
 
 running 1 test
 test sandbox_worker_crash_does_not_panic_host ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests\real_plugins_verification.rs (target\debug\build\ferric-engine/84e80c202b89fcfe\out\real_plugins_verification-84e80c202b89fcfe.exe)
+     Running tests\real_plugins_verification.rs (target\debug\build\ferric-engine/127e74ab7826fa7c\out\real_plugins_verification-127e74ab7826fa7c.exe)
 
 running 1 test
 src/clap/six-sines-clap-entry-impl.cpp:190 Initializing Six Sines 1.2.0.18ecb36 / v1.2.1
@@ -114,22 +127,22 @@ SUCCESS: Cartridge sysex found with matching checksum
 	AUDIO in: 1, out: 1
 test verify_real_downloaded_clap_and_vst3_plugins_end_to_end ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.62s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.46s
 
-     Running unittests src\lib.rs (target\debug\build\ferric-model/b0faf3016733ff3d\out\ferric_model-b0faf3016733ff3d.exe)
+     Running unittests src\lib.rs (target\debug\build\ferric-model/0e6a96217a4c6e56\out\ferric_model-0e6a96217a4c6e56.exe)
 
 running 7 tests
-test tests::scale_snap_and_bezier_automation_work ... ok
-test tests::routing_dag_prevents_cycles_and_orders_buses_and_sidechains ... ok
-test tests::swipe_comping_splits_and_merges_cleanly ... ok
 test fx::new_instrument_tests::new_instruments_round_trip_and_presets_fit_parameter_bounds ... ok
+test tests::routing_dag_prevents_cycles_and_orders_buses_and_sidechains ... ok
+test tests::scale_snap_and_bezier_automation_work ... ok
+test tests::swipe_comping_splits_and_merges_cleanly ... ok
 test tests::smf_midi_roundtrip_preserves_notes_and_cc ... ok
 test tests::conductor_linear_tempo_ramp_integral_meter_map_and_auto_crossfade_work ... ok
 test tests::milestone9_vca_mix_recall_chord_follow_and_demo_song ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 
-     Running unittests src\lib.rs (target\debug\build\ferric-plugin-bridge/bf11d2d15b05d5df\out\ferric_plugin_bridge-bf11d2d15b05d5df.exe)
+     Running unittests src\lib.rs (target\debug\build\ferric-plugin-bridge/b76c1267aa99e136\out\ferric_plugin_bridge-b76c1267aa99e136.exe)
 
 running 1 test
 test protocol::tests::round_trip_process_block_framing ... ok

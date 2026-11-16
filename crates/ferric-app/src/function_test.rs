@@ -610,6 +610,23 @@ fn catalog() -> Vec<Case> {
             },
         },
         Case {
+            name: "dirty_session_move_install_guard",
+            button: "Move FerricDAW → restart with unsaved work",
+            act: |app| {
+                app.snapshot_before("Edit session before moving");
+                app.request_destructive(PendingDestructive::MoveInstall);
+            },
+            check: |app| {
+                if matches!(app.pending_destructive, Some(PendingDestructive::MoveInstall))
+                    && !app.quit_for_update
+                {
+                    Ok(())
+                } else {
+                    Err("Move bypassed the unsaved-work dialog".into())
+                }
+            },
+        },
+        Case {
             name: "dirty_session_update_guard",
             button: "Updates → Install & Restart with unsaved work",
             act: |app| {

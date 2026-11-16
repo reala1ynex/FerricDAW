@@ -1,2 +1,2 @@
-    Checking ferric-app v1.1.13 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.13s
+    Checking ferric-app v1.1.14 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.09s

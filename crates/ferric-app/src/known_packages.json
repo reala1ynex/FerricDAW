@@ -1,0 +1,849 @@
+{
+    "packages":  [
+                     {
+                         "version":  "1.1.6",
+                         "zip_sha256":  "29b2a6d3ba91507b701ec11d22656666357e198a41381699f97d398e8e74b5a3",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  2215,
+                                           "sha256":  "1412775b1243f91866c1b743954d380bea62d7094479aa044325fc60a5b39b03"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12375040,
+                                           "sha256":  "e8434d28b915b8683453aab11f792d1ab90d1550e3e12d759dc7613cbb37c018"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "83f7d4f4cca9d96a498382529d4f54b705df0dc8fef727a28b3ee05b15ff364f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3572,
+                                           "sha256":  "eb2d3e169302a7c0ac4759913c25280bdfb51fc2b367055c9b697f3b43503584"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  742,
+                                           "sha256":  "c55438201f746ef641a4ce47b981e287364a2195bc6cbe5bb508ad2760ffdedc"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.7",
+                         "zip_sha256":  "7ef744c94350ecbd79333abcb844be55abdc857506b8249f1d3bc88db6fd9524",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  2644,
+                                           "sha256":  "3145940e6338465cdb68c7e4943b4c8a0a7370978d3a9bef933449d8449d9b73"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12388352,
+                                           "sha256":  "40d708d4b95841b0f7a6b0e02c810e7508e15493b37d50f623d8ca4687232ebc"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "68868191748908fbbe6ae3bdb23dcbbef89763cca8ee6a65aef3af4ba48e985c"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3570,
+                                           "sha256":  "e26591baa5da05d321abe86f85c47665550f22c3d97a1a80fdf6e24c81ef9be3"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  783,
+                                           "sha256":  "8e9fd7d57024804c18dccb8d0c878f28f4a5ee2521d990c90cac05f5d8ecb45f"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.8",
+                         "zip_sha256":  "3e80f96dff18dfa9ed10b51bf7fa6295aad60a0b4feb7e11f6eef6b2e6e0bfec",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  3323,
+                                           "sha256":  "6506a48c5ae39ff555816a9037928d604b8447c9c619941f12fb018f6c2d7f6c"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12368896,
+                                           "sha256":  "89d010172c7331018da9991cdbb495a38bb2fc6dcea8f3fd98532ed7ac82b022"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "3f85c271381fbf4c83fd212d24abd3d009e4259f835094c6005d0fad0475a470"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3570,
+                                           "sha256":  "d5d43d92c914519f4c14e25cc0c220dc2a0d401a703f547b249740586f434028"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  783,
+                                           "sha256":  "24250ea715956ad3ba2a40430f822f37fcca01d5f7f4368218b829dfd6b5b7f4"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.9",
+                         "zip_sha256":  "c7b53e51fc38a558f49bc3335400c3f20f0efb905824127da9806fb034eb076c",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  4043,
+                                           "sha256":  "70f98ca9a3fdf84dd87ea102fdb1ace516a6b7fd0724f9fe299cf3fd833ae8da"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12368896,
+                                           "sha256":  "6d2a5ce0fd1a714efa714f258804aa42fe060048c49440984ffaaa5ce20977dc"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "0220bb251bbf1bbe3fdc534af82b7d69d12e1e9beaf0036d442c5a2c1c6d8137"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3570,
+                                           "sha256":  "19c346db91d24a4fb158b7df9182bcfca7e5de682cbb9f0be37c463bdd25c675"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  783,
+                                           "sha256":  "1fc59bf51c1d0e1bab871560853a5dd482227742e97b46299ccd1bc3368e17b2"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.10",
+                         "zip_sha256":  "83f291631f15fa67bb0ac6299eacfa8f91af35d3088ba6b0bcd6681c55400b61",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  4517,
+                                           "sha256":  "1735178895bccc41bb92a7b3977414f0a61e00c39eaa94e2d89497d0b7d994af"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12369408,
+                                           "sha256":  "d833cbc1b3a7aaa2b4ca717b245e0ef277d444208d280d26907d1426c3f726cc"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "e2eb10e9debda41b33ae1b653c6b75187ef1198bbb89beb7109887e84bd8c3dd"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3573,
+                                           "sha256":  "069da6944bb775b598044eae920809a3d6014a66d511992e8b28220ceb446ea9"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  784,
+                                           "sha256":  "a861aa7023c54e8f3755e4fd535f9c55fbd3a7c1a1f99b47e6e7b6c9921058ad"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.11",
+                         "zip_sha256":  "a0dbc7149acefc30d3033befbe6d6275cd8665ebff05a0aa62c34241b290c7f4",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  4861,
+                                           "sha256":  "5f9a7bf454eb8fbcdd2e662c9ef17d47e992852bf0d9b0d4eed3adac9f43bdad"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12369408,
+                                           "sha256":  "644a5acadb18c026874b92ac88ffc89f6588065d1327882a4ec7336a9387bfbd"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "5a38259d0a48b4ce89e3eb77b43ac2ebc946be6caed981cb451d4ef1ad7afa9c"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3573,
+                                           "sha256":  "92f9c65e185ab429c1e31fff6f2385f00dd0146f57ad29a4da03d07c233ebc03"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  784,
+                                           "sha256":  "bfebc7828b34fe6a314d9b86343f2c399c326627f66845594a4e3bb784f62e8d"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.12",
+                         "zip_sha256":  "3daba549c711cc1485d95f679991ae7aa0a6778f7255c02f62014cd18526d34f",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  283,
+                                           "sha256":  "46a1a696777c00376ab110792f90a07166eb5a325e189cfa9b5fc07c51f8ea4b"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  5263,
+                                           "sha256":  "9514692b5d64f7600ce8cef6a06730ae01c664c3238f8bffe22a26634893fa3c"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12386816,
+                                           "sha256":  "5b5f1cc5105b4dcb2d84da491320fadb6161bc103d5cfa8a34f87bfa4dc3e9bb"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "3b8a547b72d049749b32062f2eabb7a7469bba7694b13bfdae9a7aeb0b1a11f4"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3773,
+                                           "sha256":  "4a8e00a653a54a10223452afd3d9ce3534f8cfba1ec06367a2ec1a8e8fdc0f82"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  796,
+                                           "sha256":  "7887bc7a1792ffdb3d613765b0f278e689ac2edf9425476021088fbc64d636ad"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.12",
+                         "zip_sha256":  "76a8c8e7e98de270522d22ced6df623bd687fce0451cfc24983a19ed3352aedf",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  5263,
+                                           "sha256":  "9514692b5d64f7600ce8cef6a06730ae01c664c3238f8bffe22a26634893fa3c"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6087,
+                                           "sha256":  "a43afd136df547b9b9d3a382618aa288248266402b5e5f67258c898e42640c14"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  12369408,
+                                           "sha256":  "7df2377481220659876cf44e12d5c22ef03ef3b4dd4d3de095c7fa2d14dad5c9"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "2729e1dc858f99ba83fdfa1aade377bebe93e7df2b0543e84cc6c35898d4d506"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3573,
+                                           "sha256":  "e7d711404cd444710f7392a5c4f06bdb10dada396749a5970a98386337ebac00"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  784,
+                                           "sha256":  "45f8774c2f0f5126f6bb18ae83cf28a5c96a48ff2d4b564ade98aa3130d281ac"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.12",
+                         "zip_sha256":  "df47ae3c82ec0f1afbb92b629bcf6439a06c83597db79d408b80e3d8a871f91b",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  461,
+                                           "sha256":  "027c799759c192cf32e4cb3b64595cae830496055dae1a0b8408dfc65292103a"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4715,
+                                           "sha256":  "e1df17f0814767ea10ddcdb7bac7388251995da155cbacf761957531a128d7f6"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  5364,
+                                           "sha256":  "50f6e3ed0a3e0e76bd67ee947c19cc809518f69a7820e6e9dbc953aa97f060b0"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  6266,
+                                           "sha256":  "b0280d35dbf235f2e540da7996a8ea009ecce12478e4597ea8adcb140278c00d"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  544,
+                                           "sha256":  "588eaacf066c6fd0dc61c8f042b310dd3b22c4e635e8913d87f36e466c1a24ac"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  11694080,
+                                           "sha256":  "c6cf414979ab57d7f8ccf3c2801524a6da8a20ba378f9f3757e33898512de64c"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  724,
+                                           "sha256":  "0410544a94e0eb05f47961c80652266d92bdbf9147ab428c8723e5bb377d4b19"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1100,
+                                           "sha256":  "9dae7e48444454b5cdcbb8867f7390dd440251d06f2894cf34b2ce914c31ea2b"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3675,
+                                           "sha256":  "966fb43d5c4ce77f2f5dff9186f61b27dd7746ebac0b72de85caaf5ffae8effc"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8686,
+                                           "sha256":  "dc9e3f3cc29fdb4a73907f95a8a5825ad7a3f837529f611671651443849bcb12"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  281,
+                                           "sha256":  "ba5a84d5a16aed20492cbfec4ee87cf3c5d07092f0d385a7bae6815f42798c0c"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     },
+                     {
+                         "version":  "1.1.13",
+                         "zip_sha256":  "4037dc01d1c6aa3536847d0ee2384e1f0a8c230fbe644dc54a06efa6557a72ae",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  6504,
+                                           "sha256":  "9e433f6533fe24607673620eb8635ad82745967008c88d6969335ef9a992d0c4"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  7073,
+                                           "sha256":  "bf7abc4303a7100411d6c2b9159b699643082b01ccba30a85f13e5b0c53fec96"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  13611520,
+                                           "sha256":  "9699008b230274e53f4a41cb25ae544b21fced76dfd9db3c2162ab7191e59b3f"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "fc6d43e1ac203db6fd561b0e4ef7e7df0e83056e277a7709ea254ed8430943d0"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  3856,
+                                           "sha256":  "1004a9f3de4669e7386a4316c1686fcebcbedd9d7989723427c948ea6af1529d"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  839,
+                                           "sha256":  "c2af8aac7344ff9b33d61a5230f6cb4fd41b03ee3a00a0cc46ef82a538c846e5"
+                                       },
+                                       {
+                                           "path":  "THIRD-PARTY-NOTICES.txt",
+                                           "size":  15984,
+                                           "sha256":  "9a7343cdb5eb8cc32f26a266a3c6626bd298b9d74fa37d1d9c6c84cf0c6dd8a8"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
+                     }
+                 ]
+}

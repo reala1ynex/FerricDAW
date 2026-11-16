@@ -8,6 +8,15 @@ Notes on what shipped and when. Newest first.
 
 ---
 
+## 2026-11-16 — v1.1.14
+
+- Fixed updates that spread FerricDAW's program files across the Desktop. Earlier updaters copied the release into whatever folder held `ferricdaw.exe`, so a copy kept on the Desktop received all 17 package files and the `demo` and `docs` folders.
+- A copy running from the Desktop, Downloads, Documents or the user folder offers to move itself to `%LOCALAPPDATA%\Programs\FerricDAW`. The copy is checked file by file, the new copy starts, and only then are the old program files removed. Updates from such a folder install to the dedicated folder.
+- After it starts, a new version removes older FerricDAW copies it can find through desktop and Start menu shortcuts, its install history, the Desktop and Downloads. A file is removed only when its name, size and SHA-256 match a published package; anything else (plugins, settings, audio setups, projects, edited files) stays. A file that can't be moved rolls the whole folder back. Shortcuts to removed copies now point at the new install.
+- Leftover update ZIPs, the old update helper and stage folders in `%TEMP%` are removed when their contents match a release.
+- On first run, and after moving, FerricDAW offers to add one desktop shortcut and never adds a duplicate.
+- Each release ZIP now carries `ferricdaw-manifest.json` (path, size and SHA-256 of every file).
+
 ## 2026-11-16 — v1.1.13
 
 - Added Foundry Industrial and Ironbreak Metal synthesized kits, four dark techno instruments, Kick Rumble, and six dark techno effect presets.

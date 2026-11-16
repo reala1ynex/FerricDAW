@@ -3,7 +3,11 @@ param(
     [Parameter(Mandatory = $true)][string]$Destination,
     [Parameter(Mandatory = $true)][string]$ExeName,
     [Parameter(Mandatory = $true)][int]$AppPid,
-    [Parameter(Mandatory = $true)][string]$Sha256
+    [Parameter(Mandatory = $true)][string]$Sha256,
+    # Set when the running copy sat in a shared folder (Desktop, Downloads):
+    # the release goes to the dedicated folder and the new version removes the
+    # old copy after it starts.
+    [string]$RelocatedFrom = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,7 +50,11 @@ try {
         $Touched.Add(@{ Target = $Target; Previous = $Previous })
         Copy-Item -LiteralPath $File.FullName -Destination $Target
     }
-    Start-Process -FilePath (Join-Path $Destination $ExeName) -WorkingDirectory $Destination -WindowStyle Normal
+    $LaunchArgs = @{ FilePath = (Join-Path $Destination $ExeName); WorkingDirectory = $Destination; WindowStyle = 'Normal' }
+    if ($RelocatedFrom) {
+        $LaunchArgs.ArgumentList = @('--relocated-from', ('"' + $RelocatedFrom.TrimEnd('\') + '"'))
+    }
+    Start-Process @LaunchArgs
     $Success = $true
 } catch {
     $Failure = $_

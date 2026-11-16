@@ -1,5 +1,20 @@
 # FerricDAW 1.1.13 · Local candidate verification
 
+## v1.1.14 local candidate - 2026-11-16 17:23 ET (branch `fix/v1.1.14-updater-install-dir`)
+
+| Item | Value |
+|---|---|
+| Staged EXE | `dist\candidate\FerricDAW-stage-20261116-172324\ferricdaw.exe`, 13,824,000 bytes, SHA-256 `31ed0fba228499be43d203d7ebf71af418396be7969a7ba0e0e41afe0f64ccfb`, FileVersion 1.1.14.0 |
+| Plugin bridge | 1,494,016 bytes, SHA-256 `98805c638e5e5fc685ebb89b30fb375c67e819f40184311f0a96411097966e83` |
+| ZIP | `dist\candidate\FerricDAW-v1.1.14-win-x64.zip`, 12,474,886 bytes, SHA-256 `31ed7f70a6c5e679dc291a833911cbba3e5be3b14dd7cd64eaad4161cf4ae4b2`, 18 entries (adds `ferricdaw-manifest.json`) |
+| Feed | `dist\candidate\latest.json`, version 1.1.14, URL `https://github.com/reala1ynex/FerricDAW/releases/download/v1.1.14/FerricDAW-v1.1.14-win-x64.zip`, SHA matches the ZIP |
+
+Sandbox runs used `C:\Users\ndrpe\FerricSandbox\<scenario>` with
+`LOCALAPPDATA`, `TEMP` and the `FERRIC_*_DIR` overrides pointed into the
+sandbox; the real Desktop, Downloads, Start menu and OneDrive were not touched.
+Final state per scenario: `target\release-verification\grok-evidence\v1.1.14\sandbox-final-state.txt`.
+The installed EXE in each sandbox matches the staged EXE above.
+
 ## Resumed verification - 2026-11-16 14:25 ET (supersedes the hashes below)
 
 | Item | Value |

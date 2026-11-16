@@ -83,6 +83,8 @@ $startHere = @"
 FerricDAW v$Version — Windows portable
 
 Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in that worker, not the DAW.
+Keep these files in their own folder (for example %LOCALAPPDATA%\Programs\FerricDAW), not loose on the Desktop.
+If FerricDAW starts from the Desktop or Downloads it offers to move itself there and add a desktop shortcut.
 
 1. Double-click ferricdaw.exe
 2. WAV, FLAC, MP3, and Ogg Vorbis export are built in.
@@ -117,6 +119,22 @@ if ($GitHubOwner) {
     )
     Write-Host "Update feed: $FeedUrl" -ForegroundColor Cyan
 }
+
+# Release manifest: lets FerricDAW identify its own program files by path,
+# size and SHA-256 when moving out of, or cleaning, a shared folder.
+$ManifestFiles = Get-ChildItem -LiteralPath $StageDir -Recurse -File | Sort-Object FullName | ForEach-Object {
+    [ordered]@{
+        path   = $_.FullName.Substring($StageDir.Length + 1).Replace('\', '/')
+        size   = [int64]$_.Length
+        sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+$Manifest = [ordered]@{ version = $Version; files = @($ManifestFiles) }
+[System.IO.File]::WriteAllText(
+    (Join-Path $StageDir 'ferricdaw-manifest.json'),
+    ($Manifest | ConvertTo-Json -Depth 4),
+    [System.Text.UTF8Encoding]::new($false)
+)
 
 $ZipName = "FerricDAW-v$Version-win-x64.zip"
 $ZipPath = Join-Path $OutputDir $ZipName
