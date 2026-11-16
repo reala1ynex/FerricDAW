@@ -46,6 +46,22 @@ The target is a serious desktop DAW workstation, not a web dashboard or mockup. 
 
 Strengthen one shared theme/token layer. Do not hand-tune isolated buttons with arbitrary colors. Every new control must use shared helpers.
 
+## Eighteen-page UI reference protocol
+
+The attached UI reference contains 18 pages and is the complete visual specification for this overhaul. Treat every page as authoritative design input, not as optional inspiration and not as a single-page mockup.
+
+Before making major UI changes:
+
+1. Review all 18 pages.
+2. Number them Page 01 through Page 18.
+3. Create a page-by-page inventory of layout, navigation, hierarchy, typography, spacing, colors, buttons, borders, panels, empty states, active states, disabled states, hover states, error states, and reusable components.
+4. Map every reference page to the FerricDAW screen, dock, modal, or feature it represents.
+5. Identify the shared design tokens and components that must be implemented once and reused everywhere.
+
+Implement the shared design system first, then apply it across every relevant FerricDAW surface. Do not cherry-pick only the easiest pages. If a reference page does not map cleanly to an existing surface, document the mismatch and either add the missing surface or record the exact external blocker.
+
+For each applicable reference page, capture a corresponding screenshot of the real running FerricDAW UI. Compare the reference and implementation page-by-page, then perform the quadrant review described below. Keep a traceability table containing: reference page, target surface, implemented components, differences found, fixes made, screenshot evidence, and remaining limitations.
+
 ## Complete compatibility scope
 
 The overhaul must preserve and correctly expose every current FerricDAW feature: transport (play, stop, record, loop, click, capture, BPM, meter); new/open/save/save-as, autosave, recovery, dirty-close Save/Discard/Cancel; audio, MIDI, universal, folder, take, clip, and session-slot tracks; arrangement, ruler, playhead, scrub, bar nudge, zoom, pan, snap; Session launcher, scenes, quantization, Launch Pad, Mix A/B/C/D morph; Chord Lane, progressions, circle of fifths, Storyboard, Pad/Bass/Arp Gen, undo-generate, chord-follow; Feel/Velocity DNA, groove templates, accents, Apply drums, Apply MIDI; piano roll, drum grid, arp, automation, MIDI import/export, tempo/meter conductor maps; all current instruments and factory presets; all current FX, routing, sidechain, PDC, and freeze; Hardware Rig, MIDI, XY/pads, Line-In, monitor, driver, buffer, ping, Shared/Exclusive status, and honest ASIO fallback; Pad A/B performance; Samples; Presets/Plugins; CLAP/VST3 audition/quarantine/insert; sandbox bridge; Kaoss Write XY; bounce formats/stems/LUFS/true peak/dither; Golden Bounce; tutorial, Night Current, Afterglow, Help/F1, palette, updater, status banners, retries, and failure/recovery behavior.
@@ -82,17 +98,18 @@ Do not weaken or delete failing tests. Extend `function_test.rs` for every new u
 
 Launch the packaged/release build and walk: cold start/empty session, Tutorial, Night Current, Afterglow, transport/DNA, Hardware Rig/Audio I/O, Pads, Samples, Presets/Plugins, arrangement/session launcher, track headers, piano roll/drum grid, Kaoss, Launch, Mix/routing, FX/instruments, bounce/Golden Bounce, Help, palette, update modal, and dirty-close Save/Discard/Cancel. Click each control you inspect and verify that the visible result matches its label. A handler test alone is not visual or end-user proof.
 
-### E. Visual quadrant analysis
+### E. Visual reference and quadrant analysis
 
-For every fresh screenshot or live window:
+For every reference page and every fresh screenshot or live window:
 
 1. Capture the actual user viewport at its normal size.
-2. Divide it into four equal quadrants: top-left, top-right, bottom-left, bottom-right.
-3. Inspect each quadrant for alignment, spacing, accidental rectangles, orphan borders, inconsistent fills/strokes/radii/heights, clipping, overlap, contrast, hierarchy, selected/hover/disabled states, dead space, and labels.
-4. Inspect the seams between quadrants for cross-boundary defects.
-5. Record surface, region, severity, source location, and screenshot evidence.
-6. Fix the source, rebuild, and capture again.
-7. Repeat until that surface produces no new actionable defects.
+2. Compare it with the corresponding numbered reference page.
+3. Divide the implementation screenshot into four equal quadrants: top-left, top-right, bottom-left, bottom-right.
+4. Inspect each quadrant for alignment, spacing, accidental rectangles, orphan borders, inconsistent fills/strokes/radii/heights, clipping, overlap, contrast, hierarchy, selected/hover/disabled states, dead space, and labels.
+5. Inspect the seams between quadrants for cross-boundary defects.
+6. Record reference page, surface, region, severity, source location, and screenshot evidence.
+7. Fix the source, rebuild, and capture again.
+8. Repeat until the page produces no new actionable defects and matches the reference design language.
 
 ### F. Self-review questions
 
@@ -124,6 +141,6 @@ Do not delete the prior release/tag until the new release, downloaded feed, and 
 
 ## Completion report
 
-Report: changed files and reasons; resolved issue IDs; exact test commands and counts; visual surfaces and quadrant findings; packaged paths; release URL/tag/commit/hash; remaining blockers; and anything explicitly unproven. Use “No additional actionable defects were observed in the inspected surfaces; these boundaries remain unverified: …” instead of claiming absolute perfection.
+Report: changed files and reasons; resolved issue IDs; the 18-page reference-to-surface traceability table; exact test commands and counts; visual surfaces and quadrant findings; packaged paths; release URL/tag/commit/hash; remaining blockers; and anything explicitly unproven. Use “No additional actionable defects were observed in the inspected surfaces; these boundaries remain unverified: …” instead of claiming absolute perfection.
 
 Start by loading the authority files, checking git state, building the complete feature/control inventory, and running the baseline gates. Then work the loop until FerricDAW is genuinely ready for end users.
