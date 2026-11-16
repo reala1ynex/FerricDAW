@@ -8,9 +8,12 @@
 
 - The arrangement track header now reserves enough width for the full compact control cluster, keeping freeze/import actions inside the card instead of spilling into the session area.
 
-## v1.1.12 release verification pending
+## v1.1.12 release verified
 
-- Automated gates passed and the final visual loop covered the default arrangement, Samples browser, and Presets/Plugins browser. Publish and remote feed/hash verification remain before this becomes the current release.
+- Published `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.12` from commit `4e3c754`.
+- Removed the prior v1.1.11 release/tag; remote release/tag inventory now contains v1.1.12 only.
+- Downloaded `latest.json`: starts with `{`, has no UTF-8 BOM, reports version 1.1.12, and its SHA-256 `df47ae3c82ec0f1afbb92b629bcf6439a06c83597db79d408b80e3d8a871f91b` matches the downloaded v1.1.12 zip.
+- Final visual loop covered the default arrangement, Samples browser, and Presets/Plugins browser; the track-header control cluster stays inside its card.
 
 ## v1.1.11 release candidate — flat empty-launcher cleanup
 

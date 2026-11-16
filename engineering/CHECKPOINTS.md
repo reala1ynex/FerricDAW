@@ -1,10 +1,13 @@
 # Development Checkpoints
 
-## CP-2026-11-15-K — v1.1.12 track-header containment
+## CP-2026-11-15-K — v1.1.12 track-header containment released
 
-- **Stage:** Arrangement control containment and final visual cleanup; release pending verification.
+- **Commit / tag:** `4e3c754` / `v1.1.12`
+- **Release:** `https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.12`
 - **Changes:** Expanded the track header to keep the freeze/import controls inside the card; retained the quiet empty launcher region from v1.1.11.
-- **Verification:** Candidate visual loop passed on the default arrangement, Samples browser, and Presets/Plugins browser. Automated release gates run before publish.
+- **Verification:** warning-denied workspace check, workspace tests, Windows function test 59/59, release feed/zip hash verification, and final visual loop across the default arrangement, Samples browser, and Presets/Plugins browser.
+- **Channel:** v1.1.11 release/tag removed; v1.1.12 is the only current release.
+- **Artifact SHA-256:** `df47ae3c82ec0f1afbb92b629bcf6439a06c83597db79d408b80e3d8a871f91b`
 
 ## CP-2026-11-15-F — v1.1.7 released
 
