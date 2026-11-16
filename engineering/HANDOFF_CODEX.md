@@ -5,11 +5,13 @@
 **Handoff date:** 2026-11-15 (mission amended same day)  
 **Do not invent unrelated product categories** (no cloud accounts, no liquid glass). You **are** authorized to add instruments, fix flaws, polish UI chrome, and ship.
 
+**Master feature map:** read [`MASTER_FEATURE_REFERENCE.md`](MASTER_FEATURE_REFERENCE.md) alongside this handoff for the complete human/AI feature-to-code-to-test map.
+
 ---
 
-## ★ 2026-11-15 mission status — v1.1.12 candidate
+## ★ 2026-11-15 mission status — v1.1.12 shipped
 
-v1.1.12 is the next candidate after the arrangement control-containment cleanup. Automated gates and the inspected visual surfaces pass; publish and remote feed/hash verification remain. Read `PROGRESS.md` and `RELEASE_READINESS.md` for exact visual coverage and the still-open I-05 limitation. The directive below is retained as historical context; do not claim every UI widget was pixel-tested.
+v1.1.12 is the current public release after the arrangement control-containment cleanup. Automated gates, package/feed hash verification, only-current release cleanup, and the inspected visual surfaces pass. Read `MASTER_FEATURE_REFERENCE.md`, `PROGRESS.md`, and `RELEASE_READINESS.md` for the exact feature map and still-open I-05 limitation. The directive below is retained as historical context; do not claim every UI widget was pixel-tested.
 
 ## ★ HISTORICAL MISSION (owner directive)
 
@@ -116,16 +118,16 @@ Preserve owner/docs attribution. Do not strip AUTHORS, licenses, or human-facing
 
 | Item | Value |
 |------|-------|
-| **Current public version** | **1.1.6** (only current release — older tags deleted) |
-| **Release** | https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.6 |
+| **Current public version** | **1.1.12** (only current release — older tags deleted) |
+| **Release** | https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.12 |
 | **Branch** | `master` (tracks `origin/master`) |
-| **HEAD at handoff** | `9ce2698` (Cargo.lock sync after `a79dc84` UI chrome ship) |
-| **Tagged release commit** | `a79dc84` (`v1.1.6`) |
+| **HEAD at handoff** | `4f8fd55` (v1.1.12 release verification docs) |
+| **Tagged release commit** | `4e3c754` (`v1.1.12`) |
 | **Feed** | https://github.com/reala1ynex/FerricDAW/releases/latest/download/latest.json |
-| **Feed SHA-256** | `29b2a6d3ba91507b701ec11d22656666357e198a41381699f97d398e8e74b5a3` |
-| **Desktop zip** | `C:\Users\ndrpe\Desktop\FerricDAW-v1.1.6-win-x64.zip` |
+| **Feed SHA-256** | `df47ae3c82ec0f1afbb92b629bcf6439a06c83597db79d408b80e3d8a871f91b` |
+| **Desktop zip** | `C:\Users\ndrpe\Desktop\FerricDAW-v1.1.12-win-x64.zip` |
 | **Stage dir** | `C:\Users\ndrpe\Projects\FerricDAW\dist\FerricDAW\` |
-| **Readiness** | **CONDITIONALLY READY** (see §9) |
+| **Readiness** | **PUBLISHED AND VERIFIED WITH LIMITS** (see `RELEASE_READINESS.md`) |
 
 ### Recent ship sequence (newest first)
 

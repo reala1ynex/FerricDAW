@@ -33,6 +33,8 @@ Play the demo WAV once so you know what you’re aiming for.
 
 Everything else (DNA groove, HostDNA, Launch Pad, plugin audition, hardware rig, etc.) is in [`docs/FEATURE_GUIDE.md`](docs/FEATURE_GUIDE.md) and **F1** inside the app.
 
+For a complete human/AI continuation map, see [`engineering/MASTER_FEATURE_REFERENCE.md`](engineering/MASTER_FEATURE_REFERENCE.md) and [`engineering/HANDOFF_CODEX.md`](engineering/HANDOFF_CODEX.md).
+
 ---
 
 ## What you can do
