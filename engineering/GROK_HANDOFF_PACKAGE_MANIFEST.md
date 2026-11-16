@@ -9,6 +9,8 @@ This archive contains the current FerricDAW source and the documents required to
 3. Read `engineering/MASTER_FEATURE_REFERENCE.md`.
 4. Work from the repository root containing `Cargo.toml`.
 
+The authoritative development target is the user’s current laptop instance at `C:\Users\ndrpe\Projects\FerricDAW`. Do not substitute a clone, cloud workspace, copied archive, or separate application instance for implementation or verification.
+
 ## Included
 
 - Rust application source in `crates/`
