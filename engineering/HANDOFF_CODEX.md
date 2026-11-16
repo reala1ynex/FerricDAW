@@ -7,6 +7,8 @@
 
 **Master feature map:** read [`MASTER_FEATURE_REFERENCE.md`](MASTER_FEATURE_REFERENCE.md) alongside this handoff for the complete human/AI feature-to-code-to-test map.
 
+**Grok completion prompt:** [`GROK_MASTER_COMPLETION_PROMPT.md`](GROK_MASTER_COMPLETION_PROMPT.md) contains the full end-user production, compatibility, automated-test, quadrant-visual-review, self-check-loop, and release instructions.
+
 ---
 
 ## ★ 2026-11-15 mission status — v1.1.12 shipped

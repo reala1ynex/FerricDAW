@@ -12,6 +12,8 @@
 
 **Primary handoff:** [`HANDOFF_CODEX.md`](HANDOFF_CODEX.md)
 
+**Grok completion prompt:** [`GROK_MASTER_COMPLETION_PROMPT.md`](GROK_MASTER_COMPLETION_PROMPT.md)
+
 This is the cross-reference map: user-facing feature → UI route → source of
 truth → verification → known boundary. It is intentionally evidence-first.
 “Complete” below means complete at the stated digital scope, not universal
