@@ -1,8 +1,8 @@
 use crate::piano_roll::DockAction;
 use crate::theme::{
     chrome_card, chrome_row_label, chrome_section_title, pill_toggle, stereo_level_meter, StudioUiExt,
-    studio_knob, track_color32, vertical_fader, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED,
-    ACCENT_TEAL, ACCENT_BLUE, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
+    studio_knob, track_color32, vertical_fader, ACCENT_AMBER, ACCENT_FERRIC,
+    ACCENT_TEAL, ACCENT_BLUE, BG_DEEP, BG_ELEVATED, BORDER_SUBTLE, STATE_ARM, STATE_SOLO, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{Color32, Stroke, Ui};
 use ferric_engine::EngineTelemetry;
@@ -74,7 +74,10 @@ pub fn render_mixer_console(
     });
     ui.add_space(4.0);
 
-    egui::ScrollArea::horizontal()
+    ui.horizontal_top(|ui| {
+        let track_width = (ui.available_width() - 152.0).max(80.0);
+        egui::ScrollArea::horizontal()
+        .max_width(track_width)
         .id_salt("mixer_console_hscroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -153,21 +156,21 @@ pub fn render_mixer_console(
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
                                     let trk = &mut project.tracks[idx];
-                                    if pill_toggle(ui, "M", trk.mute, ACCENT_AMBER)
+                                    if pill_toggle(ui, "M", trk.mute, ACCENT_BLUE)
                                         .on_hover_text("Mute")
                                         .clicked()
                                     {
                                         trk.mute = !trk.mute;
                                         actions.push(DockAction::ProjectMutated("Mixer Mute"));
                                     }
-                                    if pill_toggle(ui, "S", trk.solo, ACCENT_BLUE)
+                                    if pill_toggle(ui, "S", trk.solo, STATE_SOLO)
                                         .on_hover_text("Solo")
                                         .clicked()
                                     {
                                         trk.solo = !trk.solo;
                                         actions.push(DockAction::ProjectMutated("Mixer Solo"));
                                     }
-                                    if pill_toggle(ui, "R", trk.record_arm, ACCENT_RED)
+                                    if pill_toggle(ui, "R", trk.record_arm, STATE_ARM)
                                         .on_hover_text("Record arm")
                                         .clicked()
                                     {
@@ -480,96 +483,104 @@ pub fn render_mixer_console(
                     actions.push(DockAction::ProjectMutated("Remove VCA Group"));
                 }
 
-                ui.separator();
+            });
+        });
+        render_master_strip(ui, project, telem, actions);
+    });
+}
 
-                // Dedicated MASTER BUS Strip on far right!
-                egui::Frame::new()
-                    .fill(BG_DEEP)
-                    .stroke(Stroke::new(1.5_f32, ACCENT_TEAL))
-                    .corner_radius(6)
-                    .inner_margin(8.0)
-                    .show(ui, |ui| {
-                        ui.set_width(116.0);
-                        ui.vertical_centered(|ui| {
-                            if ui
-                                .chrome_button(
-                                    egui::RichText::new("MASTER BUS")
-                                        .size(11.5)
-                                        .strong()
-                                        .color(ACCENT_TEAL),
-                                )
-                                .clicked()
-                            {
-                                *inspect_master = true;
-                            }
-                            ui.horizontal(|ui| {
-                                if pill_toggle(ui, "MONO", project.master.mono_check, ACCENT_AMBER)
-                                    .on_hover_text("Mono Compatibility Check")
-                                    .clicked()
-                                {
-                                    project.master.mono_check = !project.master.mono_check;
-                                    actions.push(DockAction::ProjectMutated("Toggle Master Mono"));
-                                }
-                                if pill_toggle(ui, "DIM", project.master.dim_enabled, ACCENT_FERRIC)
-                                    .on_hover_text("-18 dB Control Room Dim")
-                                    .clicked()
-                                {
-                                    project.master.dim_enabled = !project.master.dim_enabled;
-                                    actions.push(DockAction::ProjectMutated("Toggle Master Dim"));
-                                }
-                            });
-                            if pill_toggle(
-                                ui,
-                                "SAFETY LIMIT",
-                                project.master.safety_limiter,
-                                ACCENT_TEAL,
-                            )
-                            .clicked()
-                            {
-                                project.master.safety_limiter = !project.master.safety_limiter;
-                                actions.push(DockAction::ProjectMutated("Toggle Safety Limiter"));
-                            }
+fn render_master_strip(
+    ui: &mut Ui,
+    project: &mut Project,
+    telem: &EngineTelemetry,
+    actions: &mut Vec<DockAction>,
+) {
+    egui::Frame::new()
+        .fill(BG_DEEP)
+        .stroke(Stroke::new(1.5_f32, ACCENT_TEAL))
+        .corner_radius(6)
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.set_width(116.0);
+            ui.vertical_centered(|ui| {
+                if ui
+                    .chrome_button(
+                        egui::RichText::new("MASTER BUS")
+                            .size(11.5)
+                            .strong()
+                            .color(ACCENT_TEAL),
+                    )
+                    .on_hover_text("Open Master Bus FX")
+                    .clicked()
+                {
+                    actions.push(DockAction::OpenMasterFx);
+                }
+                ui.horizontal(|ui| {
+                    if pill_toggle(ui, "MONO", project.master.mono_check, ACCENT_AMBER)
+                        .on_hover_text("Mono Compatibility Check")
+                        .clicked()
+                    {
+                        project.master.mono_check = !project.master.mono_check;
+                        actions.push(DockAction::ProjectMutated("Toggle Master Mono"));
+                    }
+                    if pill_toggle(ui, "DIM", project.master.dim_enabled, ACCENT_FERRIC)
+                        .on_hover_text("-18 dB Control Room Dim")
+                        .clicked()
+                    {
+                        project.master.dim_enabled = !project.master.dim_enabled;
+                        actions.push(DockAction::ProjectMutated("Toggle Master Dim"));
+                    }
+                });
+                if pill_toggle(
+                    ui,
+                    "SAFETY LIMIT",
+                    project.master.safety_limiter,
+                    ACCENT_TEAL,
+                )
+                .clicked()
+                {
+                    project.master.safety_limiter = !project.master.safety_limiter;
+                    actions.push(DockAction::ProjectMutated("Toggle Safety Limiter"));
+                }
 
-                            ui.horizontal(|ui| {
-                                ui.add_space(22.0);
-                                if vertical_fader(
-                                    ui,
-                                    &mut project.master.gain_db,
-                                    96.0,
-                                    ACCENT_TEAL,
-                                )
-                                .changed()
-                                {
-                                    actions.push(DockAction::ProjectMutated("Adjust Master Fader"));
-                                }
-                                stereo_level_meter(
-                                    ui,
-                                    telem.master.peak_l_db,
-                                    telem.master.peak_r_db,
-                                    96.0,
-                                );
-                            });
+                ui.horizontal(|ui| {
+                    ui.add_space(22.0);
+                    if vertical_fader(
+                        ui,
+                        &mut project.master.gain_db,
+                        96.0,
+                        ACCENT_TEAL,
+                    )
+                    .changed()
+                    {
+                        actions.push(DockAction::ProjectMutated("Adjust Master Fader"));
+                    }
+                    stereo_level_meter(
+                        ui,
+                        telem.master.peak_l_db,
+                        telem.master.peak_r_db,
+                        96.0,
+                    );
+                });
 
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{:.1} LUFS",
-                                    telem.master.momentary_lufs
-                                ))
-                                .size(11.0)
-                                .monospace()
-                                .color(ACCENT_TEAL),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Pk {:+.1} dB",
-                                    telem.master.peak_l_db.max(telem.master.peak_r_db)
-                                ))
-                                .size(10.0)
-                                .monospace()
-                                .color(TEXT_MAIN),
-                            );
-                        });
-                    });
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{:.1} LUFS",
+                        telem.master.momentary_lufs
+                    ))
+                    .size(11.0)
+                    .monospace()
+                    .color(ACCENT_TEAL),
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Pk {:+.1} dB",
+                        telem.master.peak_l_db.max(telem.master.peak_r_db)
+                    ))
+                    .size(10.0)
+                    .monospace()
+                    .color(TEXT_MAIN),
+                );
             });
         });
 }

@@ -66,8 +66,8 @@ impl ExportFormat {
         match self {
             ExportFormat::Wav => "WAV (Uncompressed PCM / Float)",
             ExportFormat::Flac => "FLAC (Lossless Compressed + MD5)",
-            ExportFormat::Mp3 => "MP3 (Lossy Delivery ~192 kbps)",
-            ExportFormat::Ogg => "OGG (Lossy Delivery Q7 Mid/Side)",
+            ExportFormat::Mp3 => "MP3 (192 kbps)",
+            ExportFormat::Ogg => "OGG (Vorbis, quality 7)",
         }
     }
 
@@ -175,6 +175,10 @@ fn decode_with_symphonia(path: &Path, target_sample_rate: u32) -> Result<AudioBu
             let spec = *decoded.spec();
             let ch = spec.channels.count().max(1);
             let frames = decoded.frames();
+            // Vorbis can return a priming packet without any PCM frames.
+            if frames == 0 {
+                continue;
+            }
             let mut sample_buf = SampleBuffer::<f32>::new(frames as u64, spec);
             sample_buf.copy_interleaved_ref(decoded);
             let samples = sample_buf.samples();

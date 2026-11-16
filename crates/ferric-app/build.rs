@@ -6,13 +6,11 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let assets_dir = manifest_dir.parent().unwrap().parent().unwrap().join("assets");
-    let _ = fs::create_dir_all(&assets_dir);
-    let ico_path = assets_dir.join("ferricdaw.ico");
-    if !ico_path.exists() {
-        let _ = write_ferric_ico(&ico_path);
-    }
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let ico_path = out_dir.join("ferricdaw.ico");
+    let rgba = lattice_icon();
+    fs::write(out_dir.join("ferricdaw.rgba"), &rgba).expect("write FerricDAW app icon");
+    write_ferric_ico(&ico_path, &rgba).expect("write FerricDAW Windows icon");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
@@ -21,65 +19,78 @@ fn main() {
     }
 }
 
-/// Generates a crisp 64×64 32-bit BGRA Windows `.ico` file for FerricDAW!
-fn write_ferric_ico(path: &Path) -> std::io::Result<()> {
+/// Flat, antialiased lattice for small desktop icon sizes. Front is the
+/// orange audio layer, back is the cyan control layer, centre is the engine.
+fn lattice_icon() -> Vec<u8> {
+    const SIZE: usize = 64;
+    const ORANGE: [u8; 3] = [255, 90, 31];
+    const CYAN: [u8; 3] = [0, 229, 255];
+    const VOID: [u8; 3] = [7, 8, 10];
+    let back = [(22.0, 12.0), (56.0, 12.0), (56.0, 40.0), (22.0, 40.0)];
+    let front = [(8.0, 25.0), (51.0, 25.0), (51.0, 54.0), (8.0, 54.0)];
+    let wave = [(22.0, 40.0), (26.0, 40.0), (29.0, 34.5), (32.0, 44.5),
+        (35.0, 38.0), (38.0, 40.0)];
+    fn distance(p: (f32, f32), q: (f32, f32)) -> f32 {
+        (p.0 - q.0).hypot(p.1 - q.1)
+    }
+    fn line(p: (f32, f32), a: (f32, f32), b: (f32, f32), width: f32) -> bool {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = (((p.0-a.0)*dx + (p.1-a.1)*dy) / (dx*dx + dy*dy)).clamp(0.0, 1.0);
+        distance(p, (a.0 + dx*t, a.1 + dy*t)) <= width * 0.5
+    }
+    let sample = |p| {
+        let mut c = VOID;
+        for i in 0..4 {
+            if line(p, back[i], back[(i+1)%4], 2.1) || line(p, front[i], back[i], 1.7) {
+                c = CYAN;
+            }
+        }
+        for &v in &back {
+            let d = distance(p, v);
+            if d <= 3.4 { c = if d > 1.55 { CYAN } else { VOID }; }
+        }
+        for i in 0..4 {
+            if line(p, front[i], front[(i+1)%4], 3.0) {
+                c = ORANGE;
+            } else if line(p, front[i], (29.5, 39.5), 1.0) && c == VOID {
+                c = [125, 43, 18];
+            }
+        }
+        for &v in &front {
+            let d = distance(p, v);
+            if d <= 4.8 { c = if d > 2.5 { ORANGE } else { VOID }; }
+        }
+        if distance(p, (29.5, 39.5)) <= 8.7 {
+            c = if wave.windows(2).any(|q| line(p, q[0], q[1], 2.1)) { VOID } else { ORANGE };
+        }
+        c
+    };
+    let mut rgba = Vec::with_capacity(SIZE * SIZE * 4);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let mut sum = [0u16; 3];
+            for sy in [0.25, 0.75] {
+                for sx in [0.25, 0.75] {
+                    for (total, channel) in sum.iter_mut().zip(sample((x as f32+sx, y as f32+sy))) {
+                        *total += u16::from(channel);
+                    }
+                }
+            }
+            rgba.extend(sum.map(|channel| (channel/4) as u8));
+            rgba.push(255);
+        }
+    }
+    rgba
+}
+
+fn write_ferric_ico(path: &Path, rgba: &[u8]) -> std::io::Result<()> {
     let w = 64u32;
     let h = 64u32;
-    let cx = 31.5_f32;
-    let cy = 31.5_f32;
-
-    // DIB XOR mask (bottom-up BGRA) + 1-bit AND mask (padded to 32-bit DWORDs = 8 bytes/row)
-    let mut xor_bgra = vec![0u8; (w * h * 4) as usize];
+    let mut xor_bgra = Vec::with_capacity(rgba.len());
     let and_mask = vec![0u8; (h * 8) as usize];
-
-    for y in 0..h {
-        // Bottom-up row index for DIB
-        let src_y = (h - 1 - y) as f32;
-        for x in 0..w {
-            let fx = x as f32;
-            let dx = fx - cx;
-            let dy = src_y - cy;
-            let r = (dx * dx + dy * dy).sqrt();
-
-            let bx = (dx.abs() - 22.0).max(0.0);
-            let by = (dy.abs() - 22.0).max(0.0);
-            let in_badge = (bx * bx + by * by).sqrt() <= 8.5;
-
-            let idx = ((y * w + x) * 4) as usize;
-            if !in_badge {
-                xor_bgra[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
-                continue;
-            }
-
-            let mut rgba = [18_u8, 20, 27, 255];
-            if (21.0..=26.5).contains(&r) {
-                rgba = [232, 114, 62, 255];
-            } else if (12.0..21.0).contains(&r) {
-                let ang = dy.atan2(dx);
-                if ((ang * 3.0).cos()).abs() > 0.65 {
-                    rgba = [34, 38, 49, 255];
-                } else {
-                    rgba = [56, 34, 28, 255];
-                }
-            } else if r <= 7.5 {
-                rgba = if r <= 3.2 {
-                    [16, 18, 24, 255]
-                } else {
-                    [66, 196, 176, 255]
-                };
-            }
-
-            let wave_y =
-                32.0 - 9.0 * ((fx - 32.0) * 0.35).sin() * (-((fx - 32.0).abs() * 0.06)).exp();
-            if (src_y - wave_y).abs() < 1.35 && r < 24.0 {
-                rgba = [245, 248, 255, 255];
-            }
-
-            // BGRA byte order
-            xor_bgra[idx] = rgba[2];
-            xor_bgra[idx + 1] = rgba[1];
-            xor_bgra[idx + 2] = rgba[0];
-            xor_bgra[idx + 3] = rgba[3];
+    for row in rgba.chunks_exact(w as usize * 4).rev() {
+        for px in row.chunks_exact(4) {
+            xor_bgra.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
         }
     }
 
@@ -126,13 +137,20 @@ fn embed_windows_resources(ico_path: &Path, target_env: &str) {
     let rc_path = out_dir.join("ferricdaw.rc");
     let escaped_ico = ico_path.to_string_lossy().replace('\\', "\\\\");
 
+    let version = env!("CARGO_PKG_VERSION");
+    let resource_version = format!(
+        "{},{},{},0",
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR"),
+        env!("CARGO_PKG_VERSION_PATCH")
+    );
     let rc_content = format!(
         r#"
 1 ICON "{ico}"
 
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION {resource_version}
+PRODUCTVERSION {resource_version}
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -145,12 +163,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "FerricDAW Open Source Contributors"
             VALUE "FileDescription", "FerricDAW - Open-Source Rust Hybrid Digital Audio Workstation"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", "{version}.0"
             VALUE "InternalName", "ferricdaw.exe"
             VALUE "LegalCopyright", "Copyright (c) 2026 FerricDAW Contributors (MIT OR Apache-2.0)"
             VALUE "OriginalFilename", "ferricdaw.exe"
             VALUE "ProductName", "FerricDAW"
-            VALUE "ProductVersion", "1.0.0"
+            VALUE "ProductVersion", "{version}"
         END
     END
     BLOCK "VarFileInfo"

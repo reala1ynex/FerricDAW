@@ -1,70 +1,76 @@
-   Compiling ferric-app v1.1.7 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
-    Finished `test` profile [optimized + debuginfo] target(s) in 3.70s
-     Running unittests src\main.rs (target\debug\build\ferric-app/3c5613ee7e3b9a51\out\ferricdaw-3c5613ee7e3b9a51.exe)
-
-running 6 tests
-test update::tests::feed_parses_with_bom ... ok
-test update::tests::reject_non_github_url_and_missing_sha ... ok
-test update::tests::semver_compare ... ok
-test function_test::save_guard_tests::failed_save_keeps_pending_action_and_session ... ok
-test function_test::save_guard_tests::successful_save_continues_pending_transition ... ok
-test function_test::save_guard_tests::autosave_does_not_clear_unsaved_project_guard ... ok
-
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
-
-     Running unittests src\lib.rs (target\debug\build\ferric-dsp/7cb211e7d666aea0\out\ferric_dsp-7cb211e7d666aea0.exe)
-
-running 7 tests
-test tests::new_instruments_render_through_runtime_with_sample_accurate_midi ... ok
-test tests::onset_bpm_detector_and_arpeggiator_work_accurately ... ok
-test tests::chromatic_tuner_detects_440hz_a4_within_half_cent ... ok
-test organ::tests::organ_obeys_midi_offset_and_releases ... ok
-test electric_piano::tests::electric_piano_produces_finite_audio_and_releases ... ok
-test tests::vocal_pitch_corrector_and_sampler_produce_clean_output ... ok
-test tests::milestone8_wavetable_convolution_ott_and_melodyne_blobs_verified ... ok
-
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
-
-     Running unittests src\lib.rs (target\debug\build\ferric-engine/2f42fcda74ebed6f\out\ferric_engine-2f42fcda74ebed6f.exe)
+   Compiling ferric-app v1.1.13 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.65s
+     Running unittests src\main.rs (target\debug\build\ferric-app/cd3bf2573b67c812\out\ferricdaw-cd3bf2573b67c812.exe)
 
 running 8 tests
+test theme::tests::semantic_accents_are_distinct_and_share_the_same_text_safe_surface ... ok
+test update::tests::reject_non_github_url_and_missing_sha ... ok
+test update::tests::feed_parses_with_bom ... ok
+test update::tests::semver_compare ... ok
+test theme::tests::studio_theme_keeps_one_button_geometry_and_neutral_interaction_states ... ok
+test function_test::save_guard_tests::autosave_does_not_clear_unsaved_project_guard ... ok
+test function_test::save_guard_tests::successful_save_continues_pending_transition ... ok
+test function_test::save_guard_tests::failed_save_keeps_pending_action_and_session ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.73s
+
+     Running unittests src\lib.rs (target\debug\build\ferric-dsp/c4134083a9132bbe\out\ferric_dsp-c4134083a9132bbe.exe)
+
+running 9 tests
+test tests::new_instruments_render_through_runtime_with_sample_accurate_midi ... ok
+test tests::chromatic_tuner_detects_440hz_a4_within_half_cent ... ok
+test organ::tests::organ_obeys_midi_offset_and_releases ... ok
+test tests::onset_bpm_detector_and_arpeggiator_work_accurately ... ok
+test electric_piano::tests::electric_piano_produces_finite_audio_and_releases ... ok
+test tests::vocal_pitch_corrector_and_sampler_produce_clean_output ... ok
+test tests::heavy_drum_voices_are_distinct_and_legacy_projects_preserve_studio_voice ... ok
+test tests::dark_techno_patches_render_audio_and_kick_rumble_has_a_bounded_tail ... ok
+test tests::milestone8_wavetable_convolution_ott_and_melodyne_blobs_verified ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src\lib.rs (target\debug\build\ferric-engine/989486491475d621\out\ferric_engine-989486491475d621.exe)
+
+running 10 tests
 test tests::loopback_ping_detector_measures_exact_roundtrip_latency ... ok
-test tests::synthetic_vst3_com_plugin_params_state_latency_and_audio_host_end_to_end ... ok
 test tests::synthetic_clap_plugin_params_state_latency_and_audio_host_end_to_end ... ok
+test tests::synthetic_vst3_com_plugin_params_state_latency_and_audio_host_end_to_end ... ok
+test lossy_enc::tests::unsupported_mp3_rate_preserves_existing_destination ... ok
+test lossy_enc::tests::ogg_vorbis_export_decodes_as_standard_stereo ... ok
+test lossy_enc::tests::bundled_mp3_export_decodes_as_standard_stereo ... ok
 test tests::session_bundle_persists_and_reloads_long_recorded_audio ... ok
-test lossy_enc::tests::lossy_mp3_and_ogg_roundtrip_sidecar ... ok
 test tests::lossless_flac_encoder_bit_exact_symphonia_roundtrip_16bit_and_24bit ... ok
 test tests::tutorial_night_current_follows_guide_and_writes_demo_wav ... ok
 test tests::offline_master_bounce_and_track_freeze_render_cleanly ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 38.52s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 31.18s
 
-     Running unittests src\bin\ferric_plugin_bridge.rs (target\debug\build\ferric-engine/15d140ea6c80d5f8\out\ferric_plugin_bridge-15d140ea6c80d5f8.exe)
+     Running unittests src\bin\ferric_plugin_bridge.rs (target\debug\build\ferric-engine/b470ccb96d515240\out\ferric_plugin_bridge-b470ccb96d515240.exe)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests\plugin_bridge_sandbox.rs (target\debug\build\ferric-engine/8a28eb090827e7a9\out\plugin_bridge_sandbox-8a28eb090827e7a9.exe)
+     Running tests\plugin_bridge_sandbox.rs (target\debug\build\ferric-engine/bfb8326cfa97960e\out\plugin_bridge_sandbox-bfb8326cfa97960e.exe)
 
 running 1 test
 test sandbox_worker_crash_does_not_panic_host ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-     Running tests\real_plugins_verification.rs (target\debug\build\ferric-engine/18cb522eb2a203a6\out\real_plugins_verification-18cb522eb2a203a6.exe)
+     Running tests\real_plugins_verification.rs (target\debug\build\ferric-engine/84e80c202b89fcfe\out\real_plugins_verification-84e80c202b89fcfe.exe)
 
 running 1 test
 src/clap/six-sines-clap-entry-impl.cpp:190 Initializing Six Sines 1.2.0.18ecb36 / v1.2.1
 src/clap/six-sines-clap-entry-impl.cpp:190 Initializing Six Sines 1.2.0.18ecb36 / v1.2.1
-     _                   _
+     _                   _ 
   __| | _____  _____  __| |
  / _` |/ _ \ \/ / _ \/ _` |
 | (_| |  __/>  <  __/ (_| |
  \__,_|\___/_/\_\___|\__,_|
 VERSION 1.1.0
 SUCCESS: Cartridge sysex found with matching checksum
-     _                   _
+     _                   _ 
   __| | _____  _____  __| |
  / _` |/ _ \ \/ / _ \/ _` |
 | (_| |  __/>  <  __/ (_| |
@@ -76,14 +82,14 @@ Sending sysex message: CHL=1 SUBSTATUS=1 (PARAMETER CHANGE) FORMAT=0 (VOICE PARA
 Sending sysex message: CHL=1 SUBSTATUS=1 (PARAMETER CHANGE) FORMAT=0 (VOICE PARAMETER)
 Sending sysex message: CHL=1 SUBSTATUS=1 (PARAMETER CHANGE) FORMAT=0 (VOICE PARAMETER)
 Sending sysex message: CHL=1 SUBSTATUS=1 (PARAMETER CHANGE) FORMAT=0 (VOICE PARAMETER)
-     _                   _
+     _                   _ 
   __| | _____  _____  __| |
  / _` |/ _ \ \/ / _ \/ _` |
 | (_| |  __/>  <  __/ (_| |
  \__,_|\___/_/\_\___|\__,_|
 VERSION 1.1.0
 SUCCESS: Cartridge sysex found with matching checksum
-     _                   _
+     _                   _ 
   __| | _____  _____  __| |
  / _` |/ _ \ \/ / _ \/ _` |
 | (_| |  __/>  <  __/ (_| |
@@ -98,7 +104,7 @@ Sending sysex message: CHL=1 SUBSTATUS=1 (PARAMETER CHANGE) FORMAT=0 (VOICE PARA
 	AUDIO in: 1, out: 1
 	AUDIO in: 1, out: 1
 	AUDIO in: 1, out: 7
-     _                   _
+     _                   _ 
   __| | _____  _____  __| |
  / _` |/ _ \ \/ / _ \/ _` |
 | (_| |  __/>  <  __/ (_| |
@@ -108,22 +114,22 @@ SUCCESS: Cartridge sysex found with matching checksum
 	AUDIO in: 1, out: 1
 test verify_real_downloaded_clap_and_vst3_plugins_end_to_end ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.48s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.62s
 
-     Running unittests src\lib.rs (target\debug\build\ferric-model/a8c10a03e81a64d1\out\ferric_model-a8c10a03e81a64d1.exe)
+     Running unittests src\lib.rs (target\debug\build\ferric-model/b0faf3016733ff3d\out\ferric_model-b0faf3016733ff3d.exe)
 
 running 7 tests
-test tests::swipe_comping_splits_and_merges_cleanly ... ok
 test tests::scale_snap_and_bezier_automation_work ... ok
-test fx::new_instrument_tests::new_instruments_round_trip_and_presets_fit_parameter_bounds ... ok
 test tests::routing_dag_prevents_cycles_and_orders_buses_and_sidechains ... ok
+test tests::swipe_comping_splits_and_merges_cleanly ... ok
+test fx::new_instrument_tests::new_instruments_round_trip_and_presets_fit_parameter_bounds ... ok
 test tests::smf_midi_roundtrip_preserves_notes_and_cc ... ok
 test tests::conductor_linear_tempo_ramp_integral_meter_map_and_auto_crossfade_work ... ok
 test tests::milestone9_vca_mix_recall_chord_follow_and_demo_song ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 
-     Running unittests src\lib.rs (target\debug\build\ferric-plugin-bridge/c45f67c79f31e8d9\out\ferric_plugin_bridge-c45f67c79f31e8d9.exe)
+     Running unittests src\lib.rs (target\debug\build\ferric-plugin-bridge/bf11d2d15b05d5df\out\ferric_plugin_bridge-bf11d2d15b05d5df.exe)
 
 running 1 test
 test protocol::tests::round_trip_process_block_framing ... ok
@@ -153,7 +159,4 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-UI polish verification — 2026-11-15
-Command: cargo test --workspace
-Result: PASS (workspace; ferric-app 8, ferric-dsp 7, ferric-engine 10, ferric-model 7, ferric-plugin-bridge 1 plus integration/doc tests)
 

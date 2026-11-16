@@ -2,7 +2,7 @@
 
 A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX. Session clips, CLAP/VST3 plugins (crash-isolated), and a portable Windows build you can unzip and run.
 
-**Current version:** [1.1.12](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.12)
+**Windows release:** [1.1.13](https://github.com/reala1ynex/FerricDAW/releases/tag/v1.1.13)
 **Owner:** Patrick Rudolph ([@reala1ynex](https://github.com/reala1ynex))  
 **Devlog:** [`docs/DEVLOG.md`](docs/DEVLOG.md) · **Authors:** [`AUTHORS.md`](AUTHORS.md)
 
@@ -10,12 +10,14 @@ A small hybrid DAW written in Rust. Tracks hold audio, MIDI, instruments, and FX
 
 ## Get the app (Windows)
 
-1. Grab **v1.1.12** from [Releases](https://github.com/reala1ynex/FerricDAW/releases/latest) (current only).
+1. Grab **v1.1.13** from [Releases](https://github.com/reala1ynex/FerricDAW/releases/latest) (current only).
 2. Unzip somewhere permanent.
 3. Run `ferricdaw.exe`.
 4. Keep `ferric-plugin-bridge.exe` next to it — that’s the plugin sandbox.
 
 On first launch you’ll get three choices: **Night Current** tutorial, **Afterglow Copper** playground, or an empty session.
+
+The portable build exports WAV, FLAC, MP3, and Ogg Vorbis with built-in encoders.
 
 Updates: in the app, **Ferric → Check for Updates**. It downloads the portable zip and applies it on the next restart.
 

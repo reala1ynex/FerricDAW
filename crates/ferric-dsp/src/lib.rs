@@ -15,7 +15,7 @@ pub mod wavetable;
 pub use biquad::StereoBiquad;
 pub use convolution_ott::{ConvolutionIrProcessor, MultibandOttProcessor};
 pub use effects::{
-    AmpCabProcessor, CompressorProcessor, NoiseGateProcessor, ParametricEqProcessor,
+    AmpCabProcessor, CompressorProcessor, KickRumbleProcessor, NoiseGateProcessor, ParametricEqProcessor,
     PlateReverbProcessor, StereoDelayProcessor, TapeSaturatorProcessor,
 };
 pub use instruments::{
@@ -97,6 +97,7 @@ pub enum DspProcessor {
     AmpCabSim(AmpCabProcessor),
     TapeSaturator(TapeSaturatorProcessor),
     StereoDelay(StereoDelayProcessor),
+    KickRumble(KickRumbleProcessor),
     PlateHallReverb(PlateReverbProcessor),
     ConvolutionIr(ConvolutionIrProcessor),
     ExternalClap(Box<dyn ExternalPluginAdapter>),
@@ -143,6 +144,7 @@ impl FxRuntimeInstance {
             FxKind::TapeSaturator => {
                 DspProcessor::TapeSaturator(TapeSaturatorProcessor::new(sample_rate))
             }
+            FxKind::KickRumble => DspProcessor::KickRumble(KickRumbleProcessor::new(sample_rate)),
             FxKind::StereoDelay => {
                 DspProcessor::StereoDelay(StereoDelayProcessor::new(sample_rate))
             }
@@ -308,6 +310,7 @@ impl FxRuntimeInstance {
             DspProcessor::MultibandOtt(p) => p.process(left, right, params),
             DspProcessor::AmpCabSim(p) => p.process(left, right, params),
             DspProcessor::TapeSaturator(p) => p.process(left, right, params),
+            DspProcessor::KickRumble(p) => p.process(left, right, params),
             DspProcessor::StereoDelay(p) => p.process(left, right, params, bpm),
             DspProcessor::PlateHallReverb(p) => p.process(left, right, params),
             DspProcessor::ConvolutionIr(p) => p.process(left, right, params),
@@ -457,6 +460,68 @@ impl ModulatorRuntime {
 mod tests {
     use super::*;
     use std::f32::consts::TAU;
+
+    #[test]
+    fn heavy_drum_voices_are_distinct_and_legacy_projects_preserve_studio_voice() {
+        let slot = ferric_model::FxSlot::new(FxKind::DrumKit);
+        let render = |note, voice| {
+            let mut params = slot.params[..6].to_vec();
+            params.extend(voice);
+            let mut kit = FxRuntimeInstance::new(slot.id, slot.kind, 48_000.0, 4096);
+            let mut left = vec![0.0; 4096];
+            let mut right = left.clone();
+            let midi = [MidiEvent { sample_offset: 23, note, velocity: 112, is_note_on: true }];
+            kit.process_block(&mut left, &mut right, &params, 1.0, 128.0, &midi);
+            assert!(left[..23].iter().all(|sample| *sample == 0.0));
+            assert!(left.iter().chain(&right).all(|sample| sample.is_finite()));
+            assert!(left.iter().any(|sample| sample.abs() > 0.01));
+            left
+        };
+        for note in [36, 37, 38, 39, 42, 46, 41, 51] {
+            let legacy = render(note, None);
+            assert_eq!(legacy, render(note, Some(0.0)));
+            let industrial = render(note, Some(1.0));
+            let metal = render(note, Some(2.0));
+            assert_ne!(legacy, industrial);
+            assert_ne!(legacy, metal);
+            assert_ne!(industrial, metal);
+        }
+    }
+
+    #[test]
+    fn dark_techno_patches_render_audio_and_kick_rumble_has_a_bounded_tail() {
+        use ferric_model::fx::FACTORY_PRESETS;
+
+        let midi = [MidiEvent { sample_offset: 0, note: 48, velocity: 108, is_note_on: true }];
+        for preset in FACTORY_PRESETS.iter().filter(|p| p.category == "Dark Techno" && p.kind.is_instrument()) {
+            let slot = ferric_model::FxSlot::new(preset.kind);
+            let mut runtime = FxRuntimeInstance::new(slot.id, slot.kind, 48_000.0, 8192);
+            let mut left = vec![0.0; 8192];
+            let mut right = left.clone();
+            runtime.process_block(&mut left, &mut right, preset.params, preset.wet_mix, 128.0, &midi);
+            assert!(left.iter().chain(&right).all(|sample| sample.is_finite()), "{}", preset.name);
+            assert!(left.iter().any(|sample| sample.abs() > 0.001), "{}", preset.name);
+        }
+
+        let slot = ferric_model::FxSlot::new(FxKind::KickRumble);
+        let mut runtime = FxRuntimeInstance::new(slot.id, slot.kind, 48_000.0, 2048);
+        let params = [80.0, 85.0, 32.0, 155.0, 18.0];
+        let mut left = vec![0.0; 48_000];
+        for (index, s) in left[..1000].iter_mut().enumerate() {
+            let time = index as f32 / 48_000.0;
+            *s = (TAU * 60.0 * time).sin() * (-time * 110.0).exp();
+        }
+        let mut right = left.clone();
+        for (l, r) in left.chunks_mut(2048).zip(right.chunks_mut(2048)) {
+            runtime.process_block(l, r, &params, 1.0, 128.0, &[]);
+        }
+        assert_eq!(left, right);
+        assert!(left[..3838].iter().all(|s| s.abs() < 1e-6));
+        assert!(left[3840..5200].iter().any(|s| s.abs() > 0.01));
+        assert!(left[7700..9100].iter().any(|s| s.abs() > 0.001));
+        assert!(left.iter().all(|s| s.is_finite() && s.abs() < 1.0));
+        assert!(left[46_000..].iter().all(|s| s.abs() < 0.01));
+    }
 
     #[test]
     fn new_instruments_render_through_runtime_with_sample_accurate_midi() {

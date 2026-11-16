@@ -1,7 +1,7 @@
 //! Portable-zip auto-update: check `latest.json`, download, apply on restart.
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
@@ -152,76 +152,44 @@ impl UpdateService {
         });
     }
 
-    /// Launch helper script to replace files after this process exits, then return true so caller can quit.
+    /// Launch the helper to replace files after this process exits.
     pub fn apply_and_restart(&mut self) -> Result<(), String> {
         let zip = self
             .download_path
             .clone()
             .ok_or_else(|| "Download the update first.".to_string())?;
-        let install = exe_dir().ok_or_else(|| "Could not locate install folder.".to_string())?;
-        let exe = std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .file_name()
-            .map(|s| s.to_os_string())
-            .ok_or_else(|| "Missing exe name".to_string())?;
+        let feed = self.pending.as_ref().ok_or("Check for updates again.")?;
+        let install = exe_dir().ok_or("Could not locate install folder.")?;
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = exe_path.file_name().ok_or("Missing executable name.")?;
+        let helper = std::env::temp_dir().join(format!(
+            "ferricdaw-apply-update-{}.ps1",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&helper, include_bytes!("apply_update.ps1")).map_err(|e| e.to_string())?;
 
-        let helper = std::env::temp_dir().join("ferricdaw-apply-update.ps1");
-        let script = format!(
-            r#"
-$ErrorActionPreference = 'Stop'
-$zip = {zip}
-$dest = {dest}
-$exeName = {exe}
-# Wait for FerricDAW to exit (file unlock)
-$procName = [IO.Path]::GetFileNameWithoutExtension($exeName)
-Get-Process -Name $procName -ErrorAction SilentlyContinue | ForEach-Object {{
-  try {{ $_.WaitForExit(60000) }} catch {{}}
-}}
-Start-Sleep -Seconds 1
-$stage = Join-Path $env:TEMP ("ferricdaw-update-stage-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $stage | Out-Null
-Expand-Archive -LiteralPath $zip -DestinationPath $stage -Force
-# If zip contains a single top folder, use its contents
-$kids = Get-ChildItem -LiteralPath $stage
-if ($kids.Count -eq 1 -and $kids[0].PSIsContainer) {{
-  $src = $kids[0].FullName
-}} else {{
-  $src = $stage
-}}
-Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
-Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-Start-Process -FilePath (Join-Path $dest $exeName) -WorkingDirectory $dest
-"#,
-            zip = ps_quote(&zip),
-            dest = ps_quote(&install),
-            exe = ps_quote_str(&exe.to_string_lossy()),
-        );
-        std::fs::write(&helper, script).map_err(|e| e.to_string())?;
-
-        std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-                helper.to_str().unwrap_or(""),
-            ])
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let launch = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
+            .arg(&helper)
+            .arg("-Zip")
+            .arg(&zip)
+            .arg("-Destination")
+            .arg(&install)
+            .arg("-ExeName")
+            .arg(exe)
+            .arg("-AppPid")
+            .arg(std::process::id().to_string())
+            .arg("-Sha256")
+            .arg(&feed.sha256)
+            .spawn();
+        if let Err(error) = launch {
+            let _ = std::fs::remove_file(&helper);
+            return Err(error.to_string());
+        }
 
         let _ = self.tx.send(UpdateEvent::AppliedRestarting);
         Ok(())
     }
-}
-
-fn ps_quote(path: &Path) -> String {
-    ps_quote_str(&path.to_string_lossy())
-}
-
-fn ps_quote_str(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
 }
 
 fn exe_dir() -> Option<PathBuf> {
@@ -328,28 +296,33 @@ fn download_zip(feed: &UpdateFeed) -> Result<PathBuf, String> {
         .map_err(|e| format!("Download failed: {e}"))?;
     let mut reader = resp.into_reader();
     let out = std::env::temp_dir().join(format!(
-        "FerricDAW-v{}-update.zip",
-        feed.version.replace(['/', '\\', ':'], "_")
+        "FerricDAW-update-{}.zip",
+        uuid::Uuid::new_v4()
     ));
-    let mut file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = std::io::Read::read(&mut reader, &mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
+    let mut download = || -> Result<(), String> {
+        let mut file = std::fs::File::create_new(&out).map_err(|e| e.to_string())?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = std::io::Read::read(&mut reader, &mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| e.to_string())?;
+            hasher.update(&buf[..n]);
         }
-        std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| e.to_string())?;
-        hasher.update(&buf[..n]);
-    }
-    drop(file);
-    let digest = hex::encode(hasher.finalize());
-    if !feed.sha256.eq_ignore_ascii_case(&digest) {
+        let digest = hex::encode(hasher.finalize());
+        if !feed.sha256.eq_ignore_ascii_case(&digest) {
+            return Err(format!(
+                "SHA-256 mismatch (got {digest}, expected {}).",
+                feed.sha256
+            ));
+        }
+        Ok(())
+    };
+    if let Err(error) = download() {
         let _ = std::fs::remove_file(&out);
-        return Err(format!(
-            "SHA-256 mismatch (got {digest}, expected {}).",
-            feed.sha256
-        ));
+        return Err(error);
     }
     Ok(out)
 }

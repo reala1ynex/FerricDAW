@@ -3,7 +3,9 @@
 param(
     [string]$GitHubOwner = $env:FERRIC_GITHUB_OWNER,
     [string]$GitHubRepo = $(if ($env:FERRIC_GITHUB_REPO) { $env:FERRIC_GITHUB_REPO } else { 'FerricDAW' }),
-    [switch]$Draft
+    [switch]$Draft,
+    [string]$VerifiedPackageDir,
+    [string]$NotesFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,12 +24,19 @@ if (-not $GitHubOwner) {
     }
 }
 
-$env:FERRIC_GITHUB_OWNER = $GitHubOwner
-$env:FERRIC_GITHUB_REPO = $GitHubRepo
+$Repository = "$GitHubOwner/$GitHubRepo"
+$Origin = (git remote get-url origin).Trim()
+if ($LASTEXITCODE -ne 0 -or $Origin.TrimEnd('/') -notin @(
+    "https://github.com/$Repository.git", "https://github.com/$Repository", "git@github.com:$Repository.git"
+)) {
+    throw "Git origin does not match $Repository."
+}
 
-& (Join-Path $PSScriptRoot 'Package-WindowsRelease.ps1') -GitHubOwner $GitHubOwner -GitHubRepo $GitHubRepo
-if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
-    throw "Package-WindowsRelease.ps1 failed (exit $LASTEXITCODE)."
+if ($VerifiedPackageDir) {
+    $PackageDir = (Resolve-Path -LiteralPath $VerifiedPackageDir).Path
+} else {
+    & (Join-Path $PSScriptRoot 'Package-WindowsRelease.ps1') -LocalCandidate -GitHubOwner $GitHubOwner -GitHubRepo $GitHubRepo
+    $PackageDir = Join-Path $Root 'dist/candidate'
 }
 
 $CargoToml = Get-Content (Join-Path $Root 'Cargo.toml') -Raw
@@ -39,31 +48,10 @@ if ($CargoToml -match 'version\s*=\s*"([^"]+)"') {
 
 $Tag = "v$Version"
 $ZipName = "FerricDAW-v$Version-win-x64.zip"
-$ZipPath = Join-Path $Root "dist\$ZipName"
-$LatestPath = Join-Path $Root 'dist\latest.json'
-if (-not (Test-Path $ZipPath)) {
-    # Lock-tolerant package may have left a stamped tmp zip — pick newest match.
-    $alt = Get-ChildItem (Join-Path $Root 'dist') -Filter "FerricDAW-v$Version-win-x64.zip*" |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($alt) { $ZipPath = $alt.FullName } else { throw "Missing dist\$ZipName" }
-}
-# Feed URL expects the canonical zip name — never upload a *.tmp.zip asset name.
-if ([IO.Path]::GetFileName($ZipPath) -ne $ZipName) {
-    $canonical = Join-Path $Root "dist\$ZipName"
-    Copy-Item $ZipPath $canonical -Force
-    $ZipPath = $canonical
-    $Hash = (Get-FileHash -Algorithm SHA256 -Path $ZipPath).Hash.ToLowerInvariant()
-    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    $feedObj = [ordered]@{
-        version = $Version
-        url     = "https://github.com/$GitHubOwner/$GitHubRepo/releases/download/v$Version/$ZipName"
-        sha256  = $Hash
-        notes   = "FerricDAW v$Version portable Windows x64"
-    }
-    [System.IO.File]::WriteAllText($LatestPath, ($feedObj | ConvertTo-Json -Compress), $utf8NoBom)
-}
-if (-not (Test-Path $LatestPath)) { throw "Missing $LatestPath" }
+$ZipPath = Join-Path $PackageDir $ZipName
+$LatestPath = Join-Path $PackageDir 'latest.json'
+if (-not (Test-Path -LiteralPath $ZipPath -PathType Leaf)) { throw "Missing $ZipPath" }
+if (-not (Test-Path -LiteralPath $LatestPath -PathType Leaf)) { throw "Missing $LatestPath" }
 
 # Guard: refuse to publish a BOM-poisoned feed (breaks Ferric → Check for Updates).
 $feedBytes = [IO.File]::ReadAllBytes($LatestPath)
@@ -74,18 +62,26 @@ if ($feedBytes.Length -lt 1 -or [char]$feedBytes[0] -ne '{') {
     throw "dist\latest.json does not look like JSON (must start with '{')."
 }
 
-# Ensure tag exists locally (annotated)
-$existing = git tag -l $Tag
-if (-not $existing) {
-    git tag -a $Tag -m "FerricDAW $Tag"
+$Feed = Get-Content -LiteralPath $LatestPath -Raw | ConvertFrom-Json
+$ZipHash = (Get-FileHash -LiteralPath $ZipPath -Algorithm SHA256).Hash
+$ExpectedUrl = "https://github.com/$Repository/releases/download/$Tag/$ZipName"
+if ($Feed.version -ne $Version -or $Feed.url -cne $ExpectedUrl -or $Feed.sha256 -ne $ZipHash) {
+    throw 'The update feed must match the version, URL, and SHA-256 of the package.'
 }
 
-Write-Host "Pushing tag $Tag…" -ForegroundColor Cyan
-# git writes progress to stderr; don't let PowerShell treat that as failure
-cmd /c "git push origin $Tag"
-if ($LASTEXITCODE -ne 0) { throw "git push origin $Tag failed" }
-cmd /c "git push origin HEAD"
-if ($LASTEXITCODE -ne 0) { throw "git push origin HEAD failed" }
+$Commit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the release commit.' }
+$existing = git tag -l $Tag
+if (-not $existing) {
+    git tag -a $Tag $Commit -m "FerricDAW $Tag"
+    if ($LASTEXITCODE -ne 0) { throw "Could not create $Tag." }
+} elseif ((git rev-list -n 1 $Tag).Trim() -ne $Commit) {
+    throw "$Tag already points at a different commit."
+}
+
+Write-Host "Pushing $Tag and HEAD..." -ForegroundColor Cyan
+git push --atomic origin HEAD "refs/tags/$Tag"
+if ($LASTEXITCODE -ne 0) { throw "Could not push HEAD and $Tag." }
 
 $notes = @"
 ## FerricDAW $Tag
@@ -99,32 +95,15 @@ Portable Windows x64 build.
 ``latest.json`` is the auto-update feed for this release channel.
 "@
 
-$releaseExists = $false
-try {
-    gh release view $Tag 2>$null | Out-Null
-    if ($LASTEXITCODE -eq 0) { $releaseExists = $true }
-} catch {
-    $releaseExists = $false
-}
-
-if ($releaseExists) {
-    Write-Host "Release $Tag already exists — uploading assets…" -ForegroundColor Yellow
-    gh release upload $Tag $ZipPath $LatestPath --clobber
-    if ($LASTEXITCODE -ne 0) { throw "gh release upload failed for $Tag" }
+$ghArgs = @(
+    'release', 'create', $Tag, $ZipPath, $LatestPath,
+    '--repo', $Repository, '--verify-tag', '--title', "FerricDAW $Tag"
+)
+if ($NotesFile) {
+    $ghArgs += @('--notes-file', (Resolve-Path -LiteralPath $NotesFile).Path)
 } else {
-    $ghArgs = @(
-        'release', 'create', $Tag,
-        $ZipPath,
-        $LatestPath,
-        '--title', "FerricDAW $Tag",
-        '--notes', $notes
-    )
-    if ($Draft) { $ghArgs += '--draft' }
-    & gh @ghArgs
-    if ($LASTEXITCODE -ne 0) { throw "gh release create failed for $Tag" }
+    $ghArgs += @('--notes', $notes)
 }
-
-Write-Host ""
-Write-Host "Published:" -ForegroundColor Green
-Write-Host "  https://github.com/$GitHubOwner/$GitHubRepo/releases/tag/$Tag"
-Write-Host "  Feed: https://github.com/$GitHubOwner/$GitHubRepo/releases/latest/download/latest.json"
+if ($Draft) { $ghArgs += '--draft' }
+& gh @ghArgs
+if ($LASTEXITCODE -ne 0) { throw "gh release create failed for $Tag" }

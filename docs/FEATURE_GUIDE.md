@@ -92,7 +92,21 @@ Morph starts from the **live mix** and moves toward the Mix slot — absolute, n
 
 ## Plugin Playground
 
-Browser → Presets / CLAP · VST3.
+Open **Browser → Presets** and choose **Instruments**, **Effects**, or **Plugins**.
+Use **+ Instrument** or **+ Effect** in the FX dock to insert a built-in device
+on the selected track. Effects run in the order shown in the rack.
+
+**Foundry Industrial Kit** has a punchy kick, tight metallic hats, and a lower
+snare and tom. **Ironbreak Metal Kit** has a sharper beater, brighter snare and
+cymbals, and longer tom and crash tails. Both synthesize the existing pad notes
+in real time. Use **Kit Voice** in the rack to switch among Studio, Industrial,
+and Metal.
+
+The Dark Techno preset category includes Furnace Pulse Bass, Blackout Stab,
+Tunnel Drone, and Rail FM Bells. For a kick-driven sub tail, put **Warehouse
+Kick Rumble** or **Short Concrete Rumble** after the kick on its own track.
+Keep a dry kick with the rack's Wet control. Concrete Chamber, Subway Tape
+Echo, Overdriven Drum Bus, and Chopped Room Gate are in the same Effects view.
 
 1. **▶ Audition** loads the plugin on a sandbox track.
 2. If it crashes, it’s quarantined and Insert stays blocked.
@@ -148,7 +162,8 @@ Tip presets are optional names, not brand locks.
 
 ### Bounce & sessions
 
-- WAV / FLAC / MP3 / OGG · −14 LUFS · true-peak · TPDF dither
+- WAV / FLAC / MP3 / Ogg Vorbis · −14 LUFS · true-peak · TPDF dither
+- Built-in MP3 export supports 44.1 and 48 kHz stereo at 192 kbps.
 - Stems folder · Golden Bounce A/B
 - `.ferric` projects · crash autosave · undo/redo · first-run chooser
 

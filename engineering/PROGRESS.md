@@ -109,3 +109,15 @@
 - I-12 operator `GH_TOKEN` stale env (clear before `gh`)
 - I-13 true ASIO (blocked by design for portable)
 - I-14 Mac/Linux ship (out of scope)
+
+## 2026-11-16 — v1.1.13 local candidate
+
+- Reviewed and mapped all numbered brand pages; the input PDF has 23 pages.
+- Reworked native shared palette, state colors, faders/meters, lattice icon,
+  and responsive containment. Leave the published channel at 1.1.12 until
+  every required release gate is met.
+- Found an interoperability failure by opening the generated OGG with an
+  independent reader. Replaced private lossy bytes with standard Vorbis and
+  standard MP3 using a locally installed FFmpeg; fixed Ogg priming-packet load.
+- Fixed missed short key chords and added a debug function case for Ctrl+B.
+- See `CANDIDATE_VERIFICATION.md` for command results and package provenance.

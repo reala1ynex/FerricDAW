@@ -1,6 +1,2 @@
-    Checking ferric-app v1.1.7 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
-    Finished `dev` profile [optimized + debuginfo] target(s) in 1.30s
-UI polish verification — 2026-11-15
-Command: $env:RUSTFLAGS='-D warnings'; cargo check --workspace --all-targets
-Result: PASS (exit 0)
-
+    Checking ferric-app v1.1.13 (C:\Users\ndrpe\Projects\FerricDAW\crates\ferric-app)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.13s

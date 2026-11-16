@@ -1,259 +1,185 @@
-//! Pure-Rust lossy delivery encoders (MP3 Layer II-ish + Ogg Vorbis-quality float pack).
-//!
-//! These are lightweight studio bounce targets — not Bitrate-perfect commercial codecs —
-//! but they produce playable files that open in VLC / browsers / Symphonia.
-
-use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Seek, Write};
+use std::num::{NonZeroU32, NonZeroU8};
 use std::path::Path;
 
-/// Write a stereo MPEG-1 Layer II–compatible MP3 bitstream (192 kbps @ 48/44.1 kHz).
-/// Uses a compact Polyphase + bit-allocation encoder sufficient for delivery bounces.
+use rusty_mp3::{Error as Mp3Error, Mp3Encoder, Mp3EncoderConfig};
+
+use tempfile::NamedTempFile;
+use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
+
+fn output_temp(path: &Path) -> io::Result<NamedTempFile> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    NamedTempFile::new_in(parent)
+}
+
+fn check_input(sample_rate: u32, left: &[f32], right: &[f32]) -> io::Result<NonZeroU32> {
+    if left.is_empty() || left.len() != right.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Expected nonempty stereo audio with equal channel lengths",
+        ));
+    }
+    NonZeroU32::new(sample_rate)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid sample rate"))
+}
+
+/// Export standard stereo MPEG Layer III with the bundled encoder.
 pub fn write_mp3_stereo_file(
     path: &Path,
     sample_rate: u32,
     left: &[f32],
     right: &[f32],
 ) -> io::Result<()> {
-    let frames = left.len().min(right.len());
-    let sr = if sample_rate >= 46_000 { 48_000 } else { 44_100 };
-    let mut out = File::create(path)?;
-
-    // MPEG-1 Layer II frame header constants.
-    // 48 kHz → index 1, 44.1 kHz → index 0; bitrate index 14 = 192 kbps.
-    let sr_index: u8 = if sr == 48_000 { 1 } else { 0 };
-    let bitrate_index: u8 = 14;
-    let samples_per_frame = 1152usize;
-
-    let mut i = 0usize;
-    while i < frames {
-        let end = (i + samples_per_frame).min(frames);
-        let mut pcm_l = [0.0_f32; 1152];
-        let mut pcm_r = [0.0_f32; 1152];
-        for (n, idx) in (i..end).enumerate() {
-            pcm_l[n] = left[idx].clamp(-1.0, 1.0);
-            pcm_r[n] = right[idx].clamp(-1.0, 1.0);
-        }
-        // Pad remainder with zeros (already zero-initialized).
-
-        let mut frame = Vec::with_capacity(800);
-        // Sync + MPEG1 + Layer II + no CRC + bitrate + sr + padding0 + private0 + stereo + mode_ext0 + copyright0 + original1 + emphasis0
-        let header: u32 = 0xFFF4_0000
-            | ((bitrate_index as u32) << 12)
-            | ((sr_index as u32) << 10)
-            | (0b01 << 6) // stereo
-            | (1 << 2); // original
-        frame.extend_from_slice(&header.to_be_bytes());
-
-        // Bit-reservoir body: pack mid/side PCM as 8-bit µ-law-ish scale factors + residual nibbles.
-        // This is a Ferric "delivery MP3" that Symphonia/VLC will treat as a corrupt Layer II
-        // in some players — so we also embed a valid Xing-free raw PCM payload after a
-        // private bit reservoir marker that our importer recovers, AND write a proper
-        // fall-back RIFF-WAVE-in-MP3 container for universal playback via extension sniff.
-        //
-        // Practical approach: write a valid MP3 frame envelope wrapping 16-bit PCM so
-        // file managers show .mp3, then prefer Symphonia decode of the PCM trailer.
-        for n in 0..samples_per_frame {
-            let mid = ((pcm_l[n] + pcm_r[n]) * 0.5 * 32767.0) as i16;
-            let side = ((pcm_l[n] - pcm_r[n]) * 0.5 * 32767.0) as i16;
-            frame.extend_from_slice(&mid.to_le_bytes());
-            frame.extend_from_slice(&side.to_le_bytes());
-        }
-        out.write_all(&frame)?;
-        i = end;
+    check_input(sample_rate, left, right)?;
+    if !matches!(sample_rate, 44_100 | 48_000) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Choose 44,100 or 48,000 Hz for MP3 export.",
+        ));
     }
 
-    // Append a canonical WAV trailer so Symphonia (and our importer) can always recover audio.
-    append_wav_sidecar(&mut out, sr, left, right)?;
+    let mut encoded = output_temp(path)?;
+    {
+        let mut writer = BufWriter::new(encoded.as_file_mut());
+        let mut encoder = Mp3Encoder::new(Mp3EncoderConfig {
+            bitrate_kbps: 192,
+            vbr_quality: None,
+        });
+        let mut interleaved = Vec::with_capacity(2304);
+        for (l, r) in left.chunks(1152).zip(right.chunks(1152)) {
+            interleaved.clear();
+            interleaved.extend(l.iter().zip(r).flat_map(|(&l, &r)| [l, r]));
+            encoder
+                .push_pcm_f32(&interleaved, 2, sample_rate)
+                .map_err(io::Error::other)?;
+            write_mp3_packets(&mut encoder, &mut writer)?;
+        }
+        encoder.finish();
+        write_mp3_packets(&mut encoder, &mut writer)?;
+
+        // The Info frame starts as a placeholder. Patch in the final duration
+        // and padding so players can discard encoder delay and tail samples.
+        let info = encoder
+            .lame_tag_frame()
+            .ok_or_else(|| io::Error::other("MP3 encoder did not produce stream metadata"))?;
+        writer.rewind()?;
+        writer.write_all(info)?;
+        writer.flush()?;
+    }
+    encoded.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
 
-/// Write an Ogg-container Vorbis-style lossy bounce (Ogg pages + float→Q7 packed codec private).
+fn write_mp3_packets(encoder: &mut Mp3Encoder, writer: &mut impl Write) -> io::Result<()> {
+    loop {
+        match encoder.next_packet() {
+            Ok(packet) => writer.write_all(&packet)?,
+            Err(Mp3Error::Again | Mp3Error::Eof) => return Ok(()),
+            Err(error) => return Err(io::Error::other(error)),
+        }
+    }
+}
+
+/// Export interoperable Ogg Vorbis, using a bundled encoder at quality 7.
 pub fn write_ogg_vorbis_stereo_file(
     path: &Path,
     sample_rate: u32,
     left: &[f32],
     right: &[f32],
 ) -> io::Result<()> {
-    let frames = left.len().min(right.len());
-    let sr = sample_rate.max(8_000);
-    let mut out = File::create(path)?;
-
-    // Ogg capture pattern page with identification header.
-    write_ogg_page(
-        &mut out,
-        0,
-        0,
-        true,
-        false,
-        &[
-            b'v', b'o', b'r', b'b', b'i', b's', // magic
-            0, 0, 0, 0, // version
-            2, // channels
-            (sr & 0xff) as u8,
-            ((sr >> 8) & 0xff) as u8,
-            ((sr >> 16) & 0xff) as u8,
-            ((sr >> 24) & 0xff) as u8,
-            0, 0, 0, 0, // bitrate max
-            0x40, 0x1F, 0, 0, // nominal ~128kbps marker
-            0, 0, 0, 0, // bitrate min
-            0xB8, // blocksize
-            1,    // framing
-        ],
-    )?;
-
-    // Comment header
-    let vendor = b"FerricDAW Lossy Bounce";
-    let mut comment = Vec::new();
-    comment.extend_from_slice(b"\x03vorbis");
-    comment.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
-    comment.extend_from_slice(vendor);
-    comment.extend_from_slice(&0u32.to_le_bytes()); // user comment list count
-    comment.push(1); // framing
-    write_ogg_page(&mut out, 0, 1, false, false, &comment)?;
-
-    // Setup stub + audio packets as Q7 mid/side (opens in players that tolerate custom Vorbis;
-    // Symphonia falls back to the WAV sidecar we append).
-    let mut setup = Vec::from(&b"\x05vorbis"[..]);
-    setup.extend_from_slice(b"FerricQ7");
-    setup.push(1);
-    write_ogg_page(&mut out, 0, 2, false, false, &setup)?;
-
-    let mut granule: u64 = 0;
-    let mut packet_no = 3u64;
-    let hop = 1024usize;
-    let mut i = 0usize;
-    while i < frames {
-        let n = (frames - i).min(hop);
-        let mut pkt = Vec::with_capacity(n * 2 + 4);
-        pkt.extend_from_slice(&(n as u32).to_le_bytes());
-        for k in 0..n {
-            let mid = ((left[i + k] + right[i + k]) * 0.5).clamp(-1.0, 1.0);
-            let side = ((left[i + k] - right[i + k]) * 0.5).clamp(-1.0, 1.0);
-            pkt.push((mid * 127.0).round() as i8 as u8);
-            pkt.push((side * 127.0).round() as i8 as u8);
+    let rate = check_input(sample_rate, left, right)?;
+    let mut encoded = output_temp(path)?;
+    {
+        let mut encoder = VorbisEncoderBuilder::new_with_serial(
+            rate,
+            NonZeroU8::new(2).unwrap(),
+            BufWriter::new(encoded.as_file_mut()),
+            1,
+        )
+        .bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
+            target_quality: 0.7,
+        })
+        .build()
+        .map_err(io::Error::other)?;
+        for (l, r) in left.chunks(1024).zip(right.chunks(1024)) {
+            encoder
+                .encode_audio_block([l, r])
+                .map_err(io::Error::other)?;
         }
-        granule += n as u64;
-        let last = i + n >= frames;
-        write_ogg_page(&mut out, granule, packet_no, false, last, &pkt)?;
-        packet_no += 1;
-        i += n;
+        encoder.finish().map_err(io::Error::other)?.flush()?;
     }
-
-    append_wav_sidecar(&mut out, sr, left, right)?;
-    Ok(())
-}
-
-fn write_ogg_page(
-    out: &mut File,
-    granule: u64,
-    sequence: u64,
-    bos: bool,
-    eos: bool,
-    payload: &[u8],
-) -> io::Result<()> {
-    let mut page = Vec::with_capacity(27 + 1 + payload.len());
-    page.extend_from_slice(b"OggS");
-    page.push(0); // version
-    let mut header_type = 0u8;
-    if bos {
-        header_type |= 0x02;
-    }
-    if eos {
-        header_type |= 0x04;
-    }
-    page.push(header_type);
-    page.extend_from_slice(&granule.to_le_bytes());
-    page.extend_from_slice(&0u32.to_le_bytes()); // serial
-    page.extend_from_slice(&(sequence as u32).to_le_bytes());
-    page.extend_from_slice(&0u32.to_le_bytes()); // CRC placeholder
-    // Segment table: single segment if <=255 else multi
-    let mut segs = Vec::new();
-    let mut remaining = payload.len();
-    while remaining >= 255 {
-        segs.push(255u8);
-        remaining -= 255;
-    }
-    segs.push(remaining as u8);
-    page.push(segs.len() as u8);
-    page.extend_from_slice(&segs);
-    page.extend_from_slice(payload);
-
-    // CRC-32 (Ogg polynomial)
-    let crc = ogg_crc(&page);
-    page[22..26].copy_from_slice(&crc.to_le_bytes());
-    out.write_all(&page)
-}
-
-fn ogg_crc(data: &[u8]) -> u32 {
-    let mut crc = 0u32;
-    for &b in data {
-        crc ^= (b as u32) << 24;
-        for _ in 0..8 {
-            if crc & 0x8000_0000 != 0 {
-                crc = (crc << 1) ^ 0x04C1_1DB7;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc
-}
-
-fn append_wav_sidecar(
-    out: &mut File,
-    sample_rate: u32,
-    left: &[f32],
-    right: &[f32],
-) -> io::Result<()> {
-    // Marker so Ferric (and curious tools) can recover lossless PCM after the lossy payload.
-    out.write_all(b"FERRICWAV")?;
-    let frames = left.len().min(right.len());
-    let data_bytes = (frames * 2 * 2) as u32; // i16 stereo
-    let riff_size = 36 + data_bytes;
-    out.write_all(b"RIFF")?;
-    out.write_all(&riff_size.to_le_bytes())?;
-    out.write_all(b"WAVE")?;
-    out.write_all(b"fmt ")?;
-    out.write_all(&16u32.to_le_bytes())?;
-    out.write_all(&1u16.to_le_bytes())?; // PCM
-    out.write_all(&2u16.to_le_bytes())?;
-    out.write_all(&sample_rate.to_le_bytes())?;
-    let byte_rate = sample_rate * 2 * 2;
-    out.write_all(&byte_rate.to_le_bytes())?;
-    out.write_all(&4u16.to_le_bytes())?;
-    out.write_all(&16u16.to_le_bytes())?;
-    out.write_all(b"data")?;
-    out.write_all(&data_bytes.to_le_bytes())?;
-    for i in 0..frames {
-        let l = (left[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-        let r = (right[i].clamp(-1.0, 1.0) * 32767.0) as i16;
-        out.write_all(&l.to_le_bytes())?;
-        out.write_all(&r.to_le_bytes())?;
-    }
+    encoded.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env::temp_dir;
+
+    fn stereo_tones() -> (Vec<f32>, Vec<f32>) {
+        let tone = |f: f32| {
+            (0..48_000)
+                .map(|i| (i as f32 * f * std::f32::consts::TAU / 48_000.0_f32).sin() * 0.2)
+                .collect()
+        };
+        (tone(440.0_f32), tone(660.0_f32))
+    }
+
+    fn check_independent_decode(path: &Path) {
+        let bytes = std::fs::read(path).unwrap();
+        assert!(!bytes.windows(9).any(|b| b == b"FERRICWAV"));
+        let decoded = crate::wav_io::import_audio_file(path, 48_000).unwrap();
+        assert!(decoded.len_frames().abs_diff(48_000) < 2500);
+
+        // The two channels must preserve their own tone. This detects silence,
+        // truncated audio, swapped/duplicated channels and wrong sample rate.
+        let amplitude = |samples: &[f32], hz: f32| -> f32 {
+            let band = &samples[4000..44_000];
+            let (mut re, mut im) = (0.0, 0.0);
+            for (idx, &sample) in band.iter().enumerate() {
+                let phase = idx as f32 * hz * std::f32::consts::TAU / 48_000.0;
+                re += sample * phase.cos();
+                im += sample * phase.sin();
+            }
+            re.hypot(im) * 2.0 / band.len() as f32
+        };
+        for (samples, expected, other) in [
+            (&decoded.left, 440.0, 660.0),
+            (&decoded.right, 660.0, 440.0),
+        ] {
+            assert!(amplitude(samples, expected) > 0.15);
+            assert!(amplitude(samples, other) < 0.03);
+        }
+    }
 
     #[test]
-    fn lossy_mp3_and_ogg_roundtrip_sidecar() {
-        let sr = 48_000u32;
-        let n = 4800usize;
-        let left: Vec<f32> = (0..n)
-            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / sr as f32).sin() * 0.2)
-            .collect();
-        let right = left.clone();
-        let mp3 = temp_dir().join("ferric_lossy_test.mp3");
-        let ogg = temp_dir().join("ferric_lossy_test.ogg");
-        write_mp3_stereo_file(&mp3, sr, &left, &right).unwrap();
-        write_ogg_vorbis_stereo_file(&ogg, sr, &left, &right).unwrap();
-        assert!(mp3.metadata().unwrap().len() > 1000);
-        assert!(ogg.metadata().unwrap().len() > 500);
-        let _ = std::fs::remove_file(mp3);
-        let _ = std::fs::remove_file(ogg);
+    fn ogg_vorbis_export_decodes_as_standard_stereo() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("stereo.ogg");
+        let (left, right) = stereo_tones();
+        write_ogg_vorbis_stereo_file(&path, 48_000, &left, &right).unwrap();
+        check_independent_decode(&path);
+    }
+
+    #[test]
+    fn bundled_mp3_export_decodes_as_standard_stereo() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("stereo.mp3");
+        let (left, right) = stereo_tones();
+        write_mp3_stereo_file(&path, 48_000, &left, &right).unwrap();
+        check_independent_decode(&path);
+    }
+
+    #[test]
+    fn unsupported_mp3_rate_preserves_existing_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("existing.mp3");
+        std::fs::write(&path, b"existing file").unwrap();
+        let error = write_mp3_stereo_file(&path, 96_000, &[0.0], &[0.0]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing file");
     }
 }

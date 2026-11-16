@@ -1,4 +1,5 @@
 use crate::biquad::StereoBiquad;
+use crate::metering::db_to_lin;
 use std::f32::consts::TAU;
 
 /// Hysteresis Studio Noise Gate (separate Open & Close thresholds eliminate vocal/guitar chatter).
@@ -418,6 +419,66 @@ impl TapeSaturatorProcessor {
 
             left[i] = (l * self.limiter_env).clamp(-ceiling, ceiling);
             right[i] = (r * self.limiter_env).clamp(-ceiling, ceiling);
+        }
+    }
+}
+
+/// Mono low-band feedback delay for adding a kick-driven sub tail.
+pub struct KickRumbleProcessor {
+    delay: Vec<f32>,
+    write: usize,
+    sample_rate: f32,
+    delay_samples: f32,
+    bass: f32,
+    tone: [f32; 2],
+}
+
+impl KickRumbleProcessor {
+    pub fn new(sample_rate: f32) -> Self {
+        let sample_rate = sample_rate.max(8_000.0);
+        Self {
+            delay: vec![0.0; (sample_rate * 0.240).ceil() as usize + 2],
+            write: 0,
+            sample_rate,
+            delay_samples: sample_rate * 0.080,
+            bass: 0.0,
+            tone: [0.0; 2],
+        }
+    }
+
+    pub fn process(&mut self, left: &mut [f32], right: &mut [f32], params: &[f32]) {
+        let param = |i: usize, default: f32, min: f32, max: f32| {
+            params.get(i).copied().filter(|v| v.is_finite()).unwrap_or(default).clamp(min, max)
+        };
+        let delay_target = self.sample_rate * 0.001 * param(0, 80.0, 15.0, 240.0);
+        let feedback = param(1, 63.0, 0.0, 85.0) * 0.01;
+        let coefficient = |hz: f32| 1.0 - (-TAU * hz / self.sample_rate).exp();
+        let bass_coef = coefficient(param(2, 32.0, 20.0, 80.0));
+        let tone_coef = coefficient(param(3, 155.0, 80.0, 320.0));
+        let glide = coefficient(7.5);
+        let drive = db_to_lin(param(4, 8.0, 0.0, 18.0));
+        let len = self.delay.len();
+        for (l, r) in left.iter_mut().zip(right) {
+            self.delay_samples += glide * (delay_target - self.delay_samples);
+            let back = self.delay_samples as usize;
+            let fraction = self.delay_samples - back as f32;
+            let read = (self.write + len - back) % len;
+            let tail = self.delay[read] * (1.0 - fraction)
+                + self.delay[(read + len - 1) % len] * fraction;
+
+            let input = (*l + *r) * 0.5 + feedback * tail;
+            self.bass += bass_coef * (input - self.bass);
+            self.tone[0] += tone_coef * (input - self.bass - self.tone[0]);
+            self.tone[1] += tone_coef * (self.tone[0] - self.tone[1]);
+            let driven = self.tone[1] * drive;
+            let shaped = driven / (1.0 + driven.abs());
+            // Run at unity or lower gain in the feedback path, even with drive at maximum.
+            self.delay[self.write] = shaped / drive;
+            self.write = (self.write + 1) % len;
+            let wet = tail * drive;
+            let wet = wet / (1.0 + wet.abs());
+            *l = wet;
+            *r = wet;
         }
     }
 }

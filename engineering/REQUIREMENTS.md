@@ -47,3 +47,10 @@ Traceability: Requirement → Feature (`FEATURE_REGISTRY.md`) → Test (`TEST_RE
 - True ASIO in portable zip without ASIO SDK / cpal `asio` feature
 - Cloud sync, accounts, DRM
 - Liquid-glass / redesign of Pad A/B chrome
+
+## 1.1.13 candidate acceptance notes
+
+R-06 requires independently decodable outputs. An extension, file length,
+or success banner alone does not satisfy that requirement. Standalone MP3 on
+a clean machine remains open; the supported current MP3 route needs FFmpeg
+with libmp3lame. No alternative proprietary payload is emitted.

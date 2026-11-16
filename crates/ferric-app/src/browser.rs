@@ -57,6 +57,13 @@ pub enum BrowserTab {
     HardwareRig,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeviceCategory {
+    Instruments,
+    Effects,
+    Plugins,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TheaterSkin {
     #[default]
@@ -79,6 +86,7 @@ pub struct StudioBrowserState {
     pub visible: bool,
     pub tab: BrowserTab,
     pub search: String,
+    device_category: DeviceCategory,
     pub plugin_search: String,
     pub plugin_format_filter: Option<ExternalPluginFormat>,
     pub custom_plugin_dirs: Vec<PathBuf>,
@@ -127,6 +135,7 @@ impl Default for StudioBrowserState {
             visible: true,
             tab: BrowserTab::HardwareRig,
             search: String::new(),
+            device_category: DeviceCategory::Instruments,
             plugin_search: String::new(),
             plugin_format_filter: None,
             custom_plugin_dirs,
@@ -193,11 +202,11 @@ impl StudioBrowserState {
         selected_track: Option<ferric_model::TrackId>,
         actions: &mut Vec<BrowserAction>,
     ) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             if pill_toggle(
                 ui,
-                "🎹 Hardware Rig",
+                "Hardware",
                 self.tab == BrowserTab::HardwareRig,
                 ACCENT_FERRIC,
             )
@@ -207,7 +216,7 @@ impl StudioBrowserState {
             }
             if pill_toggle(
                 ui,
-                "🥁 Samples",
+                "Samples",
                 self.tab == BrowserTab::SamplesAndLoops,
                 ACCENT_TEAL,
             )
@@ -217,7 +226,7 @@ impl StudioBrowserState {
             }
             if pill_toggle(
                 ui,
-                "🎛 Presets / Plugins",
+                "Presets / Plugins",
                 self.tab == BrowserTab::PresetsAndClap,
                 ACCENT_AMBER,
             )
@@ -1068,32 +1077,44 @@ impl StudioBrowserState {
     }
 
     fn render_presets_and_clap_tab(&mut self, ui: &mut Ui, actions: &mut Vec<BrowserAction>) {
+        ui.horizontal_wrapped(|ui| {
+            for (category, label) in [
+                (DeviceCategory::Instruments, "Instruments"),
+                (DeviceCategory::Effects, "Effects"),
+                (DeviceCategory::Plugins, "Plugins"),
+            ] {
+                if pill_toggle(ui, label, self.device_category == category, ACCENT_FERRIC).clicked() {
+                    self.device_category = category;
+                }
+            }
+        });
+        if self.device_category != DeviceCategory::Plugins {
+            let instruments = self.device_category == DeviceCategory::Instruments;
+            egui::ScrollArea::vertical()
+                .id_salt(("factory_presets", instruments))
+                .show(ui, |ui| {
+                    chrome_card(ui, ACCENT_FERRIC, |ui| {
+                        for preset in FACTORY_PRESETS.iter().filter(|p| p.kind.is_instrument() == instruments) {
+                            ui.horizontal(|ui| {
+                                if ui.chrome_small_button("+ Load").clicked() {
+                                    actions.push(BrowserAction::ApplyPreset(preset.clone()));
+                                }
+                                ui.label(
+                                    egui::RichText::new(preset.category).size(10.5).color(ACCENT_TEAL),
+                                );
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(preset.name).size(11.0)).truncate(),
+                                )
+                                .on_hover_text(preset.name);
+                            });
+                        }
+                    });
+                });
+            return;
+        }
         egui::ScrollArea::vertical()
             .id_salt("presets_clap_scroll")
             .show(ui, |ui| {
-                chrome_card(ui, ACCENT_FERRIC, |ui| {
-                    chrome_section_title(ui, "Curated Studio FX & Synth Presets", ACCENT_FERRIC);
-                    for preset in FACTORY_PRESETS {
-                        ui.horizontal(|ui| {
-                            if ui.chrome_small_button("+ Load").clicked() {
-                                actions.push(BrowserAction::ApplyPreset(preset.clone()));
-                            }
-                            ui.label(
-                                egui::RichText::new(format!("[{}]", preset.category))
-                                    .size(10.5)
-                                    .color(ACCENT_TEAL),
-                            );
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(preset.name).size(11.0))
-                                    .truncate(),
-                            )
-                            .on_hover_text(preset.name);
-                        });
-                    }
-                });
-
-                ui.add_space(6.0);
-
                 chrome_card(ui, ACCENT_TEAL, |ui| {
                     chrome_section_title(
                         ui,
@@ -1351,6 +1372,11 @@ fn apply_kaoss_xy_to_track(
                 fx.set_param(2, y * 82.0);
                 fx.set_param(4, 900.0 + x * 9000.0);
                 push(fx, &[2, 4]);
+            }
+            FxKind::KickRumble => {
+                fx.set_param(3, 80.0 + x * 240.0);
+                fx.set_param(1, y * 85.0);
+                push(fx, &[1, 3]);
             }
             FxKind::PlateHallReverb => {
                 fx.set_param(1, 18.0 + y * 78.0);

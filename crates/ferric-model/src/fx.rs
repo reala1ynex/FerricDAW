@@ -34,6 +34,7 @@ pub enum FxKind {
     ConvolutionIr,
     // Open-Standard External Plugin Hosting (.clap / .vst3)
     ExternalClap,
+    KickRumble,
 }
 
 impl FxKind {
@@ -56,6 +57,7 @@ impl FxKind {
         FxKind::AmpCabSim,
         FxKind::TapeSaturator,
         FxKind::StereoDelay,
+        FxKind::KickRumble,
         FxKind::PlateHallReverb,
         FxKind::ConvolutionIr,
         FxKind::ExternalClap,
@@ -81,6 +83,7 @@ impl FxKind {
             FxKind::AmpCabSim => "Ferric Tube Amp & Cab Modeler",
             FxKind::TapeSaturator => "Oxide Tape Saturator & Limiter",
             FxKind::StereoDelay => "Tempo Ping-Pong Tape Delay",
+            FxKind::KickRumble => "Kick Rumble",
             FxKind::PlateHallReverb => "Lush Plate / Hall Reverb",
             FxKind::ConvolutionIr => "Zero-Latency Convolution Reverb & Cab IR",
             FxKind::ExternalClap => "External CLAP / VST3 Plugin",
@@ -107,6 +110,7 @@ impl FxKind {
             FxKind::AmpCabSim => "AMP",
             FxKind::TapeSaturator => "TAPE",
             FxKind::StereoDelay => "DELAY",
+            FxKind::KickRumble => "RUMBLE",
             FxKind::PlateHallReverb => "REVERB",
             FxKind::ConvolutionIr => "CONV-IR",
             FxKind::ExternalClap => "CLAP",
@@ -193,6 +197,7 @@ impl FxKind {
             ParamSpec::new("Hat Decay", "ms", 20.0, 650.0, 110.0),
             ParamSpec::new("Room Glue", "%", 0.0, 100.0, 22.0),
             ParamSpec::new("Kit Level", "dB", -24.0, 12.0, 0.0),
+            ParamSpec::new("Kit Voice", "", 0.0, 2.0, 0.0),
         ];
         const SAMPLER_SPECS: &[ParamSpec] = &[
             ParamSpec::new("Root Key", "", 24.0, 96.0, 60.0),   // C4 = 60
@@ -268,6 +273,13 @@ impl FxKind {
             ParamSpec::new("Tape Tone", "Hz", 800.0, 12000.0, 4200.0),
             ParamSpec::new("Flutter", "%", 0.0, 100.0, 18.0),
         ];
+        const RUMBLE_SPECS: &[ParamSpec] = &[
+            ParamSpec::new("Predelay", "ms", 15.0, 240.0, 80.0),
+            ParamSpec::new("Feedback", "%", 0.0, 85.0, 63.0),
+            ParamSpec::new("Low Cut", "Hz", 20.0, 80.0, 32.0),
+            ParamSpec::new("Tone", "Hz", 80.0, 320.0, 155.0),
+            ParamSpec::new("Drive", "dB", 0.0, 18.0, 8.0),
+        ];
         const REVERB_SPECS: &[ParamSpec] = &[
             ParamSpec::new("Pre-Delay", "ms", 0.0, 120.0, 18.0),
             ParamSpec::new("Decay", "%", 10.0, 98.0, 74.0),
@@ -334,6 +346,7 @@ impl FxKind {
             FxKind::AmpCabSim => AMP_SPECS,
             FxKind::TapeSaturator => TAPE_SPECS,
             FxKind::StereoDelay => DELAY_SPECS,
+            FxKind::KickRumble => RUMBLE_SPECS,
             FxKind::PlateHallReverb => REVERB_SPECS,
             FxKind::ConvolutionIr => CONVOLUTION_IR_SPECS,
             FxKind::ExternalClap => CLAP_SPECS,
@@ -472,6 +485,7 @@ impl FxSlot {
         let params = specs.iter().map(|s| s.default).collect();
         let wet_mix = match kind {
             FxKind::StereoDelay => 0.30,
+            FxKind::KickRumble => 0.28,
             FxKind::PlateHallReverb => 0.25,
             FxKind::ConvolutionIr => 0.32,
             _ => 1.0,
@@ -725,6 +739,90 @@ pub struct FactoryPreset {
 }
 
 pub const FACTORY_PRESETS: &[FactoryPreset] = &[
+    FactoryPreset {
+        category: "Perc",
+        name: "Foundry Industrial Kit",
+        kind: FxKind::DrumKit,
+        params: &[91.0, 48.0, 78.0, 55.0, 35.0, -2.0, 1.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Perc",
+        name: "Ironbreak Metal Kit",
+        kind: FxKind::DrumKit,
+        params: &[96.0, 57.0, 89.0, 86.0, 25.0, -2.5, 2.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Furnace Pulse Bass",
+        kind: FxKind::MonoBass,
+        params: &[1.0, 70.0, 290.0, 0.54, 59.0, 2.0, 145.0, 35.0, 105.0, 38.0, -3.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Blackout Stab",
+        kind: FxKind::PolySynth,
+        params: &[0.0, 38.0, 1120.0, 0.54, 72.0, 2.0, 175.0, 6.0, 165.0, -4.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Tunnel Drone",
+        kind: FxKind::WavetableSynth,
+        params: &[1.0, 69.0, 2.0, 18.0, 0.0, 64.0, 715.0, 0.33, 560.0, 820.0, 78.0, 1080.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Rail FM Bells",
+        kind: FxKind::WavetableSynth,
+        params: &[2.0, 57.0, 1.0, 0.0, 0.0, 56.0, 2440.0, 0.22, 1.0, 390.0, 6.0, 310.0],
+        wet_mix: 1.0,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Warehouse Kick Rumble",
+        kind: FxKind::KickRumble,
+        params: &[78.0, 69.0, 33.0, 165.0, 10.0],
+        wet_mix: 0.29,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Short Concrete Rumble",
+        kind: FxKind::KickRumble,
+        params: &[33.0, 48.0, 46.0, 212.0, 6.0],
+        wet_mix: 0.22,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Concrete Chamber",
+        kind: FxKind::PlateHallReverb,
+        params: &[11.0, 82.0, 79.0, 225.0, 83.0],
+        wet_mix: 0.27,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Subway Tape Echo",
+        kind: FxKind::StereoDelay,
+        params: &[320.0, 0.75, 58.0, 90.0, 1630.0, 27.0],
+        wet_mix: 0.31,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Overdriven Drum Bus",
+        kind: FxKind::TapeSaturator,
+        params: &[16.0, 75.0, -2.0],
+        wet_mix: 0.64,
+    },
+    FactoryPreset {
+        category: "Dark Techno",
+        name: "Chopped Room Gate",
+        kind: FxKind::NoiseGate,
+        params: &[-26.0, 5.0, 0.7, 17.0, 37.0, -60.0],
+        wet_mix: 1.0,
+    },
     FactoryPreset { category: "Keys", name: "Soft Electric Piano", kind: FxKind::ElectricPiano, params: &[28.0, 1600.0, 420.0, -6.0], wet_mix: 1.0 },
     FactoryPreset { category: "Keys", name: "Bright Electric Piano", kind: FxKind::ElectricPiano, params: &[68.0, 900.0, 230.0, -7.0], wet_mix: 1.0 },
     FactoryPreset { category: "Keys", name: "Warm Drawbars", kind: FxKind::DrawbarOrgan, params: &[100.0, 45.0, 22.0, 10.0, 8.0, 80.0, -6.0], wet_mix: 1.0 },
@@ -803,14 +901,14 @@ pub const FACTORY_PRESETS: &[FactoryPreset] = &[
         category: "Perc",
         name: "Tight Techno Kit",
         kind: FxKind::DrumKit,
-        params: &[78.0, 48.0, 72.0, 85.0, 18.0, -1.0],
+        params: &[78.0, 48.0, 72.0, 85.0, 18.0, -1.0, 0.0],
         wet_mix: 1.0,
     },
     FactoryPreset {
         category: "Perc",
         name: "Roomy Live Kit",
         kind: FxKind::DrumKit,
-        params: &[62.0, 55.0, 58.0, 180.0, 48.0, 0.0],
+        params: &[62.0, 55.0, 58.0, 180.0, 48.0, 0.0, 0.0],
         wet_mix: 1.0,
     },
     FactoryPreset {

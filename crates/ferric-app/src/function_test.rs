@@ -421,6 +421,28 @@ fn catalog() -> Vec<Case> {
             PaletteCommand::OpenBounceModal,
             check_bounce_open
         ),
+        Case {
+            name: "bounce_shortcut_quick_release",
+            button: "Ctrl+B with modifier released in the same frame",
+            act: |app| {
+                let ctx = eframe::egui::Context::default();
+                app.bounce_modal.open = false;
+                let _ = ctx.run(
+                    eframe::egui::RawInput {
+                        events: vec![eframe::egui::Event::Key {
+                            key: eframe::egui::Key::B,
+                            physical_key: Some(eframe::egui::Key::B),
+                            pressed: true,
+                            repeat: false,
+                            modifiers: eframe::egui::Modifiers::CTRL,
+                        }],
+                        ..Default::default()
+                    },
+                    |ctx| app.handle_shortcuts_and_musical_typing(ctx),
+                );
+            },
+            check: check_bounce_open,
+        },
         pal!("undo", "Edit Undo", PaletteCommand::Undo, ok),
         pal!("redo", "Edit Redo", PaletteCommand::Redo, ok),
         Case {
@@ -556,6 +578,53 @@ fn catalog() -> Vec<Case> {
                 app.process_browser_actions(vec![BrowserAction::ApplyPreset(preset)]);
             },
             check: check_fx_on_selected,
+        },
+        Case {
+            name: "dark_techno_devices",
+            button: "Presets → Load industrial and metal kits, synth, and Kick Rumble",
+            act: |app| {
+                seed_selected_track(app);
+                for name in ["Foundry Industrial Kit", "Ironbreak Metal Kit", "Blackout Stab", "Warehouse Kick Rumble"] {
+                    let preset = FACTORY_PRESETS.iter().find(|p| p.name == name).expect(name);
+                    app.process_browser_actions(vec![BrowserAction::ApplyPreset(preset.clone())]);
+                }
+            },
+            check: |app| {
+                let track = app.selected_track.and_then(|id| app.project.find_track(id));
+                let Some(track) = track else { return Err("No selected track".into()); };
+                let expected = [
+                    ("Foundry Industrial Kit", FxKind::DrumKit, Some(1.0)),
+                    ("Ironbreak Metal Kit", FxKind::DrumKit, Some(2.0)),
+                    ("Blackout Stab", FxKind::PolySynth, None),
+                    ("Warehouse Kick Rumble", FxKind::KickRumble, None),
+                ];
+                for (name, kind, voice) in expected {
+                    if !track.fx_chain.iter().any(|slot| {
+                        slot.preset_name == name && slot.kind == kind
+                            && voice.is_none_or(|voice| slot.param(6) == voice)
+                    }) {
+                        return Err(format!("Preset failed to load: {name}"));
+                    }
+                }
+                Ok(())
+            },
+        },
+        Case {
+            name: "dirty_session_update_guard",
+            button: "Updates → Install & Restart with unsaved work",
+            act: |app| {
+                app.snapshot_before("Edit session before updating");
+                app.request_destructive(PendingDestructive::InstallUpdate);
+            },
+            check: |app| {
+                if matches!(app.pending_destructive, Some(PendingDestructive::InstallUpdate))
+                    && !app.quit_for_update
+                {
+                    Ok(())
+                } else {
+                    Err("Update bypassed the unsaved-work dialog".into())
+                }
+            },
         },
         Case {
             name: "drop_sample_on_track",

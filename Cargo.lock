@@ -154,6 +154,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aotuv_lancer_vorbis_sys"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bc4fd1a61860d2f1198b60bedd30910eaffa978f1ee6214dfb24ac70d589225"
+dependencies = [
+ "cc",
+ "ogg_next_sys",
+]
+
+[[package]]
 name = "arboard"
 version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1171,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-app"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "eframe",
  "egui",
@@ -1192,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-dsp"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "ferric-model",
  "rustfft",
@@ -1201,7 +1211,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-engine"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "base64 0.21.7",
  "cpal",
@@ -1214,16 +1224,19 @@ dependencies = [
  "log",
  "midir",
  "rtrb",
+ "rusty_mp3",
  "symphonia",
+ "tempfile",
  "thiserror 2.0.21",
  "uuid",
+ "vorbis_rs",
  "windows 0.58.0",
  "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "ferric-model"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "base64 0.21.7",
  "midly",
@@ -1236,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "ferric-plugin-bridge"
-version = "1.1.12"
+version = "1.1.13"
 dependencies = [
  "ferric-dsp",
  "ferric-model",
@@ -2430,6 +2443,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ogg_next_sys"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2d7a48e247c2bb07e633aefb65a38648ea58c7eedd4e4408a5861721ab049b"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2959,6 +2981,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty_mp3"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bc564f58a4eed8f95a43dbbb69b739a7c517230b8f852d45bfcc9c8566a67a8"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3418,6 +3446,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "tokio"
 version = "1.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3613,6 +3647,19 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vorbis_rs"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49c5da94d280f7a27e8c937e9b73df2da3e23a2583f48471fd8fb4c72f9c1933"
+dependencies = [
+ "aotuv_lancer_vorbis_sys",
+ "errno",
+ "ogg_next_sys",
+ "thiserror 2.0.21",
+ "tinyvec",
+]
 
 [[package]]
 name = "walkdir"

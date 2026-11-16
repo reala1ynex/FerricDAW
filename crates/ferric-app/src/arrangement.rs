@@ -1,7 +1,7 @@
 use crate::theme::{
     pill_toggle, track_color32, StudioUiExt, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL,
     ACCENT_PURPLE, ACCENT_CYAN, ACCENT_BLUE, BG_DEEP, BG_ELEVATED, BG_PANEL, BG_TRACK_EVEN, BG_TRACK_ODD,
-    BORDER_SUBTLE, BUTTON_RADIUS, BUTTON_SURFACE, TEXT_DIM, TEXT_MAIN,
+    BORDER_SUBTLE, BUTTON_RADIUS, BUTTON_SURFACE, STATE_ARM, STATE_SOLO, TEXT_DIM, TEXT_MAIN,
 };
 use egui::{
     Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -158,7 +158,7 @@ impl Default for ArrangementState {
             scroll_beat: 0.0,
             tool: EditTool::SmartPointer,
             ripple_edit: false,
-            show_session_launcher: true,
+            show_session_launcher: false,
             storyboard_section: None,
             generate_patch_card: None,
             renaming_track: None,
@@ -183,7 +183,7 @@ impl ArrangementState {
         actions: &mut Vec<ArrangementAction>,
     ) {
         // Row 1 — lanes, tools, snap, zoom, add track (kept short so nothing clips)
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
             if pill_toggle(ui, "Session", self.show_session_launcher, ACCENT_TEAL)
                 .on_hover_text("Session clip launcher columns")
@@ -299,7 +299,7 @@ impl ArrangementState {
         });
 
         // Row 2 — Chord Storyboard (separate so Gen buttons stay visible)
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             ui.label(
                 egui::RichText::new("Storyboard")
@@ -372,7 +372,7 @@ impl ArrangementState {
 
         ui.separator();
 
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::new([self.show_session_launcher, true])
             .id_salt("arrangement_vertical_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -407,7 +407,8 @@ impl ArrangementState {
         } else {
             0.0
         };
-        let ruler_h = 28.0_f32;
+        // Loop band (top), song-marker flags (middle) and bar numbers (bottom) each get their own row.
+        let ruler_h = 36.0_f32;
 
         // Ctrl+wheel zoom · Shift/horizontal wheel pan time · Mid or Alt+drag pans time + tracks.
         if ui.rect_contains_pointer(ui.max_rect()) {
@@ -460,7 +461,7 @@ impl ArrangementState {
         }
 
         // Top Ruler Row (Track Header Label + Session Scene Headers + Bar/Beat Timeline Ruler)
-        let avail_w = ui.available_width().max(640.0);
+        let avail_w = ui.available_width().max(header_w + session_w + 220.0);
         let timeline_x0_rel = header_w + session_w;
         let timeline_w = (avail_w - timeline_x0_rel).max(220.0);
 
@@ -731,7 +732,7 @@ impl ArrangementState {
                     Stroke::new(1.0_f32, Color32::from_rgb(84, 90, 108)),
                 );
                 ui.painter().text(
-                    Pos2::new(x + 4.0, ruler_tl_rect.bottom() - 3.0),
+                    Pos2::new(x + 4.0, ruler_tl_rect.bottom() - 1.0),
                     Align2::LEFT_BOTTOM,
                     format!("{}", bar_idx + 1),
                     FontId::monospace(10.5),
@@ -751,13 +752,13 @@ impl ArrangementState {
             if mx >= ruler_tl_rect.left() && mx <= ruler_tl_rect.right() - 24.0 {
                 let mc = track_color32(project.markers[m_idx].color);
                 let flag_rect = Rect::from_min_size(
-                    Pos2::new(mx + 2.0, ruler_tl_rect.top() + 1.0),
-                    Vec2::new(54.0, 13.0),
+                    Pos2::new(mx + 2.0, ruler_tl_rect.top() + 10.0),
+                    Vec2::new(54.0, 12.0),
                 );
                 ui.painter()
                     .rect_filled(flag_rect, 2, mc.gamma_multiply(0.35));
                 ui.painter().text(
-                    Pos2::new(mx + 5.0, ruler_tl_rect.top() + 7.5),
+                    Pos2::new(mx + 5.0, ruler_tl_rect.top() + 16.0),
                     Align2::LEFT_CENTER,
                     &project.markers[m_idx].name,
                     FontId::proportional(9.5),
@@ -828,7 +829,11 @@ impl ArrangementState {
             let track_id = project.tracks[t_idx].id;
             let is_folder = project.is_folder_track(track_id);
             let depth = project.track_depth(track_id);
-            let base_h = project.tracks[t_idx].height_px.max(102.0);
+            // Four rows share the actual themed control height. The name
+            // row reserves a full control height for folder toggles and rename.
+            let controls_h = 4.0 * ui.spacing().interact_size.y
+                + 3.0 * ui.spacing().item_spacing.y + 10.0;
+            let base_h = project.tracks[t_idx].height_px.max(controls_h);
             let max_extra_lanes = project.tracks[t_idx]
                 .clips
                 .iter()
@@ -856,7 +861,7 @@ impl ArrangementState {
             playhead_bot = playhead_bot.max(row_rect.bottom());
 
             let row_bg = if selected_track == Some(track_id) {
-                Color32::from_rgb(31, 34, 44)
+                BG_ELEVATED
             } else if vis_pos % 2 == 0 {
                 BG_TRACK_EVEN
             } else {
@@ -869,7 +874,7 @@ impl ArrangementState {
             );
 
             // 1. Track Header (left)
-            let hdr_rect = Rect::from_min_size(row_rect.min, Vec2::new(header_w, row_h));
+            let hdr_rect = Rect::from_min_size(row_rect.min, Vec2::new(header_w, base_h));
             self.render_track_header(
                 ui,
                 hdr_rect,
@@ -1044,7 +1049,8 @@ impl ArrangementState {
         telem: &EngineTelemetry,
         actions: &mut Vec<ArrangementAction>,
     ) {
-        let indent = (depth as f32) * 12.0;
+        // Keep a full control row usable even for deeply nested folders.
+        let indent = (depth as f32 * 8.0).min(16.0);
         let track_id = project.tracks[t_idx].id;
         let t_col = track_color32(project.tracks[t_idx].color);
 
@@ -1187,7 +1193,7 @@ impl ArrangementState {
                     };
                     if ui
                         .chrome_small_button(icon)
-                        .on_hover_text("Collapse/Expand REAPER Folder Submix")
+                        .on_hover_text("Expand or collapse folder tracks")
                         .clicked()
                     {
                         project.tracks[t_idx].folder_collapsed =
@@ -1209,7 +1215,10 @@ impl ArrangementState {
                         .color(TEXT_MAIN);
                     let l_resp = ui
                         .add(egui::Label::new(lbl).truncate().sense(Sense::click()))
-                        .on_hover_text("Click to select • Double-click or Right-click to rename, color, reorder, or delete");
+                        .on_hover_text(format!(
+                            "{}\nClick to select. Double-click to rename.",
+                            project.tracks[t_idx].name
+                        ));
                     if l_resp.double_clicked() {
                         self.renaming_track = Some(track_id);
                     } else if l_resp.clicked() {
@@ -1222,14 +1231,14 @@ impl ArrangementState {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 let trk = &mut project.tracks[t_idx];
-                if pill_toggle(ui, "M", trk.mute, ACCENT_AMBER)
+                if pill_toggle(ui, "M", trk.mute, ACCENT_BLUE)
                     .on_hover_text("Mute Track")
                     .clicked()
                 {
                     trk.mute = !trk.mute;
                     actions.push(ArrangementAction::ProjectMutated("Toggle Mute"));
                 }
-                if pill_toggle(ui, "S", trk.solo, ACCENT_BLUE)
+                if pill_toggle(ui, "S", trk.solo, STATE_SOLO)
                     .on_hover_text("Solo Track")
                     .clicked()
                 {
@@ -1242,7 +1251,7 @@ impl ArrangementState {
                     InputSource::AudioAndMidi { .. } => "Record Arm — Audio + MIDI",
                     InputSource::ResampleTrackOutput => "Record Arm — Resample this track's output",
                 };
-                if pill_toggle(ui, "R", trk.record_arm, ACCENT_RED)
+                if pill_toggle(ui, "R", trk.record_arm, STATE_ARM)
                     .on_hover_text(arm_tip)
                     .clicked()
                 {
@@ -1280,7 +1289,7 @@ impl ArrangementState {
                     actions.push(ArrangementAction::ProjectMutated("Toggle Automation Lanes"));
                 }
                 if pill_toggle(ui, "❄", trk.frozen, ACCENT_CYAN)
-                    .on_hover_text("1-Click Reversible Track Freeze (Renders 32-bit Stem & frees 100% DSP CPU!)")
+                    .on_hover_text("Freeze or unfreeze track processing")
                     .clicked()
                 {
                     actions.push(ArrangementAction::ToggleFreezeTrack(track_id));
@@ -1968,7 +1977,8 @@ impl ArrangementState {
         playhead_beat: f64,
         actions: &mut Vec<ArrangementAction>,
     ) -> f32 {
-        let lane_h = 56.0_f32;
+        // Header: CHORDS title with the key/scale caption on its right, then the control row.
+        let lane_h = 60.0_f32;
         let (lane_rect, lane_resp) = ui.allocate_exact_size(
             Vec2::new(avail_w, lane_h),
             Sense::click_and_drag(),
@@ -1997,7 +2007,7 @@ impl ArrangementState {
         let mut gen_voicing = VoicingStyle::OpenSpreadPad;
         let controls_rect = Rect::from_min_max(
             Pos2::new(header.left() + 4.0, header.top() + 16.0),
-            Pos2::new(header.right() - 4.0, header.bottom() - 2.0),
+            Pos2::new(header.right() - 4.0, header.bottom() - 4.0),
         );
         ui.allocate_new_ui(
             egui::UiBuilder::new()
@@ -2174,9 +2184,14 @@ impl ArrangementState {
             NOTE_PITCH_CLASSES[project.root_pitch_class as usize % 12],
             project.musical_scale.label()
         );
-        ui.painter().text(
-            Pos2::new(header.left() + 8.0, header.bottom() - 10.0),
-            Align2::LEFT_CENTER,
+        // Right-aligned on the title row and clipped so it never covers the title or the controls.
+        let caption_clip = Rect::from_min_max(
+            Pos2::new(header.left() + 58.0, header.top() + 2.0),
+            Pos2::new(header.right() - 4.0, header.top() + 15.0),
+        );
+        ui.painter().with_clip_rect(caption_clip).text(
+            Pos2::new(header.right() - 6.0, header.top() + 4.0),
+            Align2::RIGHT_TOP,
             key_lbl,
             FontId::proportional(9.0),
             TEXT_DIM,

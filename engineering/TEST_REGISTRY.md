@@ -22,3 +22,16 @@ The candidate results below include the I-17 and I-18 session-safety fixes, boun
 - No soak/stress harness for 8-hour sessions.
 - No signed binary / SmartScreen attestation test.
 - Updater download/apply not exercised against live GitHub in unit tests (network + side effects).
+
+## v1.1.13 candidate on the authoritative Windows laptop
+
+- Warning-denied all-targets check: verified with `RUSTFLAGS=-D warnings`.
+- Workspace: 35 passed (app 8, DSP 7, engine 10 + 2 integration, model 7,
+  bridge 1). The Vorbis and MP3 tests decode stereo tone pairs through
+  Symphonia. MP3 used the machine's installed FFmpeg; an independently
+  exercised missing executable case preserved an existing output file.
+- New debug function case: Ctrl+B is delivered as an egui key-down event
+  even when Ctrl is already released in the frame. See
+  `last-function-test.txt` for the complete current totals.
+- Portable visual evidence, previous issue defects, and unverified areas
+  are recorded in `CANDIDATE_VERIFICATION.md`.

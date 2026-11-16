@@ -29,6 +29,9 @@ uuid.workspace = true
 thiserror.workspace = true
 log.workspace = true
 env_logger.workspace = true
+vorbis_rs = { version = "0.5.6", default-features = false }
+tempfile = "3"
+rusty_mp3 = "=1.0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true

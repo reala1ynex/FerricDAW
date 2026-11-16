@@ -34,3 +34,10 @@ Status legend: **Complete+Verified** | **Implemented** | **Partial** | **Broken*
 | F-12 deeper | Full interactive plugin UI soak not automated |
 | F-17 depth | Scene Launch Pad edge cases not exhaustively function-tested |
 | Mac/Linux ship | N-06 — advisory CI only |
+
+## Current local development build: 1.1.13
+
+F-06 now uses a bundled Ogg Vorbis encoder and an external FFmpeg with
+libmp3lame for MP3. On a system without that dependency, MP3 export reports a
+failure; WAV, FLAC and Ogg do not depend on FFmpeg. End-user acceptance is
+partial. See `CANDIDATE_VERIFICATION.md` and I-26 for current evidence.

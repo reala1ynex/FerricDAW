@@ -4,25 +4,28 @@ use egui::{
 };
 use std::f32::consts::PI;
 
-pub const BG_DEEP: Color32 = Color32::from_rgb(15, 16, 20);
-pub const BG_PANEL: Color32 = Color32::from_rgb(22, 24, 30);
-pub const BG_ELEVATED: Color32 = Color32::from_rgb(30, 33, 41);
-pub const BG_TRACK_EVEN: Color32 = Color32::from_rgb(20, 22, 28);
-pub const BG_TRACK_ODD: Color32 = Color32::from_rgb(24, 26, 33);
-pub const BORDER_SUBTLE: Color32 = Color32::from_rgb(46, 50, 62);
-pub const ACCENT_FERRIC: Color32 = Color32::from_rgb(232, 114, 62);
+pub const BG_DEEP: Color32 = Color32::from_rgb(7, 8, 10);
+pub const BG_PANEL: Color32 = Color32::from_rgb(18, 22, 27);
+pub const BG_ELEVATED: Color32 = Color32::from_rgb(26, 33, 40);
+pub const BG_TRACK_EVEN: Color32 = Color32::from_rgb(15, 19, 23);
+pub const BG_TRACK_ODD: Color32 = Color32::from_rgb(20, 25, 30);
+pub const BORDER_SUBTLE: Color32 = Color32::from_rgb(49, 61, 71);
+pub const ACCENT_FERRIC: Color32 = Color32::from_rgb(255, 90, 31);
 pub const ACCENT_TEAL: Color32 = Color32::from_rgb(66, 196, 176);
 pub const ACCENT_AMBER: Color32 = Color32::from_rgb(240, 182, 62);
 pub const ACCENT_PURPLE: Color32 = Color32::from_rgb(186, 108, 226);
-pub const ACCENT_CYAN: Color32 = Color32::from_rgb(100, 210, 255);
-pub const ACCENT_BLUE: Color32 = Color32::from_rgb(92, 200, 242);
+pub const ACCENT_CYAN: Color32 = Color32::from_rgb(0, 229, 255);
+pub const ACCENT_BLUE: Color32 = Color32::from_rgb(59, 139, 255);
 pub const ACCENT_RED: Color32 = Color32::from_rgb(232, 74, 86);
-pub const TEXT_MAIN: Color32 = Color32::from_rgb(232, 235, 242);
-pub const TEXT_DIM: Color32 = Color32::from_rgb(142, 148, 164);
-pub const BUTTON_SURFACE: Color32 = Color32::from_rgb(47, 50, 59);
-pub const BUTTON_HOVER: Color32 = Color32::from_rgb(62, 66, 78);
-pub const BUTTON_ACTIVE: Color32 = Color32::from_rgb(72, 76, 90);
-pub const BUTTON_FOCUS: Color32 = Color32::from_rgb(120, 128, 148);
+pub const STATE_PLAY: Color32 = Color32::from_rgb(46, 232, 134);
+pub const STATE_ARM: Color32 = Color32::from_rgb(255, 46, 99);
+pub const STATE_SOLO: Color32 = Color32::from_rgb(255, 194, 26);
+pub const TEXT_MAIN: Color32 = Color32::from_rgb(242, 242, 242);
+pub const TEXT_DIM: Color32 = Color32::from_rgb(138, 180, 189);
+pub const BUTTON_SURFACE: Color32 = Color32::from_rgb(35, 44, 52);
+pub const BUTTON_HOVER: Color32 = Color32::from_rgb(49, 62, 73);
+pub const BUTTON_ACTIVE: Color32 = Color32::from_rgb(58, 72, 84);
+pub const BUTTON_FOCUS: Color32 = Color32::from_rgb(136, 166, 177);
 pub const BUTTON_HEIGHT: f32 = 24.0;
 pub const BUTTON_RADIUS: u8 = 5;
 
@@ -32,8 +35,8 @@ pub fn apply_studio_theme(ctx: &Context) {
     visuals.window_fill = BG_ELEVATED;
     visuals.extreme_bg_color = BG_DEEP;
     visuals.faint_bg_color = BG_TRACK_ODD;
-    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(232, 114, 62, 90);
-    visuals.selection.stroke = Stroke::new(1.5_f32, ACCENT_FERRIC);
+    visuals.selection.bg_fill = ACCENT_CYAN.gamma_multiply(0.26);
+    visuals.selection.stroke = Stroke::new(1.5_f32, ACCENT_CYAN);
     visuals.widgets.noninteractive.bg_fill = BG_PANEL;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BORDER_SUBTLE);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
@@ -41,17 +44,17 @@ pub fn apply_studio_theme(ctx: &Context) {
     visuals.widgets.inactive.weak_bg_fill = BUTTON_SURFACE;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, BORDER_SUBTLE);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
-    visuals.widgets.inactive.corner_radius = CornerRadius::same(5);
+    visuals.widgets.inactive.corner_radius = CornerRadius::same(BUTTON_RADIUS);
     visuals.widgets.hovered.bg_fill = BUTTON_HOVER;
     visuals.widgets.hovered.weak_bg_fill = BUTTON_HOVER;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BUTTON_FOCUS);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
-    visuals.widgets.hovered.corner_radius = CornerRadius::same(5);
+    visuals.widgets.hovered.corner_radius = CornerRadius::same(BUTTON_RADIUS);
     visuals.widgets.active.bg_fill = BUTTON_ACTIVE;
     visuals.widgets.active.weak_bg_fill = BUTTON_ACTIVE;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, ACCENT_TEAL);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.5_f32, ACCENT_CYAN);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, TEXT_MAIN);
-    visuals.widgets.active.corner_radius = CornerRadius::same(5);
+    visuals.widgets.active.corner_radius = CornerRadius::same(BUTTON_RADIUS);
     visuals.widgets.open = visuals.widgets.hovered;
     visuals.button_frame = true;
     visuals.menu_corner_radius = CornerRadius::same(BUTTON_RADIUS);
@@ -114,7 +117,7 @@ pub fn studio_knob(
         };
 
         let painter = ui.painter();
-        painter.circle_filled(center, radius, Color32::from_rgb(18, 20, 26));
+        painter.circle_filled(center, radius, BG_DEEP);
         painter.circle_stroke(
             center,
             radius,
@@ -138,7 +141,7 @@ pub fn studio_knob(
             let col = if s < active_steps {
                 accent
             } else {
-                Color32::from_rgb(38, 42, 52)
+                BORDER_SUBTLE
             };
             painter.line_segment([p0, p1], Stroke::new(2.3_f32, col));
         }
@@ -228,7 +231,7 @@ pub fn vertical_fader(ui: &mut Ui, gain_db: &mut f32, height: f32, accent: Color
     resp
 }
 
-/// Dual-bar Stereo Peak Meter (`-60 dB .. +6 dB`) with green/amber/crimson zones.
+/// Dual-bar Stereo Peak Meter (`-60 dB .. +6 dB`) with cyan/orange/pink zones.
 pub fn stereo_level_meter(ui: &mut Ui, peak_l_db: f32, peak_r_db: f32, height: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, height), Sense::hover());
     let painter = ui.painter();
@@ -236,21 +239,27 @@ pub fn stereo_level_meter(ui: &mut Ui, peak_l_db: f32, peak_r_db: f32, height: f
 
     let draw_bar = |x0: f32, x1: f32, db: f32| {
         let norm = ((db + 60.0) / 66.0).clamp(0.0, 1.0);
-        if norm <= 0.005 {
-            return;
+        let segments = (height / 4.0).floor().max(1.0) as usize;
+        let step = height / segments as f32;
+        for segment in 0..segments {
+            let fraction = segment as f32 / segments as f32;
+            let y = rect.bottom() - segment as f32 * step;
+            let color = if norm <= fraction {
+                BORDER_SUBTLE
+            } else {
+                match -60.0 + fraction * 66.0 {
+                    db if db >= -3.0 => STATE_ARM,
+                    db if db >= -12.0 => ACCENT_FERRIC,
+                    _ => ACCENT_CYAN,
+                }
+            };
+            painter.rect_filled(
+                Rect::from_min_max(Pos2::new(x0, y - step + 1.0), Pos2::new(x1, y)),
+                0,
+                color,
+            );
         }
-        let h = rect.height() * norm;
-        let bar_rect = Rect::from_min_max(Pos2::new(x0, rect.bottom() - h), Pos2::new(x1, rect.bottom()));
-        let col = if db > -0.5 {
-            ACCENT_RED
-        } else if db > -6.0 {
-            ACCENT_AMBER
-        } else {
-            ACCENT_TEAL
-        };
-        painter.rect_filled(bar_rect, 1, col);
     };
-
     let mid = rect.center().x;
     draw_bar(rect.left() + 1.0, mid - 0.5, peak_l_db);
     draw_bar(mid + 0.5, rect.right() - 1.0, peak_r_db);
@@ -268,23 +277,34 @@ pub fn section_label(ui: &mut Ui, text: &str) {
 }
 
 pub fn pill_toggle(ui: &mut Ui, text: &str, active: bool, active_color: Color32) -> Response {
-    let fill = if active {
-        active_color
-    } else {
-        BUTTON_SURFACE
-    };
-    let fg = if active {
-        Color32::from_rgb(14, 15, 18)
-    } else {
-        TEXT_MAIN
-    };
-    ui.add(
-        egui::Button::new(egui::RichText::new(text).size(11.0).strong().color(fg))
-            .fill(fill)
-            .stroke(Stroke::new(1.0_f32, if active { active_color.gamma_multiply(0.78) } else { BORDER_SUBTLE }))
-            .corner_radius(BUTTON_RADIUS)
-            .min_size(Vec2::new(30.0, BUTTON_HEIGHT)),
-    )
+    pill_toggle_width(ui, text, active, active_color, 30.0)
+}
+
+pub fn pill_toggle_width(
+    ui: &mut Ui, text: &str, active: bool, active_color: Color32, min_width: f32,
+) -> Response {
+    // Set widget visuals instead of overriding Button fill/stroke: egui can
+    // then show hover, pressed, keyboard focus and disabled states.
+    ui.scope(|ui| {
+        if active {
+            let widgets = &mut ui.visuals_mut().widgets;
+            for (visual, fill, stroke) in [
+                (&mut widgets.inactive, active_color, active_color),
+                (&mut widgets.hovered, active_color.lerp_to_gamma(Color32::WHITE, 0.15), TEXT_MAIN),
+                (&mut widgets.active, active_color.gamma_multiply(0.82), ACCENT_CYAN),
+            ] {
+                visual.bg_fill = fill;
+                visual.weak_bg_fill = fill;
+                visual.bg_stroke = Stroke::new(1.0_f32, stroke);
+                visual.fg_stroke = Stroke::new(1.0_f32, BG_DEEP);
+            }
+        }
+        ui.add(
+            egui::Button::new(egui::RichText::new(text).size(11.0).strong())
+                .corner_radius(BUTTON_RADIUS)
+                .min_size(Vec2::new(min_width, BUTTON_HEIGHT)),
+        )
+    }).inner
 }
 
 /// Shared neutral button styling for every non-toggle action.
@@ -292,9 +312,14 @@ pub trait StudioUiExt {
     fn chrome_button(&mut self, text: impl Into<egui::WidgetText>) -> Response;
     fn chrome_small_button(&mut self, text: impl Into<egui::WidgetText>) -> Response;
     fn chrome_danger_button(&mut self, text: impl Into<egui::WidgetText>) -> Response;
+    fn chrome_primary_button(&mut self, text: &str) -> Response;
 }
 
 impl StudioUiExt for Ui {
+    fn chrome_primary_button(&mut self, text: &str) -> Response {
+        pill_toggle(self, text, true, ACCENT_FERRIC)
+    }
+
     fn chrome_button(&mut self, text: impl Into<egui::WidgetText>) -> Response {
         self.add(
             egui::Button::new(text)

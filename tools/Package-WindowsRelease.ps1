@@ -2,7 +2,8 @@
 # Optional: .\Package-WindowsRelease.ps1 -GitHubOwner youruser
 param(
     [string]$GitHubOwner = $env:FERRIC_GITHUB_OWNER,
-    [string]$GitHubRepo = $(if ($env:FERRIC_GITHUB_REPO) { $env:FERRIC_GITHUB_REPO } else { 'FerricDAW' })
+    [string]$GitHubRepo = $(if ($env:FERRIC_GITHUB_REPO) { $env:FERRIC_GITHUB_REPO } else { 'FerricDAW' }),
+    [switch]$LocalCandidate
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,7 +29,12 @@ if ($LASTEXITCODE -ne 0) { throw 'ferric-plugin-bridge release build failed' }
 
 # Stage into a unique folder so a running ferricdaw.exe cannot lock the copy target.
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$StageDir = Join-Path $Root "dist\FerricDAW-stage-$Stamp"
+$OutputDir = if ($LocalCandidate) {
+    Join-Path $Root 'dist\candidate'
+} else {
+    Join-Path $Root 'dist'
+}
+$StageDir = Join-Path $OutputDir "FerricDAW-stage-$Stamp"
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
 function Copy-ReleaseFile([string]$Src, [string]$Dst) {
@@ -52,6 +58,7 @@ Copy-ReleaseFile (Join-Path $BuildTarget 'release\ferric-plugin-bridge.exe') (Jo
 Copy-Item (Join-Path $Root 'README.md') (Join-Path $StageDir 'README.md') -Force
 Copy-Item (Join-Path $Root 'LICENSE-MIT') (Join-Path $StageDir 'LICENSE-MIT') -Force
 Copy-Item (Join-Path $Root 'LICENSE-APACHE') (Join-Path $StageDir 'LICENSE-APACHE') -Force
+Copy-Item (Join-Path $Root 'THIRD-PARTY-NOTICES.txt') (Join-Path $StageDir 'THIRD-PARTY-NOTICES.txt') -Force
 if (Test-Path (Join-Path $Root 'AUTHORS.md')) {
     Copy-Item (Join-Path $Root 'AUTHORS.md') (Join-Path $StageDir 'AUTHORS.md') -Force
 }
@@ -78,12 +85,13 @@ FerricDAW v$Version — Windows portable
 Keep ferric-plugin-bridge.exe next to ferricdaw.exe. Crashing plugins die in that worker, not the DAW.
 
 1. Double-click ferricdaw.exe
-2. FerricDAW opens an empty session. Choose Night Current tutorial or Afterglow playground from the Ferric menu.
-3. Reopen the tutorial anytime: 🎓 Tutorial (Ferric menu / Ctrl+K). Esc closes it.
-4. Target bounce: demo\NightCurrent-Demo.wav
-5. Docs: docs\BEGINNER_GUIDE.md · docs\FEATURE_GUIDE.md · docs\DEVLOG.md · AUTHORS.md · F1 in the app
-6. MIDI + Line-In: Browser → Hardware Rig. Optional helper: SetLineInCapture.ps1 (Mic Boost off)
-7. Owner: Patrick Rudolph (github.com/reala1ynex) · Issues on the GitHub repo
+2. WAV, FLAC, MP3, and Ogg Vorbis export are built in.
+3. FerricDAW opens an empty session. Choose Night Current tutorial or Afterglow playground from the Ferric menu.
+4. Reopen the tutorial anytime: 🎓 Tutorial (Ferric menu / Ctrl+K). Esc closes it.
+5. Target bounce: demo\NightCurrent-Demo.wav
+6. Docs: docs\BEGINNER_GUIDE.md · docs\FEATURE_GUIDE.md · docs\DEVLOG.md · AUTHORS.md · F1 in the app
+7. MIDI + Line-In: Browser → Hardware Rig. Optional helper: SetLineInCapture.ps1 (Mic Boost off)
+8. Owner: Patrick Rudolph (github.com/reala1ynex) · Issues on the GitHub repo
 
 Space = play/stop · Ctrl+K = palette · F1 = help · Ferric → Check for Updates
 "@
@@ -111,9 +119,9 @@ if ($GitHubOwner) {
 }
 
 $ZipName = "FerricDAW-v$Version-win-x64.zip"
-$ZipPath = Join-Path $Root "dist\$ZipName"
+$ZipPath = Join-Path $OutputDir $ZipName
 # Never fail because Explorer / a running copy has the old zip open — write then swap.
-$ZipTmp = Join-Path $Root "dist\$ZipName.$Stamp.tmp.zip"
+$ZipTmp = Join-Path $OutputDir "$ZipName.$Stamp.tmp.zip"
 if (Test-Path $ZipTmp) { Remove-Item $ZipTmp -Force -ErrorAction SilentlyContinue }
 Compress-Archive -Path (Join-Path $StageDir '*') -DestinationPath $ZipTmp -Force
 try {
@@ -138,10 +146,19 @@ $Latest = [ordered]@{
     sha256  = $Hash
     notes   = "FerricDAW v$Version portable Windows x64"
 }
-$LatestPath = Join-Path $Root 'dist\latest.json'
+$LatestPath = Join-Path $OutputDir 'latest.json'
 # UTF-8 *without* BOM — PowerShell's utf8 encoding adds EF BB BF and breaks serde/ureq JSON parse.
 $json = ($Latest | ConvertTo-Json -Compress)
 [System.IO.File]::WriteAllText($LatestPath, $json, [System.Text.UTF8Encoding]::new($false))
+
+if ($LocalCandidate) {
+    # Retain the exact staged executable for the final Windows run. The
+    # candidate neither overwrites the shipped zip nor writes to Desktop.
+    Write-Host "Candidate zip: $ZipPath"
+    Write-Host "Candidate feed: $LatestPath"
+    Write-Host "Candidate executable: $(Join-Path $StageDir 'ferricdaw.exe')"
+    return
+}
 
 # Optional local folder refresh — skip entirely if anything inside is locked (don't delete).
 $DistDir = Join-Path $Root 'dist\FerricDAW'

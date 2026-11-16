@@ -1,4 +1,4 @@
-﻿# FerricDAW Devlog
+# FerricDAW Devlog
 
 Notes on what shipped and when. Newest first.
 
@@ -7,6 +7,18 @@ Notes on what shipped and when. Newest first.
 **License:** MIT OR Apache-2.0
 
 ---
+
+## 2026-11-16 — v1.1.13
+
+- Added Foundry Industrial and Ironbreak Metal synthesized kits, four dark techno instruments, Kick Rumble, and six dark techno effect presets.
+- Separated the browser into Instruments, Effects, and Plugins and split the rack insert menus. Added a right track inspector and pinned the Master strip in the mixer.
+- The focused workstation renders on the display's vsync and shows its measured UI frame rate. It polls less frequently in the background.
+- The updater offers to save unsaved work, waits for the instance being replaced, checks the downloaded archive again, and keeps backups for a failed copy.
+- Applied the brand palette and state colors, a shared lattice icon, and compact controls.
+- Fixed clipping in DNA, track headers, Pad pickers, and Bounce. Made the lower dock hold its resize height and gave the timeline more room at startup.
+- Ogg export now writes standard Vorbis. MP3 writes standard Layer III through a bundled encoder. Neither writes a private WAV trailer.
+- Fixed shortcuts that could miss a key press when the modifier was released before the next repaint.
+- Song markers no longer sit under the loop band on the ruler, and the chord lane's key caption no longer overlaps its buttons.
 
 ## 2026-11-15 — v1.1.12 track-header containment
 

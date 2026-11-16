@@ -4,68 +4,12 @@ use crate::theme::{
 };
 use egui::{Context, RichText, Stroke};
 
-/// 64×64 RGBA app icon (reel + waveform).
+/// The window and packaged executable share the same authored lattice.
 pub fn build_app_icon() -> egui::IconData {
-    let w = 64usize;
-    let h = 64usize;
-    let mut rgba = vec![0u8; w * h * 4];
-    let cx = 31.5_f32;
-    let cy = 31.5_f32;
-
-    for y in 0..h {
-        for x in 0..w {
-            let fx = x as f32;
-            let fy = y as f32;
-            let dx = fx - cx;
-            let dy = fy - cy;
-            let r = (dx * dx + dy * dy).sqrt();
-
-            let in_badge = {
-                let bx = (dx.abs() - 22.0).max(0.0);
-                let by = (dy.abs() - 22.0).max(0.0);
-                (bx * bx + by * by).sqrt() <= 8.5
-            };
-
-            let idx = (y * w + x) * 4;
-            if !in_badge {
-                rgba[idx..idx + 4].copy_from_slice(&[0, 0, 0, 0]);
-                continue;
-            }
-
-            let mut col = [18_u8, 20, 27, 255];
-
-            if (21.0..=26.5).contains(&r) {
-                col = [232, 114, 62, 255];
-            } else if (12.0..21.0).contains(&r) {
-                let ang = dy.atan2(dx);
-                let spoke = ((ang * 3.0).cos()).abs();
-                if spoke > 0.65 {
-                    col = [34, 38, 49, 255];
-                } else {
-                    col = [56, 34, 28, 255];
-                }
-            } else if r <= 7.5 {
-                col = if r <= 3.2 {
-                    [16, 18, 24, 255]
-                } else {
-                    [66, 196, 176, 255]
-                };
-            }
-
-            let wave_y =
-                32.0 - 9.0 * ((fx - 32.0) * 0.35).sin() * (-((fx - 32.0).abs() * 0.06)).exp();
-            if (fy - wave_y).abs() < 1.35 && r < 24.0 {
-                col = [245, 248, 255, 255];
-            }
-
-            rgba[idx..idx + 4].copy_from_slice(&col);
-        }
-    }
-
     egui::IconData {
-        rgba,
-        width: w as u32,
-        height: h as u32,
+        rgba: include_bytes!(concat!(env!("OUT_DIR"), "/ferricdaw.rgba")).to_vec(),
+        width: 64,
+        height: 64,
     }
 }
 

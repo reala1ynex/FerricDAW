@@ -39,8 +39,8 @@ use palette::{CommandPalette, PaletteCommand};
 use piano_roll::{render_fx_and_modulators_panel, DockAction, PianoRollState};
 use std::path::PathBuf;
 use theme::{
-    apply_studio_theme, chrome_card, chrome_row_label, chrome_section_title, pill_toggle,
-    StudioUiExt, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, ACCENT_PURPLE, BG_DEEP,
+    apply_studio_theme, chrome_card, chrome_row_label, chrome_section_title, pill_toggle, pill_toggle_width,
+    StudioUiExt, ACCENT_AMBER, ACCENT_FERRIC, ACCENT_RED, ACCENT_TEAL, ACCENT_PURPLE, ACCENT_CYAN, STATE_PLAY, BG_DEEP,
     BG_ELEVATED, BG_PANEL, BORDER_SUBTLE, TEXT_DIM, TEXT_MAIN,
 };
 use update::UpdateService;
@@ -171,6 +171,7 @@ enum PendingDestructive {
     LoadDemo,
     OpenPath(PathBuf),
     TutorialApply(NightCurrentStep),
+    InstallUpdate,
     /// User tried to close the window with unsaved / in-progress work.
     QuitApp,
 }
@@ -200,6 +201,7 @@ struct FerricDawApp {
     /// One-shot viewport clamp so a tiny restored window can't stick in the corner.
     viewport_bootstrapped: bool,
     inspect_master_fx: bool,
+    show_track_inspector: bool,
     selected_track: Option<TrackId>,
     selected_clip: Option<(TrackId, ClipId)>,
     clipboard_clip: Option<TimelineClip>,
@@ -229,6 +231,8 @@ struct FerricDawApp {
     updater: UpdateService,
     show_update_modal: bool,
     quit_for_update: bool,
+    ui_rate_sample: (f64, u32),
+    ui_fps: f64,
 }
 
 impl FerricDawApp {
@@ -329,9 +333,10 @@ impl FerricDawApp {
             palette: CommandPalette::default(),
             bottom_tab: BottomTab::FxAndModulators,
             show_bottom_dock: true,
-            bottom_dock_height: 300.0,
+            bottom_dock_height: 245.0,
             viewport_bootstrapped: false,
             inspect_master_fx: false,
+            show_track_inspector: true,
             clipboard_clip: None,
             recent_projects: Self::load_recent_projects_list(),
             show_help_modal: false,
@@ -355,6 +360,8 @@ impl FerricDawApp {
             updater: UpdateService::default(),
             show_update_modal: false,
             quit_for_update: false,
+            ui_rate_sample: (0.0, 0),
+            ui_fps: 0.0,
         };
         app.engine.sync_project(&app.project);
         if let Some(note) = app.engine.driver_status_note {
@@ -1103,6 +1110,16 @@ impl FerricDawApp {
                     step.letter()
                 );
             }
+            PendingDestructive::InstallUpdate => match self.updater.apply_and_restart() {
+                Ok(()) => {
+                    self.status_banner = "Applying update. FerricDAW will restart.".into();
+                    self.quit_for_update = true;
+                }
+                Err(error) => {
+                    self.updater.last_error = Some(error);
+                    self.show_update_modal = true;
+                }
+            },
             PendingDestructive::QuitApp => {
                 self.quit_for_update = true;
             }
@@ -1216,11 +1233,15 @@ impl FerricDawApp {
                     "Apply tutorial step (rebuilds song)?"
                 }
             }
+            PendingDestructive::InstallUpdate => "Install update and restart?",
             PendingDestructive::QuitApp => "Quit FerricDAW with unsaved work?",
         };
         let detail = match &pending {
             PendingDestructive::TutorialApply(_) => {
                 "This rebuilds the tutorial project through the current step and replaces clips/FX. Save first if you care about the current session."
+            }
+            PendingDestructive::InstallUpdate => {
+                "Save your session before FerricDAW restarts to install the update."
             }
             PendingDestructive::QuitApp => {
                 "Your session has unsaved or in-progress work. Save before quitting, discard and quit, or cancel."
@@ -1795,12 +1816,24 @@ impl FerricDawApp {
 
         let (ctrl, shift) =
             ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
+        // Read modifiers from the key event. A quick key-up can reset the
+        // frame's modifiers after the shortcut key-down has already arrived.
+        let modifiers_at_press = |key: Key| {
+            ctx.input(|input| input.events.iter().find_map(|event| match event {
+                egui::Event::Key { key: pressed_key, pressed: true, modifiers, .. }
+                    if *pressed_key == key => Some(*modifiers),
+                _ => None,
+            }))
+        };
+        let command_press = |key| {
+            modifiers_at_press(key).filter(|m| m.command || m.ctrl)
+        };
 
         if ctx.input(|i| i.key_pressed(Key::F1)) {
             self.show_help_modal = !self.show_help_modal;
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::K)) {
+        if command_press(Key::K).is_some() {
             self.palette.toggle();
             return;
         }
@@ -1808,47 +1841,47 @@ impl FerricDawApp {
             return;
         }
 
-        if ctrl && ctx.input(|i| i.key_pressed(Key::Z)) {
-            if shift {
+        if let Some(modifiers) = command_press(Key::Z) {
+            if modifiers.shift {
                 self.perform_redo();
             } else {
                 self.perform_undo();
             }
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::Y)) {
+        if command_press(Key::Y).is_some() {
             self.perform_redo();
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::S)) {
-            if shift {
+        if let Some(modifiers) = command_press(Key::S) {
+            if modifiers.shift {
                 self.save_project_as_dialog();
             } else {
                 self.save_project_dialog();
             }
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::G)) {
+        if command_press(Key::G).is_some() {
             self.glue_selected_clips();
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::O)) {
+        if command_press(Key::O).is_some() {
             self.open_project_dialog();
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::B)) {
+        if command_press(Key::B).is_some() {
             self.execute_palette_command(PaletteCommand::OpenBounceModal);
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::T)) {
+        if command_press(Key::T).is_some() {
             self.execute_palette_command(PaletteCommand::AddUniversalTrack);
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::F)) {
+        if command_press(Key::F).is_some() {
             self.execute_palette_command(PaletteCommand::ToggleFreezeSelectedTrack);
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::D)) {
+        if command_press(Key::D).is_some() {
             if self.arrangement.multi_selected_clips.len() > 1 {
                 self.snapshot_before("Duplicate Selected Clips");
                 let mut new_sel = Vec::new();
@@ -1869,7 +1902,7 @@ impl FerricDawApp {
             }
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::C)) {
+        if command_press(Key::C).is_some() {
             if let Some((tid, cid)) = self.selected_clip {
                 if let Some(clip) = self.project.find_track(tid).and_then(|t| t.find_clip(cid)) {
                     self.clipboard_clip = Some(clip.clone());
@@ -1878,7 +1911,7 @@ impl FerricDawApp {
             }
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::X)) {
+        if command_press(Key::X).is_some() {
             if let Some((tid, cid)) = self.selected_clip.take() {
                 if let Some(clip) = self
                     .project
@@ -1895,7 +1928,7 @@ impl FerricDawApp {
             }
             return;
         }
-        if ctrl && ctx.input(|i| i.key_pressed(Key::V)) {
+        if command_press(Key::V).is_some() {
             if let Some(mut pasted) = self.clipboard_clip.clone() {
                 let dst_tid = self
                     .selected_track
@@ -1943,7 +1976,7 @@ impl FerricDawApp {
         if ctx.input(|i| i.key_pressed(Key::Space)) {
             self.toggle_play();
         }
-        if shift && ctx.input(|i| i.key_pressed(Key::R)) {
+        if modifiers_at_press(Key::R).is_some_and(|m| m.shift && !m.command && !m.ctrl) {
             self.execute_palette_command(PaletteCommand::CaptureRetroactive);
             return;
         }
@@ -2172,111 +2205,105 @@ impl FerricDawApp {
     }
 
     fn render_dna_strip(&mut self, ui: &mut egui::Ui) {
-        chrome_card(ui, ACCENT_FERRIC, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                chrome_section_title(ui, "DNA", ACCENT_FERRIC);
-                ui.label(
-                    egui::RichText::new("Feel = timing · Velocity = accents · Apply writes Feel")
-                        .size(10.0)
-                        .color(TEXT_DIM),
-                );
-                chrome_row_label(ui, "Feel ->", ACCENT_TEAL);
-                ui.spacing_mut().slider_width = 88.0;
-                let mut feel_pct = (self.project.dna_feel * 100.0).round();
-                if ui
-                    .add(egui::Slider::new(&mut feel_pct, 0.0..=100.0).show_value(true))
-                    .changed()
-                {
-                    self.project.dna_feel = (feel_pct / 100.0).clamp(0.0, 1.0);
-                    self.sync_engine();
-                }
-                egui::ComboBox::from_id_salt("dna_groove_tmpl")
-                    .selected_text(match self.project.dna_groove_template {
-                        GrooveTemplate::Straight => "Straight",
-                        GrooveTemplate::Mpc58Classic => "Techno Pocket",
-                        GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
-                        GrooveTemplate::PushedUrgent16ths => "Push",
-                        other => other.short_badge(),
-                    })
-                    .width(130.0)
-                    .show_ui(ui, |ui| {
-                        for &tmpl in GrooveTemplate::ALL {
-                            let label = match tmpl {
-                                GrooveTemplate::Straight => "Straight",
-                                GrooveTemplate::Mpc58Classic => "Techno Pocket",
-                                GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
-                                GrooveTemplate::PushedUrgent16ths => "Push",
-                                other => other.label(),
-                            };
-                            if ui
-                                .selectable_value(
-                                    &mut self.project.dna_groove_template,
-                                    tmpl,
-                                    label,
-                                )
-                                .changed()
-                            {
-                                self.sync_engine();
-                            }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(egui::RichText::new("DNA").strong().monospace().color(ACCENT_FERRIC))
+                .on_hover_text("Feel changes timing. Velocity changes accents. Apply writes Feel to note timing.");
+            chrome_row_label(ui, "Feel ->", ACCENT_TEAL);
+            ui.spacing_mut().slider_width = 88.0;
+            let mut feel_pct = (self.project.dna_feel * 100.0).round();
+            if ui
+                .add(egui::Slider::new(&mut feel_pct, 0.0..=100.0).show_value(true))
+                .changed()
+            {
+                self.project.dna_feel = (feel_pct / 100.0).clamp(0.0, 1.0);
+                self.sync_engine();
+            }
+            egui::ComboBox::from_id_salt("dna_groove_tmpl")
+                .selected_text(match self.project.dna_groove_template {
+                    GrooveTemplate::Straight => "Straight",
+                    GrooveTemplate::Mpc58Classic => "Techno Pocket",
+                    GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
+                    GrooveTemplate::PushedUrgent16ths => "Push",
+                    other => other.short_badge(),
+                })
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for &tmpl in GrooveTemplate::ALL {
+                        let label = match tmpl {
+                            GrooveTemplate::Straight => "Straight",
+                            GrooveTemplate::Mpc58Classic => "Techno Pocket",
+                            GrooveTemplate::Mpc62BoomBap => "Boom-Bap",
+                            GrooveTemplate::PushedUrgent16ths => "Push",
+                            other => other.label(),
+                        };
+                        if ui
+                            .selectable_value(
+                                &mut self.project.dna_groove_template,
+                                tmpl,
+                                label,
+                            )
+                            .changed()
+                        {
+                            self.sync_engine();
                         }
-                    });
-                ui.separator();
-                chrome_row_label(ui, "Velocity ->", ACCENT_AMBER);
-                ui.spacing_mut().slider_width = 88.0;
-                let mut vel_pct = (self.project.dna_velocity * 100.0).round();
-                if ui
-                    .add(egui::Slider::new(&mut vel_pct, 0.0..=100.0).show_value(true))
-                    .changed()
-                {
-                    self.project.dna_velocity = (vel_pct / 100.0).clamp(0.0, 1.0);
-                    self.sync_engine();
-                }
-                egui::ComboBox::from_id_salt("dna_accent_shape")
-                    .selected_text(self.project.dna_accent_shape.label())
-                    .width(110.0)
-                    .show_ui(ui, |ui| {
-                        for &shape in VelocityAccentShape::ALL {
-                            if ui
-                                .selectable_value(
-                                    &mut self.project.dna_accent_shape,
-                                    shape,
-                                    shape.label(),
-                                )
-                                .changed()
-                            {
-                                self.sync_engine();
-                            }
+                    }
+                });
+            ui.separator();
+            chrome_row_label(ui, "Velocity ->", ACCENT_AMBER);
+            ui.spacing_mut().slider_width = 88.0;
+            let mut vel_pct = (self.project.dna_velocity * 100.0).round();
+            if ui
+                .add(egui::Slider::new(&mut vel_pct, 0.0..=100.0).show_value(true))
+                .changed()
+            {
+                self.project.dna_velocity = (vel_pct / 100.0).clamp(0.0, 1.0);
+                self.sync_engine();
+            }
+            egui::ComboBox::from_id_salt("dna_accent_shape")
+                .selected_text(self.project.dna_accent_shape.label())
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    for &shape in VelocityAccentShape::ALL {
+                        if ui
+                            .selectable_value(
+                                &mut self.project.dna_accent_shape,
+                                shape,
+                                shape.label(),
+                            )
+                            .changed()
+                        {
+                            self.sync_engine();
                         }
-                    });
-                if ui
-                    .chrome_small_button("Apply drums")
-                    .on_hover_text(
-                        "Writes Feel groove into drum/kit note timing (undoable) · Velocity stays live",
-                    )
-                    .clicked()
-                {
-                    self.snapshot_before("Apply DNA to Drums");
-                    self.project.apply_dna_to_tracks(true);
-                    self.sync_engine();
-                    self.status_banner =
-                        "DNA Feel template applied to drums (Velocity DNA stays live).".into();
-                }
-                if ui
-                    .chrome_small_button("Apply all MIDI")
-                    .on_hover_text(
-                        "Writes Feel groove into all MIDI tracks (undoable) · Velocity stays live",
-                    )
-                    .clicked()
-                {
-                    self.snapshot_before("Apply DNA to All MIDI");
-                    self.project.apply_dna_to_tracks(false);
-                    self.sync_engine();
-                    self.status_banner =
-                        "DNA Feel template applied to MIDI instruments (Velocity DNA stays live)."
-                            .into();
-                }
-            });
+                    }
+                });
+            if ui
+                .chrome_small_button("Apply drums")
+                .on_hover_text(
+                    "Writes Feel groove into drum/kit note timing (undoable) · Velocity stays live",
+                )
+                .clicked()
+            {
+                self.snapshot_before("Apply DNA to Drums");
+                self.project.apply_dna_to_tracks(true);
+                self.sync_engine();
+                self.status_banner =
+                    "DNA Feel template applied to drums (Velocity DNA stays live).".into();
+            }
+            if ui
+                .chrome_small_button("Apply all MIDI")
+                .on_hover_text(
+                    "Writes Feel groove into all MIDI tracks (undoable) · Velocity stays live",
+                )
+                .clicked()
+            {
+                self.snapshot_before("Apply DNA to All MIDI");
+                self.project.apply_dna_to_tracks(false);
+                self.sync_engine();
+                self.status_banner =
+                    "DNA Feel template applied to MIDI instruments (Velocity DNA stays live)."
+                        .into();
+            }
         });
     }
 
@@ -2355,15 +2382,11 @@ impl FerricDawApp {
                             )
                             .clicked()
                         {
-                            match self.updater.apply_and_restart() {
-                                Ok(()) => {
-                                    self.status_banner =
-                                        "Applying update — FerricDAW will restart…".into();
-                                    self.quit_for_update = true;
-                                }
-                                Err(e) => {
-                                    self.updater.last_error = Some(e);
-                                }
+                            self.show_update_modal = false;
+                            if self.dirty_since_project_save || self.project_path.is_none() {
+                                self.request_destructive(PendingDestructive::InstallUpdate);
+                            } else {
+                                self.execute_destructive(PendingDestructive::InstallUpdate);
                             }
                         }
                     } else if ui
@@ -2373,9 +2396,9 @@ impl FerricDawApp {
                         self.updater.download_async();
                     }
                     if ui.chrome_button("Open release page").clicked() {
-                        let _ = std::process::Command::new("cmd")
-                            .args(["/C", "start", "", &feed.url])
-                            .spawn();
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                            "https://github.com/reala1ynex/FerricDAW/releases/latest",
+                        ));
                     }
                 } else if self.updater.checked_this_session {
                     ui.label(
@@ -2405,7 +2428,8 @@ impl FerricDawApp {
     fn render_top_transport_bar(&mut self, ui: &mut egui::Ui) {
         let telem = self.engine.latest_telemetry;
 
-        ui.horizontal(|ui| {
+        let compact = ui.available_width() < 1450.0;
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
 
             if pill_toggle(ui, "☰ Browser", self.browser.visible, ACCENT_TEAL)
@@ -2416,7 +2440,7 @@ impl FerricDawApp {
             }
 
             ui.menu_button(
-                egui::RichText::new("Ferric")
+                egui::RichText::new("FERRICDAW").monospace()
                     .size(13.0)
                     .strong()
                     .color(ACCENT_FERRIC),
@@ -2560,7 +2584,7 @@ impl FerricDawApp {
                     .send(EngineCommand::SeekBeat(telem.playhead_beat + bpb));
             }
             let play_lbl = if telem.is_playing { "Pause" } else { "Play" };
-            if pill_toggle(ui, play_lbl, telem.is_playing, ACCENT_TEAL)
+            if pill_toggle_width(ui, play_lbl, telem.is_playing, STATE_PLAY, 48.0)
                 .on_hover_text("Space — play / pause")
                 .clicked()
             {
@@ -2582,7 +2606,7 @@ impl FerricDawApp {
             {
                 self.toggle_record();
             }
-            if pill_toggle(ui, "Loop", self.project.loop_enabled, ACCENT_FERRIC)
+            if pill_toggle(ui, "Loop", self.project.loop_enabled, ACCENT_CYAN)
                 .on_hover_text("Toggle loop · right-click ruler to set loop region")
                 .clicked()
             {
@@ -2651,17 +2675,7 @@ impl FerricDawApp {
             );
 
             if ui
-                .add(
-                egui::Button::new(
-                        egui::RichText::new("⚡ Capture")
-                            .size(11.0)
-                            .strong()
-                            .color(Color32::from_rgb(16, 18, 22)),
-                    )
-                    .fill(ACCENT_AMBER)
-                    .stroke(Stroke::new(1.0_f32, ACCENT_AMBER.gamma_multiply(0.8)))
-                    .corner_radius(5),
-                )
+                .chrome_primary_button("Capture")
                 .on_hover_text("Retroactive Capture (Shift+R): Drops last 15s of USB MIDI or Line-In audio")
                 .clicked()
             {
@@ -2814,72 +2828,146 @@ impl FerricDawApp {
                 self.keyboard_pads.enabled = !self.keyboard_pads.enabled;
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if self.updater.pending.is_some() {
-                    if ui
-                        .chrome_button(
-                            egui::RichText::new("Update")
-                                .size(11.0)
-                                .strong()
-                                .color(ACCENT_AMBER),
-                        )
-                        .on_hover_text("A newer FerricDAW build is available")
-                        .clicked()
-                    {
-                        self.show_update_modal = true;
-                    }
-                }
-                if pill_toggle(ui, "Help", self.show_help_modal, ACCENT_TEAL)
-                    .on_hover_text("Quickstart, Feature Guide & Shortcuts (F1)")
-                    .clicked()
-                {
-                    self.show_help_modal = !self.show_help_modal;
-                }
-                if pill_toggle(ui, "Tutorial", self.tutorial.open, ACCENT_FERRIC)
-                    .on_hover_text("Night Current tutorial — build the song step by step")
-                    .clicked()
-                {
-                    if self.tutorial.open {
-                        self.tutorial.open = false;
-                    } else {
-                        self.start_night_current_tutorial();
-                    }
-                }
-                if pill_toggle(ui, "Dock", self.show_bottom_dock, ACCENT_TEAL)
-                    .on_hover_text("Show / hide lower dock (MIDI, FX, Mix…)")
-                    .clicked()
-                {
-                    self.show_bottom_dock = !self.show_bottom_dock;
-                }
-                if ui
-                    .chrome_button(egui::RichText::new("Ctrl+K").size(11.0).color(ACCENT_FERRIC))
-                    .on_hover_text("Command palette — add tracks, FX, tools")
-                    .clicked()
-                {
-                    self.palette.toggle();
-                }
-
-                ui.label(
-                    egui::RichText::new(format!(
-                        "DSP {:.0}% · {:.1} LUFS",
-                        telem.cpu_load_percent, telem.master.momentary_lufs
-                    ))
-                    .size(10.5)
-                    .monospace()
-                    .color(TEXT_DIM),
-                );
-
-                if !self.engine.midi_port_names.is_empty() {
-                    ui.label(
-                        egui::RichText::new("MIDI ●")
-                            .size(10.5)
-                            .strong()
-                            .color(ACCENT_TEAL),
-                    )
-                    .on_hover_text(self.engine.midi_port_names.join(", "));
-                }
-            });
+            if !compact {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.render_studio_tools(ui);
+                });
+            }
         });
+        if compact {
+            ui.horizontal_wrapped(|ui| self.render_studio_tools(ui));
+        }
+    }
+
+    fn render_studio_tools(&mut self, ui: &mut egui::Ui) {
+        let telem = self.engine.latest_telemetry;
+        if self.updater.pending.is_some() {
+            if ui
+                .chrome_button(
+                    egui::RichText::new("Update")
+                        .size(11.0)
+                        .strong()
+                        .color(ACCENT_AMBER),
+                )
+                .on_hover_text("A newer FerricDAW build is available")
+                .clicked()
+            {
+                self.show_update_modal = true;
+            }
+        }
+        if pill_toggle(ui, "Help", self.show_help_modal, ACCENT_TEAL)
+            .on_hover_text("Quickstart, Feature Guide & Shortcuts (F1)")
+            .clicked()
+        {
+            self.show_help_modal = !self.show_help_modal;
+        }
+        if pill_toggle(ui, "Tutorial", self.tutorial.open, ACCENT_FERRIC)
+            .on_hover_text("Night Current tutorial — build the song step by step")
+            .clicked()
+        {
+            if self.tutorial.open {
+                self.tutorial.open = false;
+            } else {
+                self.start_night_current_tutorial();
+            }
+        }
+        if pill_toggle(ui, "Dock", self.show_bottom_dock, ACCENT_TEAL)
+            .on_hover_text("Show / hide lower dock (MIDI, FX, Mix…)")
+            .clicked()
+        {
+            self.show_bottom_dock = !self.show_bottom_dock;
+        }
+        if pill_toggle(ui, "Inspect", self.show_track_inspector, ACCENT_TEAL)
+            .on_hover_text("Track inspector · hides when the timeline needs more space")
+            .clicked()
+        {
+            self.show_track_inspector = !self.show_track_inspector;
+        }
+        if ui
+            .chrome_button(egui::RichText::new("Ctrl+K").size(11.0).color(ACCENT_FERRIC))
+            .on_hover_text("Command palette — add tracks, FX, tools")
+            .clicked()
+        {
+            self.palette.toggle();
+        }
+
+        ui.label(
+            egui::RichText::new(format!(
+                "DSP {:.0}% · {:.1} LUFS",
+                telem.cpu_load_percent, telem.master.momentary_lufs
+            ))
+            .size(10.5)
+            .monospace()
+            .color(TEXT_DIM),
+        );
+
+        if !self.engine.midi_port_names.is_empty() {
+            ui.label(
+                egui::RichText::new("MIDI ●")
+                    .size(10.5)
+                    .strong()
+                    .color(ACCENT_TEAL),
+            )
+            .on_hover_text(self.engine.midi_port_names.join(", "));
+        }
+    }
+
+    fn render_track_inspector(&mut self, ctx: &Context) {
+        if !self.show_track_inspector {
+            return;
+        }
+        egui::SidePanel::right("track_inspector")
+            .exact_width(192.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_PANEL)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .inner_margin(8.0),
+            )
+            .show(ctx, |ui| {
+                chrome_section_title(ui, "TRACK INSPECTOR", ACCENT_TEAL);
+                ui.separator();
+                let Some((index, track)) = self.project.tracks.iter().enumerate()
+                    .find(|(_, track)| self.selected_track == Some(track.id))
+                else {
+                    ui.label("Select a track");
+                    return;
+                };
+
+                egui::ScrollArea::vertical().id_salt("track_inspector_scroll").show(ui, |ui| {
+                    let name = egui::RichText::new(&track.name)
+                        .strong()
+                        .color(theme::track_color32(track.color));
+                    ui.add(egui::Label::new(name).truncate()).on_hover_text(&track.name);
+                    ui.label(egui::RichText::new(track.input_source.label()).size(11.0).color(TEXT_DIM));
+                    ui.add_space(6.0);
+                    let meter = self.engine.latest_telemetry.track_meters
+                        .get(index).copied().unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        theme::stereo_level_meter(ui, meter.peak_l_db, meter.peak_r_db, 44.0);
+                        ui.vertical(|ui| {
+                            ui.monospace(format!("{:+.1} dB", track.gain_db));
+                            ui.monospace(format!("Pan {:+.2}", track.pan));
+                        });
+                    });
+                    ui.separator();
+                    chrome_section_title(ui, "DEVICE CHAIN", ACCENT_FERRIC);
+                    if track.fx_chain.is_empty() {
+                        ui.label(egui::RichText::new("No devices").color(TEXT_DIM));
+                    }
+                    for slot in &track.fx_chain {
+                        let name = slot.kind.display_name();
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(name).color(if slot.enabled { TEXT_MAIN } else { TEXT_DIM })
+                        ).truncate()).on_hover_text(name);
+                    }
+                    if ui.chrome_small_button("Open Track FX").clicked() {
+                        self.show_bottom_dock = true;
+                        self.bottom_tab = BottomTab::FxAndModulators;
+                        self.inspect_master_fx = false;
+                    }
+                });
+            });
     }
 
     fn load_golden_reference_stats(&mut self, path: PathBuf) {
@@ -2973,8 +3061,15 @@ impl FerricDawApp {
                 ui.horizontal_wrapped(|ui| {
                     chrome_row_label(ui, "Format ->", ACCENT_AMBER);
                     for &fmt in ExportFormat::ALL {
-                        if pill_toggle(ui, fmt.label(), self.bounce_modal.format == fmt, ACCENT_FERRIC).clicked() {
+                        let name = fmt.extension().to_ascii_uppercase();
+                        if pill_toggle(ui, &name, self.bounce_modal.format == fmt, ACCENT_FERRIC)
+                            .on_hover_text(fmt.label())
+                            .clicked()
+                        {
                             self.bounce_modal.format = fmt;
+                            if fmt == ExportFormat::Mp3 && self.bounce_modal.sample_rate == 96_000 {
+                                self.bounce_modal.sample_rate = 48_000;
+                            }
                         }
                     }
                 });
@@ -2982,7 +3077,14 @@ impl FerricDawApp {
                 ui.horizontal_wrapped(|ui| {
                     chrome_row_label(ui, "Sample rate ->", ACCENT_TEAL);
                     for sr in [44_100_u32, 48_000, 96_000] {
-                        if pill_toggle(ui, &format!("{} Hz", sr), self.bounce_modal.sample_rate == sr, ACCENT_TEAL).clicked() {
+                        let supported = sr != 96_000 || self.bounce_modal.format != ExportFormat::Mp3;
+                        let response = ui.add_enabled_ui(supported, |ui| {
+                            pill_toggle(ui, &format!("{} Hz", sr), self.bounce_modal.sample_rate == sr, ACCENT_TEAL)
+                        }).inner;
+                        if response
+                            .on_disabled_hover_text("MP3 supports 44,100 or 48,000 Hz")
+                            .clicked()
+                        {
                             self.bounce_modal.sample_rate = sr;
                         }
                     }
@@ -3007,6 +3109,12 @@ impl FerricDawApp {
                 });
                 });
 
+                if self.bounce_modal.format == ExportFormat::Mp3 {
+                    ui.label(egui::RichText::new(
+                        "MP3: 192 kbps stereo at 44.1 or 48 kHz."
+                    ).size(11.0).color(TEXT_DIM));
+                }
+
                 if self.bounce_modal.format == ExportFormat::Flac
                     && self.bounce_modal.bit_depth == BitDepth::Float32
                 {
@@ -3017,7 +3125,7 @@ impl FerricDawApp {
                 chrome_card(ui, ACCENT_FERRIC, |ui| {
                 chrome_section_title(ui, "🎚 Mastering Loudness, True-Peak Ceiling & Dither", ACCENT_FERRIC);
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.checkbox(
                         &mut self.bounce_modal.enable_lufs_norm,
                         "Normalize Integrated Loudness:",
@@ -3049,7 +3157,7 @@ impl FerricDawApp {
                     }
                 });
 
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     chrome_row_label(ui, "True-peak ceiling ->", ACCENT_TEAL);
                     ui.add(
                         egui::DragValue::new(&mut self.bounce_modal.true_peak_ceiling_dbtp)
@@ -3094,20 +3202,14 @@ impl FerricDawApp {
                 };
 
                 ui.add_space(6.0);
+                let render_target = if self.bounce_modal.export_stems { "stems" } else { "master" };
+                let render_label = format!(
+                    "Render {} (.{})",
+                    render_target,
+                    opts.format.extension(),
+                );
                 if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(format!(
-                                "⚡ Render Master / Stems (.{})",
-                                opts.format.extension().to_uppercase()
-                            ))
-                            .strong()
-                            .color(Color32::BLACK),
-                        )
-                        .fill(ACCENT_TEAL)
-                        .stroke(Stroke::new(1.0_f32, ACCENT_TEAL.gamma_multiply(0.8)))
-                        .corner_radius(5),
-                    )
+                    .chrome_primary_button(&render_label)
                     .clicked()
                 {
                     if self.bounce_modal.export_stems {
@@ -3938,13 +4040,23 @@ impl eframe::App for FerricDawApp {
             }
         }
 
-        if self.engine.latest_telemetry.is_playing
-            || self.engine.latest_telemetry.master.peak_l_db > -65.0
-            || self.engine.latest_telemetry.input_peak_db > -65.0
-        {
-            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        let (time, focused) = ctx.input(|i| (i.time, i.viewport().focused.unwrap_or(true)));
+        if focused {
+            // A pending frame goes through the native renderer's vsync. A 16 ms timer
+            // can miss the next refresh after the cost of drawing the current frame.
+            ctx.request_repaint();
+            if self.ui_rate_sample.1 == 0 {
+                self.ui_rate_sample.0 = time;
+            }
+            self.ui_rate_sample.1 += 1;
+            let elapsed = time - self.ui_rate_sample.0;
+            if elapsed >= 1.0 {
+                self.ui_fps = (self.ui_rate_sample.1 - 1) as f64 / elapsed;
+                self.ui_rate_sample = (time, 1);
+            }
         } else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(45));
+            self.ui_rate_sample = (time, 0);
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
         if let Some(cmd) = self.palette.show(ctx) {
@@ -3979,7 +4091,7 @@ impl eframe::App for FerricDawApp {
 
         // 1. Top Studio Transport Bar
         egui::TopBottomPanel::top("ferric_transport_top")
-            .exact_height(46.0)
+            .min_height(36.0)
             .frame(
                 egui::Frame::new()
                     .fill(BG_ELEVATED)
@@ -3991,7 +4103,7 @@ impl eframe::App for FerricDawApp {
             });
 
         egui::TopBottomPanel::top("ferric_dna_strip")
-            .exact_height(34.0)
+            .min_height(34.0)
             .frame(
                 egui::Frame::new()
                     .fill(BG_PANEL)
@@ -4004,7 +4116,7 @@ impl eframe::App for FerricDawApp {
 
         if !self.engine.has_live_output {
             egui::TopBottomPanel::top("ferric_offline_audio_banner")
-                .exact_height(28.0)
+                .min_height(34.0)
                 .frame(
                     egui::Frame::new()
                         .fill(Color32::from_rgb(120, 36, 28))
@@ -4039,7 +4151,7 @@ impl eframe::App for FerricDawApp {
         if self.browser.visible {
             egui::SidePanel::left("ferric_left_browser")
                 .resizable(true)
-                .default_width(248.0)
+                .default_width(290.0)
                 .width_range(215.0..=360.0)
                 .frame(
                     egui::Frame::new()
@@ -4077,7 +4189,7 @@ impl eframe::App for FerricDawApp {
 
         // 3. Status footer FIRST among bottom panels (egui pins the first bottom panel to the screen edge).
         egui::TopBottomPanel::bottom("ferric_status_footer")
-            .exact_height(24.0)
+            .min_height(32.0)
             .frame(
                 egui::Frame::new()
                     .fill(BG_DEEP)
@@ -4095,6 +4207,10 @@ impl eframe::App for FerricDawApp {
                         .clicked()
                     {
                         self.show_bottom_dock = !self.show_bottom_dock;
+                    }
+                    if focused && self.ui_fps > 0.0 {
+                        ui.label(egui::RichText::new(format!("{:.0} UI fps", self.ui_fps)).size(10.0).color(TEXT_DIM))
+                            .on_hover_text("Measured frames per second while FerricDAW has focus");
                     }
                     ui.separator();
                     if let Some(ref learn) = self.pending_midi_learn {
@@ -4145,11 +4261,10 @@ impl eframe::App for FerricDawApp {
 
         // 4. Lower Studio Dock (sits above the footer; height filled so resize doesn't snap back)
         if self.show_bottom_dock {
-            let dock_h = self.bottom_dock_height.clamp(180.0, 620.0);
-            let dock_resp = egui::TopBottomPanel::bottom("ferric_lower_dock")
-                .resizable(true)
-                .default_height(dock_h)
-                .height_range(180.0..=620.0)
+            let dock_max = (ctx.screen_rect().height() * 0.56).clamp(180.0, 620.0);
+            let dock_h = self.bottom_dock_height.clamp(180.0, dock_max);
+            egui::TopBottomPanel::bottom("ferric_lower_dock")
+                .exact_height(dock_h)
                 .frame(
                     egui::Frame::new()
                         .fill(BG_PANEL)
@@ -4157,10 +4272,24 @@ impl eframe::App for FerricDawApp {
                         .inner_margin(8.0),
                 )
                 .show(ctx, |ui| {
-                    // Fill *this frame's* allocated height only — never max() with the
-                    // previous dock_h or the panel ratchets and refuses to shrink.
+                    // Make the drag height the source of truth. Feeding the
+                    // painted panel height back into egui adds frame strokes
+                    // and rounding on each repaint.
+                    let grip = ui.available_rect_before_wrap();
+                    let grip = egui::Rect::from_min_size(
+                        grip.min, egui::vec2(grip.width(), 5.0),
+                    );
+                    let resize = ui.interact(grip, ui.id().with("dock_resize"), egui::Sense::drag())
+                        .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+                        .on_hover_text("Drag to resize lower dock");
+                    if resize.hovered() || resize.dragged() {
+                        ui.painter().hline(grip.x_range(), grip.center().y, Stroke::new(1.0_f32, ACCENT_CYAN));
+                    }
+                    if resize.dragged() {
+                        self.bottom_dock_height = (dock_h - resize.drag_delta().y).clamp(180.0, dock_max);
+                    }
+                    ui.add_space(5.0);
                     let fill_h = ui.available_height();
-                    ui.set_min_height(fill_h);
                     egui::ScrollArea::vertical()
                         .id_salt("ferric_lower_dock_scroll")
                         .max_height(fill_h)
@@ -4311,6 +4440,10 @@ impl eframe::App for FerricDawApp {
                         match act {
                             DockAction::ProjectMutated(_lbl) => {
                                 need_sync = true;
+                            }
+                            DockAction::OpenMasterFx => {
+                                self.inspect_master_fx = true;
+                                self.bottom_tab = BottomTab::FxAndModulators;
                             }
                             DockAction::StatusMessage(msg) => {
                                 self.status_banner = msg;
@@ -4466,15 +4599,11 @@ impl eframe::App for FerricDawApp {
                     if need_sync {
                         self.sync_engine();
                     }
-                    // Consume leftover space so PanelState stores the dragged height, not content height.
-                    ui.allocate_space(ui.available_size());
                         }); // ScrollArea
                 });
-            let measured = dock_resp.response.rect.height();
-            if measured > 1.0 {
-                self.bottom_dock_height = measured.clamp(180.0, 620.0);
-            }
         }
+
+        self.render_track_inspector(ctx);
 
         // 5. Central Hybrid Session Clip Launcher + Linear Multitrack Arrangement + Bezier Automation
         egui::CentralPanel::default()
@@ -4677,6 +4806,7 @@ fn main() -> eframe::Result<()> {
         std::process::exit(code);
     }
     let native_options = eframe::NativeOptions {
+        vsync: true,
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("FerricDAW v{}", env!("CARGO_PKG_VERSION")))
             .with_inner_size([1520.0, 900.0])

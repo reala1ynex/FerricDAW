@@ -349,17 +349,17 @@ impl KeyboardPadRig {
         );
         ui.add_space(4.0);
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.enabled, "Enable keyboard pads");
             ui.add(egui::Slider::new(&mut self.velocity, 1..=127).text("Vel"));
         });
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             chrome_row_label(ui, "Pad B source ->", ACCENT_TEAL);
             ui.selectable_value(&mut self.pad_b_source, PadBSource::Numpad, "Numpad");
             ui.selectable_value(&mut self.pad_b_source, PadBSource::NumberRow, "Number row");
         });
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             chrome_row_label(ui, "Pad B layout ->", ACCENT_AMBER);
             ui.selectable_value(&mut self.pad_b_layout, PadBLayout::Chromatic, "Chromatic");
             ui.selectable_value(&mut self.pad_b_layout, PadBLayout::DrumGrid, "Drum grid");
@@ -394,7 +394,8 @@ fn track_picker(
     selected: Option<TrackId>,
     color: egui::Color32,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
+        let field_width = (ui.available_width() - 146.0).clamp(98.0, 200.0);
         chrome_row_label(ui, label, color);
         egui::ComboBox::from_id_salt(label)
             .selected_text(match *slot {
@@ -405,7 +406,8 @@ fn track_picker(
                     .map(|(_, n)| n.clone())
                     .unwrap_or_else(|| "Missing track".into()),
             })
-            .width(200.0)
+            .width(field_width)
+            .truncate()
             .show_ui(ui, |ui| {
                 ui.selectable_value(slot, None, "Selected track");
                 for (id, name) in tracks {

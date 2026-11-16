@@ -449,6 +449,30 @@ impl DrumKitProcessor {
         let hat_decay_s = params.get(3).copied().unwrap_or(110.0) * 0.001;
         let glue = params.get(4).copied().unwrap_or(22.0) * 0.01;
         let level = 10.0_f32.powf(params.get(5).copied().unwrap_or(0.0) / 20.0);
+        let kit = params.get(6).copied().unwrap_or(0.0).round().clamp(0.0, 2.0) as usize;
+        let [kick_sweep, kick_decay, beater, beater_tone] = [
+            [165.0, 7.2, 0.25, 0.0],
+            [215.0, 13.0, 0.42, 0.18],
+            [270.0, 18.0, 0.41, 0.57],
+        ][kit];
+        let [snare_tune, snare_decay, wire_decay, wire_level] = [
+            [182.0, 19.0, 13.0, 0.45],
+            [154.0, 24.0, 19.0, 0.60],
+            [201.0, 16.0, 15.0, 0.67],
+        ][kit];
+        let [rim_fundamental, rim_overtone, clap_level] = [
+            [460.0, 1180.0, 0.55],
+            [340.0, 1560.0, 0.68],
+            [530.0, 1960.0, 0.42],
+        ][kit];
+        let [hat_a, hat_b, tom_tune, tom_decay, crash_decay, crash_length] = [
+            [3840.0, 5710.0, 112.0, 8.5, 2.6, 1.40],
+            [2970.0, 4670.0, 82.0, 10.0, 5.7, 0.80],
+            [4110.0, 6140.0, 97.0, 6.4, 1.95, 2.15],
+        ][kit];
+        let drive: f32 = 1.0 + glue * 1.4;
+        let drive_compensation = drive.sqrt();
+
 
         let dt = 1.0 / self.sample_rate;
         let frames = left.len().min(right.len());
@@ -477,17 +501,21 @@ impl DrumKitProcessor {
                 let (sig_l, sig_r, max_dur) = match v.pad {
                     // 0: Studio Analog/Acoustic Kick
                     0 => {
-                        let sweep = kick_tune + (165.0 * kick_punch) * (-t * 44.0).exp();
+                        let sweep = kick_tune + (kick_sweep * kick_punch) * (-t * 44.0).exp();
                         v.phase = (v.phase + sweep * dt).fract();
-                        let body = (TAU * v.phase).sin() * (-t * 7.2).exp();
-                        let click = noise * (-t * 140.0).exp() * 0.25 * kick_punch;
+                        let body = (TAU * v.phase).sin() * (-t * kick_decay).exp();
+                        let mut click = noise * (-t * 140.0).exp() * beater * kick_punch;
+                        if beater_tone > 0.0 {
+                            v.phase2 = (v.phase2 + 2820.0 * dt).fract();
+                            click += (TAU * v.phase2).sin() * (-t * 310.0).exp() * beater_tone;
+                        }
                         let s = (body + click) * 0.85;
                         (s, s, 0.55)
                     }
                     // 1: Rimshot
                     1 => {
-                        v.phase = (v.phase + 460.0 * dt).fract();
-                        v.phase2 = (v.phase2 + 1180.0 * dt).fract();
+                        v.phase = (v.phase + rim_fundamental * dt).fract();
+                        v.phase2 = (v.phase2 + rim_overtone * dt).fract();
                         let s = ((TAU * v.phase).sin() * 0.6 + (TAU * v.phase2).sin() * 0.5)
                             * (-t * 55.0).exp()
                             * 0.55;
@@ -495,12 +523,12 @@ impl DrumKitProcessor {
                     }
                     // 2: Crisp Studio Snare
                     2 => {
-                        let f_body = 182.0 + 95.0 * (-t * 38.0).exp();
+                        let f_body = snare_tune + 95.0 * (-t * 38.0).exp();
                         v.phase = (v.phase + f_body * dt).fract();
-                        let body = (TAU * v.phase).sin() * (-t * 19.0).exp() * 0.55;
+                        let body = (TAU * v.phase).sin() * (-t * snare_decay).exp() * 0.55;
                         let hp_noise = noise - v.hp_state;
                         v.hp_state += 0.35 * hp_noise;
-                        let wires = hp_noise * (-t * (13.0 - 4.0 * snare_snap)).exp() * (0.45 + 0.4 * snare_snap);
+                        let wires = hp_noise * (-t * (wire_decay - 4.0 * snare_snap)).exp() * (wire_level + 0.4 * snare_snap);
                         let s = body + wires;
                         (s * 0.98, s * 1.02, 0.42)
                     }
@@ -515,7 +543,7 @@ impl DrumKitProcessor {
                         };
                         let hp = noise - v.hp_state;
                         v.hp_state += 0.42 * hp;
-                        let s = hp * env * 0.55;
+                        let s = hp * env * clap_level;
                         (s * 1.08, s * 0.92, 0.35)
                     }
                     // 4 & 5: Metallic Closed & Open Hi-Hats
@@ -525,8 +553,8 @@ impl DrumKitProcessor {
                         } else {
                             1.0 / (hat_decay_s * 3.6).max(0.18)
                         };
-                        v.phase = (v.phase + 3840.0 * dt).fract();
-                        v.phase2 = (v.phase2 + 5710.0 * dt).fract();
+                        v.phase = (v.phase + hat_a * dt).fract();
+                        v.phase2 = (v.phase2 + hat_b * dt).fract();
                         let metal = ((if v.phase < 0.5 { 1.0 } else { -1.0 })
                             + (if v.phase2 < 0.5 { 1.0 } else { -1.0 }))
                             * 0.22;
@@ -537,9 +565,9 @@ impl DrumKitProcessor {
                     }
                     // 6: Studio Tom
                     6 => {
-                        let f = 112.0 + 75.0 * (-t * 24.0).exp();
+                        let f = tom_tune + 75.0 * (-t * 24.0).exp();
                         v.phase = (v.phase + f * dt).fract();
-                        let s = (TAU * v.phase).sin() * (-t * 8.5).exp() * 0.68;
+                        let s = (TAU * v.phase).sin() * (-t * tom_decay).exp() * 0.68;
                         (s * 1.1, s * 0.9, 0.50)
                     }
                     // 7: Shimmer Crash / Ride
@@ -549,8 +577,8 @@ impl DrumKitProcessor {
                         let shimmer = ((TAU * v.phase).sin() * (TAU * v.phase2).cos()) * 0.35;
                         let hp = (noise * 0.55 + shimmer) - v.hp_state;
                         v.hp_state += 0.58 * hp;
-                        let s = hp * (-t * 2.6).exp() * 0.40;
-                        (s * 1.12, s * 0.88, 1.40)
+                        let s = hp * (-t * crash_decay).exp() * 0.40;
+                        (s * 1.12, s * 0.88, crash_length)
                     }
                 };
 
@@ -562,9 +590,8 @@ impl DrumKitProcessor {
             }
 
             if glue > 0.01 {
-                let drive = 1.0 + glue * 1.4;
-                sum_l = (sum_l * drive).tanh() / drive.sqrt();
-                sum_r = (sum_r * drive).tanh() / drive.sqrt();
+                sum_l = (sum_l * drive).tanh() / drive_compensation;
+                sum_r = (sum_r * drive).tanh() / drive_compensation;
             }
 
             left[frame] += sum_l * level;

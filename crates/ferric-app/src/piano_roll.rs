@@ -23,6 +23,7 @@ pub enum DockAction {
     RecallMix(usize),
     StoreMix(usize),
     AddVcaGroup,
+    OpenMasterFx,
     HostDnaReseed(ferric_model::FxId),
     HostDnaRandomize(ferric_model::FxId),
     HostDnaSibling(ferric_model::FxId, u8),
@@ -1413,7 +1414,7 @@ pub fn render_fx_and_modulators_panel(
         .collect();
 
     chrome_card(ui, ACCENT_FERRIC, |ui| {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         chrome_section_title(ui, "FX Rack", ACCENT_FERRIC);
         if pill_toggle(ui, "Track FX & Modulators", !*inspect_master, ACCENT_FERRIC).clicked() {
             *inspect_master = false;
@@ -1437,17 +1438,26 @@ pub fn render_fx_and_modulators_panel(
                 }
             });
         } else if let Some(tid) = selected_track {
-            ui.menu_button("+ Add Instrument / FX", |ui| {
-                for &kind in FxKind::ALL {
-                    if kind != FxKind::ExternalClap && ui.chrome_button(kind.display_name()).clicked() {
-                        if let Some(trk) = project.find_track_mut(tid) {
-                            trk.fx_chain.push(FxSlot::new(kind));
-                            actions.push(DockAction::ProjectMutated("Add Track FX"));
+            for (label, instrument) in [("+ Instrument", true), ("+ Effect", false)] {
+                ui.menu_button(label, |ui| {
+                    for &kind in FxKind::ALL {
+                        if kind == FxKind::ExternalClap || kind.is_instrument() != instrument {
+                            continue;
                         }
-                        ui.close_menu();
+                        if ui.chrome_button(kind.display_name()).clicked() {
+                            if let Some(trk) = project.find_track_mut(tid) {
+                                trk.fx_chain.push(FxSlot::new(kind));
+                                actions.push(DockAction::ProjectMutated(if instrument {
+                                    "Add Track Instrument"
+                                } else {
+                                    "Add Track FX"
+                                }));
+                            }
+                            ui.close_menu();
+                        }
                     }
-                }
-            });
+                });
+            }
             ui.menu_button("+ Add Modulator", |ui| {
                 if ui.chrome_button("🌊 Tempo-Synced LFO").clicked() {
                     if let Some(trk) = project.find_track_mut(tid) {
@@ -1903,17 +1913,36 @@ fn render_fx_slot_cards(
                                 let p_name = fx.param_name(p_i).to_string();
                                 let short_lbl: String = p_name.chars().take(12).collect();
                                 ui.vertical(|ui| {
-                                    if studio_knob(
-                                        ui,
-                                        &short_lbl,
-                                        &mut fx.params[p_i],
-                                        min_v,
-                                        max_v,
-                                        def_v,
-                                        unit_str,
-                                        30.0,
-                                        accent,
-                                    ) {
+                                    let changed = if fx.kind == FxKind::DrumKit && p_i == 6 {
+                                        let voices = ["Studio", "Industrial", "Metal"];
+                                        let mut voice = fx.param(p_i).round().clamp(0.0, 2.0) as usize;
+                                        let previous = voice;
+                                        ui.label("Kit Voice");
+                                        egui::ComboBox::from_id_salt((fx.id, "kit_voice"))
+                                            .selected_text(voices[voice])
+                                            .show_ui(ui, |ui| {
+                                                for (index, label) in voices.into_iter().enumerate() {
+                                                    ui.selectable_value(&mut voice, index, label);
+                                                }
+                                            });
+                                        if voice != previous {
+                                            fx.set_param(p_i, voice as f32);
+                                        }
+                                        voice != previous
+                                    } else {
+                                        studio_knob(
+                                            ui,
+                                            &short_lbl,
+                                            &mut fx.params[p_i],
+                                            min_v,
+                                            max_v,
+                                            def_v,
+                                            unit_str,
+                                            30.0,
+                                            accent,
+                                        )
+                                    };
+                                    if changed {
                                         actions.push(DockAction::ProjectMutated("Tweak FX Param"));
                                     }
                                     if let Some(tid) = owner_track {

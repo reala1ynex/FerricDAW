@@ -35,3 +35,19 @@
 | P1 | 6 | 4 | 2 fixed in candidate, final visual verification pending (I-17, I-18) |
 | P2 | 10 | 8 | 2 (I-05 accepted, I-13 blocked) |
 | P3 | 4 | 2 | 2 (I-12 env, I-14 blocked) |
+
+## 1.1.13 candidate findings — 2026-11-16
+
+| ID | Severity | Finding / source | Repair or outstanding gate |
+|---|---|---|---|
+| I-23 | P1 | DNA strip clipped by exact panel height; gain/pan outside track card; Pad picker actions touched sidebar edge. `main.rs`, `arrangement.rs`, `keyboard_pads.rs` | Panel content sizes, four-row track minimum, and constrained responsive picker. Checked in packaged workstation capture. |
+| I-24 | P1 | Dock drifted to maximum height on idle, reducing arrangement to one visible track in Afterglow. `main.rs` | One resize state owner with a bounded handle. Verified enlarge and shrink on the laptop. |
+| I-25 | P1 | OGG format label wrapped vertically and obscured export controls. `main.rs` bounce modal | Short format labels with descriptions on hover, wrapping mastering controls, and action label specific to format and target. Rechecked selected OGG and native Save dialog. |
+| I-26 | P1 | MP3/OGG bounced private payloads and WAV trailers. FFprobe independently rejected the prior OGG; a size-only test could not prove interoperability. `lossy_enc.rs`, `wav_io.rs` | Bundled Vorbis, independently installed FFmpeg for MPEG Layer III, transactional replacement for those outputs, and independent decoder regression assertions. Empty Vorbis priming packets are skipped. **Update:** MP3 now uses the bundled pure-Rust `rusty_mp3` 1.0.6 encoder (Apache-2.0, notice in `THIRD-PARTY-NOTICES.txt`); `bundled_mp3_export_decodes_as_standard_stereo` decodes the output through the import path. A clean-machine Windows check without FFmpeg is still unverified. |
+| I-27 | P1 | Rapid keyboard chords could be missed when Ctrl was released before frame processing. `main.rs` | Dispatch using key-down modifiers. Added a real egui frame case for Ctrl+B with the frame modifier already released. |
+| I-28 | P2 | Main layout still lacks the reference's independent right inspector, persistent master strip and exact MIDI device panels. Speciality browser/routing/FX panels retain layout and typography differences. | Native equivalents and remaining work mapped in `UI_REFERENCE_TRACEABILITY.md`; do not close I-05. |
+| I-29 | P3 | Embedded Windows version metadata reported 1.0.0 regardless of Cargo version. `build.rs` | Version resource is generated from Cargo metadata; check the packaged exe properties. |
+| I-30 | P2 | Packaged-launch capture: the loop band painted over the song-marker flags (Intro/Hook) on the ruler, and the chord lane key caption (e.g. "A Natural Minor (Aeolian)") overlapped the CoF+/CoFm/Prog/Gen buttons. `arrangement.rs` | Ruler is 36 px with separate rows for loop band, marker flags and bar numbers; the key caption sits right-aligned on the CHORDS title row, clipped to the header. Rechecked in packaged captures of the empty session and Afterglow. |
+
+The older severity totals above describe the pre-1.1.13 registry. The previous
+release evidence is retained separately from this candidate review.
