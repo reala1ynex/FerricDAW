@@ -928,8 +928,10 @@ pub fn clean_confirmed_dirs(
     report
 }
 
-/// Windows shell helpers (known folders and `.lnk` shortcuts) through
-/// `WScript.Shell`, run hidden with arguments passed in environment variables.
+/// Windows shell helpers (known folders and `.lnk` shortcuts) through the
+/// native Shell APIs: `SHGetKnownFolderPath` and `IShellLinkW`/`IPersistFile`.
+/// No PowerShell process is started, so paths with any Unicode characters
+/// round-trip exactly and nothing depends on script policy (audit M9/M10).
 pub mod shell {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -940,114 +942,202 @@ pub mod shell {
         pub target: PathBuf,
     }
 
-    fn base64(data: &[u8]) -> String {
-        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-        for chunk in data.chunks(3) {
-            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
-            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-            for i in 0..4 {
-                if i <= chunk.len() {
-                    out.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
-                } else {
-                    out.push('=');
+    #[cfg(windows)]
+    mod native {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        use std::path::{Path, PathBuf};
+        use windows::core::{Interface, GUID, HSTRING};
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IPersistFile,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, STGM_READ,
+        };
+        use windows::Win32::UI::Shell::{IShellLinkW, SHGetKnownFolderPath, ShellLink, KF_FLAG_DEFAULT};
+
+        /// Balanced COM initialisation for the calling thread. If the thread
+        /// already uses another apartment model COM is still usable, and we
+        /// must not uninitialise it.
+        pub struct Com(bool);
+
+        impl Com {
+            pub fn init() -> Self {
+                let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+                Com(hr.is_ok())
+            }
+        }
+
+        impl Drop for Com {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe { CoUninitialize() };
                 }
             }
         }
-        out
-    }
 
-    pub(crate) fn encode_command(script: &str) -> String {
-        let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        base64(&utf16)
-    }
-
-    fn run(script: &str, env: &[(&str, &Path)]) -> Result<String, String> {
-        let mut cmd = std::process::Command::new("powershell");
-        cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"])
-            .arg(encode_command(script));
-        for (k, v) in env {
-            cmd.env(k, v);
+        pub fn known_folder(id: &GUID) -> Option<PathBuf> {
+            unsafe {
+                let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, HANDLE::default()).ok()?;
+                let s = p.to_hstring();
+                CoTaskMemFree(Some(p.0 as *const _));
+                let s = s.ok()?;
+                let path = PathBuf::from(OsString::from_wide(s.as_wide()));
+                (!path.as_os_str().is_empty()).then_some(path)
+            }
         }
+
+        fn wide_to_path(buf: &[u16]) -> PathBuf {
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            PathBuf::from(OsString::from_wide(&buf[..end]))
+        }
+
+        pub fn read_target(lnk: &Path) -> Result<PathBuf, String> {
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+                let file: IPersistFile = link.cast().map_err(|e| e.to_string())?;
+                file.Load(&HSTRING::from(lnk.as_os_str()), STGM_READ)
+                    .map_err(|e| e.to_string())?;
+                let mut buf = vec![0u16; 32_768];
+                link.GetPath(&mut buf, std::ptr::null_mut(), 0)
+                    .map_err(|e| e.to_string())?;
+                Ok(wide_to_path(&buf))
+            }
+        }
+
+        pub fn write_link(lnk: &Path, exe: &Path, dir: &Path) -> Result<(), String> {
+            unsafe {
+                let link: IShellLinkW =
+                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).map_err(|e| e.to_string())?;
+                link.SetPath(&HSTRING::from(exe.as_os_str())).map_err(|e| e.to_string())?;
+                link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()))
+                    .map_err(|e| e.to_string())?;
+                link.SetIconLocation(&HSTRING::from(exe.as_os_str()), 0)
+                    .map_err(|e| e.to_string())?;
+                let file: IPersistFile = link.cast().map_err(|e| e.to_string())?;
+                file.Save(&HSTRING::from(lnk.as_os_str()), true)
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    fn env_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os(name).map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+    }
+
+    /// Desktop, Downloads, Documents and Start Menu Programs folders, from the
+    /// shell (follows OneDrive/folder redirection) with `%USERPROFILE%` /
+    /// `%APPDATA%` fallbacks.
+    pub fn known_folders() -> Result<BTreeMap<String, String>, String> {
+        let profile = env_path("USERPROFILE");
+        let fallback = |sub: &str| profile.as_ref().map(|p| p.join(sub));
+        #[cfg(windows)]
+        let (desktop, downloads, documents, programs) = {
+            use windows::Win32::UI::Shell::{
+                FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Programs,
+            };
+            let _com = native::Com::init();
+            (
+                native::known_folder(&FOLDERID_Desktop),
+                native::known_folder(&FOLDERID_Downloads),
+                native::known_folder(&FOLDERID_Documents),
+                native::known_folder(&FOLDERID_Programs),
+            )
+        };
+        #[cfg(not(windows))]
+        let (desktop, downloads, documents, programs): (
+            Option<PathBuf>,
+            Option<PathBuf>,
+            Option<PathBuf>,
+            Option<PathBuf>,
+        ) = (None, None, None, None);
+        let programs = programs.or_else(|| {
+            env_path("APPDATA").map(|a| a.join(r"Microsoft\Windows\Start Menu\Programs"))
+        });
+        let mut out = BTreeMap::new();
+        for (key, value) in [
+            ("desktop", desktop.or_else(|| fallback("Desktop"))),
+            ("downloads", downloads.or_else(|| fallback("Downloads"))),
+            ("documents", documents.or_else(|| fallback("Documents"))),
+            ("programs", programs),
+        ] {
+            if let Some(v) = value {
+                out.insert(key.to_string(), v.to_string_lossy().into_owned());
+            }
+        }
+        if out.is_empty() {
+            return Err("Could not resolve any user folder".into());
+        }
+        Ok(out)
+    }
+
+    fn lnk_files(dir: &Path, recurse: bool, out: &mut Vec<PathBuf>, depth: usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            let p = entry.path();
+            if ft.is_dir() && recurse && depth < 8 {
+                lnk_files(&p, recurse, out, depth + 1);
+            } else if ft.is_file()
+                && p.extension().map(|e| e.eq_ignore_ascii_case("lnk")).unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    /// Target of one `.lnk` file.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn read_shortcut_target(lnk: &Path) -> Result<PathBuf, String> {
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let _com = native::Com::init();
+            native::read_target(lnk)
         }
-        let out = cmd.output().map_err(|e| format!("PowerShell: {e}"))?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        #[cfg(not(windows))]
+        {
+            let _ = lnk;
+            Err("shortcuts are only supported on Windows".into())
         }
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-    }
-
-    pub fn known_folders() -> Result<BTreeMap<String, String>, String> {
-        let script = r#"
-$ErrorActionPreference = 'Stop'
-$downloads = ''
-try { $downloads = (New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path } catch {}
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-[ordered]@{
-  desktop = [Environment]::GetFolderPath('DesktopDirectory')
-  documents = [Environment]::GetFolderPath('MyDocuments')
-  programs = [Environment]::GetFolderPath('Programs')
-  downloads = $downloads
-} | ConvertTo-Json -Compress
-"#;
-        let out = run(script, &[])?;
-        serde_json::from_str(out.trim()).map_err(|e| e.to_string())
     }
 
     /// `.lnk` files directly on the desktops and anywhere under the Start Menu
     /// programs folders, with their resolved targets.
     pub fn list_shortcuts(desktops: &[PathBuf], start_menus: &[PathBuf]) -> Vec<Shortcut> {
-        let join = |v: &[PathBuf]| {
-            v.iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join("|")
-        };
-        let flat = PathBuf::from(join(desktops));
-        let deep = PathBuf::from(join(start_menus));
-        let script = r#"
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-$shell = New-Object -ComObject WScript.Shell
-$items = @()
-foreach ($d in ($env:FERRIC_LNK_FLAT -split '\|')) { if ($d -and (Test-Path -LiteralPath $d)) { $items += Get-ChildItem -LiteralPath $d -Filter *.lnk -File -ErrorAction SilentlyContinue } }
-foreach ($d in ($env:FERRIC_LNK_DEEP -split '\|')) { if ($d -and (Test-Path -LiteralPath $d)) { $items += Get-ChildItem -LiteralPath $d -Filter *.lnk -File -Recurse -ErrorAction SilentlyContinue } }
-foreach ($i in $items) {
-  try { $t = $shell.CreateShortcut($i.FullName).TargetPath } catch { $t = '' }
-  if ($t) { [pscustomobject]@{ path = $i.FullName; target = $t } | ConvertTo-Json -Compress }
-}
-"#;
-        let Ok(out) = run(script, &[("FERRIC_LNK_FLAT", &flat), ("FERRIC_LNK_DEEP", &deep)]) else {
-            return Vec::new();
-        };
-        out.lines()
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l.trim()).ok())
-            .filter_map(|v| {
-                Some(Shortcut {
-                    path: PathBuf::from(v.get("path")?.as_str()?),
-                    target: PathBuf::from(v.get("target")?.as_str()?),
-                })
+        let mut files = Vec::new();
+        for d in desktops {
+            lnk_files(d, false, &mut files, 0);
+        }
+        for d in start_menus {
+            lnk_files(d, true, &mut files, 0);
+        }
+        #[cfg(windows)]
+        let _com = native::Com::init();
+        files
+            .into_iter()
+            .filter_map(|path| {
+                #[cfg(windows)]
+                let target = native::read_target(&path).ok()?;
+                #[cfg(not(windows))]
+                let target: PathBuf = None?;
+                (!target.as_os_str().is_empty()).then_some(Shortcut { path, target })
             })
             .collect()
     }
 
     pub fn retarget_shortcut(lnk: &Path, exe: &Path) -> Result<(), String> {
         let dir = exe.parent().unwrap_or(exe);
-        let script = r#"
-$ErrorActionPreference = 'Stop'
-$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:FERRIC_LNK)
-$s.TargetPath = $env:FERRIC_EXE
-$s.WorkingDirectory = $env:FERRIC_DIR
-$s.IconLocation = "$($env:FERRIC_EXE),0"
-$s.Save()
-"#;
-        run(script, &[("FERRIC_LNK", lnk), ("FERRIC_EXE", exe), ("FERRIC_DIR", dir)])
-            .map(|_| ())
-            .map_err(|e| format!("Could not update shortcut {}: {e}", lnk.display()))
+        #[cfg(windows)]
+        {
+            let _com = native::Com::init();
+            native::write_link(lnk, exe, dir)
+                .map_err(|e| format!("Could not update shortcut {}: {e}", lnk.display()))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = dir;
+            Err(format!("Could not update shortcut {}: unsupported platform", lnk.display()))
+        }
     }
 
     /// Create `FerricDAW.lnk` on `desktop`, or reuse an existing shortcut that
@@ -1543,8 +1633,37 @@ mod tests {
         assert!(index.originals().all(|p| is_safe_relative(p)));
     }
 
+    #[cfg(windows)]
     #[test]
-    fn encoded_command_round_trips() {
-        assert_eq!(shell::encode_command("a"), "YQA=");
+    fn shortcuts_round_trip_unicode_paths_without_powershell() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("音楽 Ünïcödé — FerricDAW");
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join(EXE_NAME);
+        fs::write(&exe, b"exe").unwrap();
+        let desktop = root.path().join("デスクトップ");
+        fs::create_dir_all(&desktop).unwrap();
+        let lnk = shell::create_desktop_shortcut(&desktop, &exe, &[]).unwrap();
+        assert_eq!(lnk, desktop.join("FerricDAW.lnk"));
+        let target = shell::read_shortcut_target(&lnk).unwrap();
+        assert!(same_path(&target, &exe), "{} != {}", target.display(), exe.display());
+        let listed = shell::list_shortcuts(&[desktop.clone()], &[]);
+        assert_eq!(listed.len(), 1);
+        assert!(shell::has_desktop_shortcut(&[desktop.clone()], &exe, &listed));
+        // Reuses the existing shortcut instead of creating "FerricDAW (2).lnk".
+        assert_eq!(shell::create_desktop_shortcut(&desktop, &exe, &listed).unwrap(), lnk);
+        // Retarget to a new location.
+        let moved = root.path().join("新しい場所").join(EXE_NAME);
+        fs::create_dir_all(moved.parent().unwrap()).unwrap();
+        fs::write(&moved, b"exe").unwrap();
+        shell::retarget_shortcut(&lnk, &moved).unwrap();
+        assert!(same_path(&shell::read_shortcut_target(&lnk).unwrap(), &moved));
+    }
+
+    #[test]
+    fn known_folders_resolve_without_powershell() {
+        let folders = shell::known_folders().unwrap();
+        assert!(folders.contains_key("desktop"));
+        assert!(folders.contains_key("programs"));
     }
 }
