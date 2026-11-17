@@ -253,6 +253,9 @@ impl FerricDawApp {
         apply_studio_theme(&cc.egui_ctx);
         let mut app = Self::new_core(Self::cli_open_path_from_args());
         app.housekeeping_enabled = true;
+        if let Some(log) = arg_value(UPDATE_FAILED_ARG) {
+            app.show_notice("Update not installed", update_failure_message(&log));
+        }
         app
     }
 
@@ -264,7 +267,7 @@ impl FerricDawApp {
                 skip_next = false;
                 return false;
             }
-            if s == RELOCATED_FROM_ARG {
+            if s == RELOCATED_FROM_ARG || s == UPDATE_FAILED_ARG {
                 skip_next = true;
                 return false;
             }
@@ -4001,6 +4004,9 @@ impl FerricDawApp {
 }
 
 const RELOCATED_FROM_ARG: &str = "--relocated-from";
+/// Passed by the update helper when installing failed and it restarted this
+/// (previous) version; the value is the helper's log file.
+const UPDATE_FAILED_ARG: &str = "--update-failed";
 const CREATE_SHORTCUT_ARG: &str = "--create-desktop-shortcut";
 const SHORTCUT_ANSWERED: &str = "desktop_shortcut_offer_answered";
 
@@ -4039,6 +4045,26 @@ fn arg_value(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Notice text after the update helper rolled back and restarted us.
+fn update_failure_message(log: &std::path::Path) -> String {
+    let details = std::fs::read_to_string(log)
+        .map(|t| {
+            let lines: Vec<&str> = t.lines().filter(|l| !l.trim().is_empty()).collect();
+            lines[lines.len().saturating_sub(12)..].join("\n")
+        })
+        .unwrap_or_default();
+    let mut msg = format!(
+        "The update could not be installed, so FerricDAW {} was restored and restarted. Your projects and settings were not changed.",
+        env!("CARGO_PKG_VERSION")
+    );
+    if !details.is_empty() {
+        msg.push_str("\n\nDetails:\n");
+        msg.push_str(&details);
+    }
+    msg.push_str(&format!("\n\nFull log: {}", log.display()));
+    msg
 }
 
 /// Runs off the UI thread after the window is up, so a new version only

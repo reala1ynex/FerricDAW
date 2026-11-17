@@ -19,11 +19,13 @@ $Log = [IO.Path]::ChangeExtension($PSCommandPath, '.log')
 $Touched = [Collections.Generic.List[object]]::new()
 $KeepBackup = $false
 $Success = $false
+$AppClosed = $false
 try {
     $App = Get-Process -Id $AppPid -ErrorAction SilentlyContinue
     if ($App -and -not $App.WaitForExit(60000)) {
         throw 'FerricDAW did not close. No installation files were changed.'
     }
+    $AppClosed = $true
     if ((Get-FileHash -LiteralPath $Zip -Algorithm SHA256).Hash -ne $Sha256) {
         throw 'The downloaded ZIP no longer matches the verified release checksum.'
     }
@@ -73,6 +75,23 @@ try {
         }
     }
     Add-Content -LiteralPath $Log -Value $Failure
+    # Bring the user back to the version they had (audit M11): the previous
+    # files were restored above (or never touched when relocating), so start
+    # that copy and tell it why.
+    if ($AppClosed) {
+        $OldDir = if ($RelocatedFrom) { $RelocatedFrom.TrimEnd('\') } else { $Destination }
+        $OldExe = Join-Path $OldDir $ExeName
+        if (Test-Path -LiteralPath $OldExe -PathType Leaf) {
+            try {
+                Start-Process -FilePath $OldExe -WorkingDirectory $OldDir -WindowStyle Normal `
+                    -ArgumentList @('--update-failed', ('"' + $Log + '"'))
+            } catch {
+                Add-Content -LiteralPath $Log -Value "Could not restart the previous version: $_"
+            }
+        } else {
+            Add-Content -LiteralPath $Log -Value "Previous version not found at $OldExe; not restarted."
+        }
+    }
     throw $Failure
 } finally {
     if ((Test-Path -LiteralPath $Stage) -and -not $KeepBackup) {

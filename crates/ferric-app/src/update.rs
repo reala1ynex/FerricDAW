@@ -404,4 +404,57 @@ mod tests {
         };
         assert!(validate_feed(&no_sha).is_err());
     }
+
+    /// The helper restores the previous files and restarts the previous
+    /// version with `--update-failed <log>` when installing fails (audit M11).
+    #[cfg(windows)]
+    #[test]
+    fn failed_update_restarts_previous_version_with_log() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("Install Ü");
+        std::fs::create_dir_all(&install).unwrap();
+        // Stand-in for the old ferricdaw.exe that records how it was started.
+        std::fs::write(
+            install.join("ferricdaw.cmd"),
+            "@echo off\r\necho %*> \"%~dp0started-with.txt\"\r\n",
+        )
+        .unwrap();
+        let helper = root.path().join("ferricdaw-apply-update-test.ps1");
+        std::fs::write(&helper, include_bytes!("apply_update.ps1")).unwrap();
+        let zip = root.path().join("update.zip");
+        std::fs::write(&zip, b"not the verified release").unwrap();
+        // A process id that has already exited.
+        let mut gone = std::process::Command::new("cmd").args(["/c", "exit"]).spawn().unwrap();
+        let pid = gone.id();
+        gone.wait().unwrap();
+
+        let status = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(&helper)
+            .arg("-Zip")
+            .arg(&zip)
+            .arg("-Destination")
+            .arg(&install)
+            .arg("-ExeName")
+            .arg("ferricdaw.cmd")
+            .arg("-AppPid")
+            .arg(pid.to_string())
+            .arg("-Sha256")
+            .arg("0".repeat(64))
+            .output()
+            .unwrap();
+        assert!(!status.status.success(), "a checksum mismatch must fail");
+        let marker = install.join("started-with.txt");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let args = std::fs::read_to_string(&marker).expect("previous version restarted");
+        assert!(args.contains("--update-failed"), "{args}");
+        let log = helper.with_extension("log");
+        assert!(args.contains(&*log.to_string_lossy()), "{args}");
+        assert!(std::fs::read_to_string(&log).unwrap().contains("checksum"));
+        assert!(helper.exists(), "the helper keeps itself and its log after a failure");
+        assert!(zip.exists(), "the downloaded ZIP is kept after a failure");
+    }
 }
