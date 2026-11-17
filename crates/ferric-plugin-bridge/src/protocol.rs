@@ -52,6 +52,39 @@ pub enum BridgeResponse {
     Pong,
 }
 
+/// Borrowed form of `BridgeRequest::ProcessBlock` with the identical JSON
+/// shape, so the audio thread can serialise a block without allocating.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename = "process_block")]
+pub struct ProcessBlockRef<'a> {
+    pub frames: u32,
+    pub bpm: f64,
+    pub params: &'a [f32],
+    pub midi: &'a [BridgeMidiEvent],
+}
+
+/// Encode a process-block request into `out` (cleared first). Reuses `out`'s
+/// capacity, so steady-state calls do not allocate.
+pub fn encode_process_block_into(out: &mut Vec<u8>, req: &ProcessBlockRef<'_>) -> Result<(), String> {
+    out.clear();
+    out.extend_from_slice(&[0u8; 4]);
+    serde_json::to_writer(&mut *out, req).map_err(|e| e.to_string())?;
+    let len = (out.len() - 4) as u32;
+    out[..4].copy_from_slice(&len.to_le_bytes());
+    Ok(())
+}
+
+/// Exact payload the worker sends for `BridgeResponse::Processed`.
+pub const PROCESSED_PAYLOAD: &[u8] = br#"{"kind":"processed"}"#;
+
+/// Decode a response payload (no length prefix).
+pub fn decode_response_payload(payload: &[u8]) -> Result<BridgeResponse, String> {
+    if payload == PROCESSED_PAYLOAD {
+        return Ok(BridgeResponse::Processed);
+    }
+    serde_json::from_slice(payload).map_err(|e| e.to_string())
+}
+
 pub fn encode_request(req: &BridgeRequest) -> Result<Vec<u8>, String> {
     let json = serde_json::to_vec(req).map_err(|e| e.to_string())?;
     let len = (json.len() as u32).to_le_bytes();
@@ -122,6 +155,45 @@ mod tests {
             sample_rate: 48_000.0,
             max_frames: 512,
         };
+        // The borrowed fast-path encoder produces the same request.
+        let mut buf = Vec::new();
+        encode_process_block_into(
+            &mut buf,
+            &ProcessBlockRef {
+                frames: 64,
+                bpm: 99.5,
+                params: &[0.25, 1.0],
+                midi: &[BridgeMidiEvent {
+                    sample_offset: 1,
+                    note: 61,
+                    velocity: 90,
+                    is_note_on: false,
+                }],
+            },
+        )
+        .unwrap();
+        match decode_request(&buf).unwrap() {
+            BridgeRequest::ProcessBlock { frames, bpm, params, midi } => {
+                assert_eq!((frames, bpm), (64, 99.5));
+                assert_eq!(params, vec![0.25, 1.0]);
+                assert_eq!(midi[0].note, 61);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cap = buf.capacity();
+        encode_process_block_into(
+            &mut buf,
+            &ProcessBlockRef { frames: 32, bpm: 120.0, params: &[0.5], midi: &[] },
+        )
+        .unwrap();
+        assert_eq!(buf.capacity(), cap, "steady-state encode must reuse the buffer");
+        let processed = encode_response(&BridgeResponse::Processed).unwrap();
+        assert_eq!(&processed[4..], PROCESSED_PAYLOAD);
+        assert!(matches!(
+            decode_response_payload(PROCESSED_PAYLOAD).unwrap(),
+            BridgeResponse::Processed
+        ));
+
         let load_bytes = encode_request(&load).unwrap();
         assert!(matches!(
             decode_request(&load_bytes).unwrap(),

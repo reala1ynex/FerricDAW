@@ -105,9 +105,16 @@ impl ExternalPluginAdapter for SandboxedExternalPlugin {
         let trim_db = params.get(4).copied().unwrap_or(0.0);
         let trim = db_to_lin(trim_db);
 
-        let result = match self.client.lock() {
+        // Never wait for the UI thread on the audio thread: if the client is
+        // momentarily busy, output silence for this block.
+        let result = match self.client.try_lock() {
             Ok(mut guard) => guard.process_block(left, right, params, bpm, midi_events),
-            Err(_) => Err(BridgeWorkerDeath),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                left.fill(0.0);
+                right.fill(0.0);
+                return;
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(BridgeWorkerDeath),
         };
 
         if result.is_err() {

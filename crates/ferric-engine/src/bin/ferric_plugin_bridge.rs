@@ -23,6 +23,8 @@ enum WorkerPlugin {
         state: Vst3GuiAndStateHandle,
     },
     TestPassthrough,
+    /// Test-only: never finishes a block (simulates a hung plugin).
+    TestStall,
 }
 
 struct WorkerState {
@@ -169,6 +171,12 @@ fn load_plugin(
     worker.scratch_l.resize(blk, 0.0);
     worker.scratch_r.resize(blk, 0.0);
 
+    if path == "__test_stall__" {
+        worker.plugin = Some(WorkerPlugin::TestStall);
+        return Ok(BridgeResponse::Loaded {
+            latency_samples: 0,
+        });
+    }
     if path == "__test_passthrough__" {
         worker.plugin = Some(WorkerPlugin::TestPassthrough);
         return Ok(BridgeResponse::Loaded {
@@ -248,6 +256,9 @@ fn process_block(
         Some(WorkerPlugin::TestPassthrough) => {
             // Echo input → output (identity).
         }
+        Some(WorkerPlugin::TestStall) => loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        },
         Some(WorkerPlugin::Clap { audio, .. }) => {
             audio.process(left, right, params, bpm, &midi_events);
         }
