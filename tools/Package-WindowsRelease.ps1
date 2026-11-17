@@ -3,7 +3,9 @@
 param(
     [string]$GitHubOwner = $env:FERRIC_GITHUB_OWNER,
     [string]$GitHubRepo = $(if ($env:FERRIC_GITHUB_REPO) { $env:FERRIC_GITHUB_REPO } else { 'FerricDAW' }),
-    [switch]$LocalCandidate
+    [switch]$LocalCandidate,
+    # Also copy the ZIP to the Desktop (off by default; audit L17).
+    [switch]$CopyToDesktop
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +23,14 @@ if ($CargoToml -match 'version\s*=\s*"([^"]+)"') {
     throw 'Could not read workspace version from Cargo.toml'
 }
 
-Write-Host "Building FerricDAW v$Version release…" -ForegroundColor Cyan
+# Record exactly what is being built so publishing can refuse a package that
+# does not come from the commit being released (audit M13).
+$BuildCommit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $BuildCommit -notmatch '^[0-9a-f]{40}$') { throw 'Could not resolve the build commit.' }
+$BuildBranch = (git rev-parse --abbrev-ref HEAD).Trim()
+$BuildDirty = [bool](git status --porcelain --untracked-files=no)
+
+Write-Host "Building FerricDAW v$Version release from $BuildBranch@$($BuildCommit.Substring(0, 12))$(if ($BuildDirty) { ' (uncommitted changes!)' })…" -ForegroundColor Cyan
 cargo build --release -p ferric-app
 if ($LASTEXITCODE -ne 0) { throw 'ferric-app release build failed' }
 cargo build --release -p ferric-engine --bin ferric-plugin-bridge
@@ -169,11 +178,24 @@ $LatestPath = Join-Path $OutputDir 'latest.json'
 $json = ($Latest | ConvertTo-Json -Compress)
 [System.IO.File]::WriteAllText($LatestPath, $json, [System.Text.UTF8Encoding]::new($false))
 
+$BuildInfo = [ordered]@{
+    version    = $Version
+    commit     = $BuildCommit
+    branch     = $BuildBranch
+    dirty      = $BuildDirty
+    zip_name   = (Split-Path -Leaf $ZipPath)
+    zip_sha256 = $Hash
+    built_at   = (Get-Date).ToUniversalTime().ToString('o')
+}
+$BuildInfoPath = Join-Path $OutputDir 'build-info.json'
+[System.IO.File]::WriteAllText($BuildInfoPath, ($BuildInfo | ConvertTo-Json), [System.Text.UTF8Encoding]::new($false))
+
 if ($LocalCandidate) {
     # Retain the exact staged executable for the final Windows run. The
     # candidate neither overwrites the shipped zip nor writes to Desktop.
     Write-Host "Candidate zip: $ZipPath"
     Write-Host "Candidate feed: $LatestPath"
+    Write-Host "Build info: $BuildInfoPath"
     Write-Host "Candidate executable: $(Join-Path $StageDir 'ferricdaw.exe')"
     return
 }
@@ -197,13 +219,16 @@ try {
     Write-Host "Note: left dist\FerricDAW alone (file in use / app open). Zip is still good." -ForegroundColor Yellow
 }
 
-$Desktop = [Environment]::GetFolderPath('Desktop')
-$DesktopZip = Join-Path $Desktop $ZipName
-try {
-    Copy-Item $ZipPath $DesktopZip -Force -ErrorAction Stop
-} catch {
-    $DesktopZip = $null
-    Write-Host "Note: could not copy zip to Desktop (file in use)." -ForegroundColor Yellow
+$DesktopZip = $null
+if ($CopyToDesktop) {
+    $Desktop = [Environment]::GetFolderPath('Desktop')
+    $DesktopZip = Join-Path $Desktop $ZipName
+    try {
+        Copy-Item $ZipPath $DesktopZip -Force -ErrorAction Stop
+    } catch {
+        $DesktopZip = $null
+        Write-Host "Note: could not copy zip to Desktop (file in use)." -ForegroundColor Yellow
+    }
 }
 
 # Cleanup stage (best-effort)
