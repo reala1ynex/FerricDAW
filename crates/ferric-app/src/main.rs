@@ -4385,6 +4385,9 @@ impl eframe::App for FerricDawApp {
         }
 
         self.engine.poll_ui(&mut self.capture_inbox);
+        if let Some(warning) = self.engine.take_recording_warning() {
+            self.show_notice("Recording problem", warning);
+        }
         if self
             .engine
             .apply_discovered_plugin_params(&mut self.project)

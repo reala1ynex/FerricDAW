@@ -2,6 +2,7 @@ pub mod audio_backend;
 pub mod clap_host;
 pub mod flac_enc;
 pub mod graph;
+mod live_record;
 pub mod lossy_enc;
 pub mod plugin_bridge;
 pub mod plugin_window;
@@ -45,8 +46,9 @@ use ferric_model::{
 use midir::{Ignore, MidiInput, MidiInputConnection};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Scans BOTH standard/custom `.clap` AND `.vst3` plugin directories using crash-quarantine protection!
 pub fn scan_all_external_plugins(
@@ -80,7 +82,7 @@ enum HwMidiPacket {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct StampedMidi {
+pub(crate) struct StampedMidi {
     frame_counter: u64,
     beat_estimate: f64,
     note: u8,
@@ -215,12 +217,13 @@ struct RtCallbackState {
     retro_midi: [StampedMidi; RETRO_MIDI_CAP],
     retro_midi_pos: usize,
     retro_midi_len: usize,
-    rec_midi: Vec<StampedMidi>,
-    rec_audio_l: Vec<f32>,
-    rec_audio_r: Vec<f32>,
+    /// Allocation-free live-take recorder (audit H3): frames stream to a
+    /// collector thread, so takes have no length cap.
+    rec: live_record::LiveRecorder,
     rec_resample_track: Option<TrackId>,
-    rec_resample_l: Vec<f32>,
-    rec_resample_r: Vec<f32>,
+    /// True when a hardware input stream is open.
+    has_input_device: bool,
+    capture_overflow: Arc<AtomicU64>,
     recording_offset_samples: usize,
     ping_state: LoopbackPingDetector,
     actual_buffer_frames: u32,
@@ -245,20 +248,31 @@ enum CaptureRequest {
         left: Vec<f32>,
         right: Vec<f32>,
     },
+    /// Live take finished; the events are collected by `RecCollector`.
     FinishedLiveMidi {
+        seq: u32,
+        event_count: usize,
         target_track: Option<TrackId>,
         start_beat: f64,
         end_beat: f64,
-        events: Vec<StampedMidi>,
     },
+    /// Live take finished; the audio is collected by `RecCollector`.
     FinishedLiveAudio {
+        seq: u32,
+        src: live_record::RecSource,
+        frames: usize,
+        trim_frames: usize,
         target_track: Option<TrackId>,
         start_beat: f64,
         end_beat: f64,
         sample_rate: u32,
-        left: Vec<f32>,
-        right: Vec<f32>,
     },
+}
+
+/// A finished live take waiting for the collector to hand over its data.
+struct PendingLiveTake {
+    req: CaptureRequest,
+    since: Instant,
 }
 
 pub fn list_audio_input_devices() -> Vec<String> {
@@ -534,6 +548,10 @@ pub struct EngineHandle {
     telem_rx: Consumer<EngineTelemetry>,
     garbage_rx: Consumer<Box<Project>>,
     capture_req_rx: Consumer<CaptureRequest>,
+    rec_collector: live_record::RecCollector,
+    pending_live_takes: Vec<PendingLiveTake>,
+    capture_overflow: Arc<AtomicU64>,
+    reported_capture_overflow: u64,
     shared_midi_tx: Arc<Mutex<Producer<HwMidiPacket>>>,
     known_fx_ids: Vec<ferric_model::FxId>,
     known_mod_ids: Vec<ferric_model::ModulatorId>,
@@ -614,7 +632,9 @@ impl EngineHandle {
         let (garbage_tx, garbage_rx) = RingBuffer::<Box<Project>>::new(64);
         let (hw_midi_tx, hw_midi_rx) = RingBuffer::<HwMidiPacket>::new(2048);
         let (hw_audio_tx, hw_audio_rx) = RingBuffer::<HwMultiFrame>::new(sample_rate as usize);
-        let (capture_req_tx, capture_req_rx) = RingBuffer::<CaptureRequest>::new(16);
+        let (capture_req_tx, capture_req_rx) = RingBuffer::<CaptureRequest>::new(64);
+        let (rec_recorder, rec_collector) = live_record::live_record_pair(sample_rate, true);
+        let capture_overflow = Arc::new(AtomicU64::new(0));
 
         let shared_midi_tx = Arc::new(Mutex::new(hw_midi_tx));
         let (midi_conns, midi_port_names) = Self::connect_all_hardware_midi(shared_midi_tx.clone());
@@ -673,12 +693,10 @@ impl EngineHandle {
             }; RETRO_MIDI_CAP],
             retro_midi_pos: 0,
             retro_midi_len: 0,
-            rec_midi: Vec::with_capacity(4096),
-            rec_audio_l: Vec::with_capacity(sample_rate as usize * 180),
-            rec_audio_r: Vec::with_capacity(sample_rate as usize * 180),
+            rec: rec_recorder,
             rec_resample_track: None,
-            rec_resample_l: Vec::with_capacity(sample_rate as usize * 180),
-            rec_resample_r: Vec::with_capacity(sample_rate as usize * 180),
+            has_input_device: input_channel_count > 0,
+            capture_overflow: capture_overflow.clone(),
             recording_offset_samples: recording_offset_samples as usize,
             ping_state: LoopbackPingDetector::default(),
             actual_buffer_frames: buf_hint.unwrap_or(256),
@@ -724,6 +742,10 @@ impl EngineHandle {
             telem_rx,
             garbage_rx,
             capture_req_rx,
+            rec_collector,
+            pending_live_takes: Vec::new(),
+            capture_overflow,
+            reported_capture_overflow: 0,
             shared_midi_tx,
             known_fx_ids,
             known_mod_ids,
@@ -1241,10 +1263,118 @@ impl EngineHandle {
             self.latest_telemetry = telem;
         }
         while let Ok(req) = self.capture_req_rx.pop() {
-            if let Some(ev) = convert_capture_request(req) {
-                out_captures.push(ev);
+            match req {
+                CaptureRequest::FinishedLiveMidi { .. } | CaptureRequest::FinishedLiveAudio { .. } => {
+                    self.pending_live_takes.push(PendingLiveTake {
+                        req,
+                        since: Instant::now(),
+                    });
+                }
+                other => {
+                    if let Some(ev) = convert_capture_request(other) {
+                        out_captures.push(ev);
+                    }
+                }
             }
         }
+        self.claim_finished_live_takes(out_captures);
+    }
+
+    /// Turn finished live takes into captured events once the collector
+    /// thread has received all of their frames.
+    fn claim_finished_live_takes(&mut self, out_captures: &mut Vec<CapturedTakeEvent>) {
+        if self.pending_live_takes.is_empty() {
+            return;
+        }
+        self.rec_collector.drain_now();
+        let pending = std::mem::take(&mut self.pending_live_takes);
+        for p in pending {
+            // The frame counts come from the callback, so a take is complete
+            // once that many frames arrived. The timeout is only a safety net.
+            let timed_out = p.since.elapsed() > Duration::from_secs(3);
+            match p.req {
+                CaptureRequest::FinishedLiveMidi {
+                    seq,
+                    event_count,
+                    target_track,
+                    start_beat,
+                    end_beat,
+                } => {
+                    if self.rec_collector.midi_len(seq) < event_count && !timed_out {
+                        self.pending_live_takes.push(p);
+                        continue;
+                    }
+                    let events = self.rec_collector.take_midi(seq);
+                    if let Some(ev) = live_midi_take(target_track, start_beat, end_beat, &events) {
+                        out_captures.push(ev);
+                    }
+                }
+                CaptureRequest::FinishedLiveAudio {
+                    seq,
+                    src,
+                    frames,
+                    trim_frames,
+                    target_track,
+                    start_beat,
+                    end_beat,
+                    sample_rate,
+                } => {
+                    if self.rec_collector.audio_len(seq, src) < frames && !timed_out {
+                        self.pending_live_takes.push(p);
+                        continue;
+                    }
+                    let (mut left, mut right) = self.rec_collector.take_audio(seq, src);
+                    left.truncate(frames);
+                    right.truncate(frames);
+                    let trim = trim_frames.min(left.len());
+                    if trim > 0 {
+                        left.drain(..trim);
+                        right.drain(..trim);
+                    }
+                    if !left.is_empty() {
+                        out_captures.push(CapturedTakeEvent::AudioTake {
+                            target_track,
+                            start_beat,
+                            length_beats: (end_beat - start_beat).max(1.0),
+                            sample_rate,
+                            left,
+                            right,
+                            is_retroactive: false,
+                        });
+                    }
+                }
+                other => {
+                    if let Some(ev) = convert_capture_request(other) {
+                        out_captures.push(ev);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Recording problems since the last call (dropped frames or takes),
+    /// for the UI to show. `None` when nothing was lost.
+    pub fn take_recording_warning(&mut self) -> Option<String> {
+        let lost = self.rec_collector.take_new_lost();
+        let overflow_total = self.capture_overflow.load(Ordering::Relaxed);
+        let overflow = overflow_total.saturating_sub(self.reported_capture_overflow);
+        self.reported_capture_overflow = overflow_total;
+        if lost == 0 && overflow == 0 {
+            return None;
+        }
+        let mut msg = String::new();
+        if lost > 0 {
+            msg.push_str(&format!(
+                "{lost} recorded frame(s)/event(s) were dropped because the recorder could not keep up. "
+            ));
+        }
+        if overflow > 0 {
+            msg.push_str(&format!(
+                "{overflow} capture request(s) could not be delivered because the capture queue was full. "
+            ));
+        }
+        msg.push_str("Close other heavy programs or raise the audio buffer size, then record again.");
+        Some(msg)
     }
 }
 
@@ -1274,11 +1404,7 @@ impl RtCallbackState {
                         } else {
                             self.core.playhead_beat
                         };
-                        self.rec_midi.clear();
-                        self.rec_audio_l.clear();
-                        self.rec_audio_r.clear();
-                        self.rec_resample_l.clear();
-                        self.rec_resample_r.clear();
+                        self.rec.begin();
                         self.rec_resample_track = None;
                     }
                 }
@@ -1305,11 +1431,7 @@ impl RtCallbackState {
                         } else {
                             self.core.playhead_beat
                         };
-                        self.rec_midi.clear();
-                        self.rec_audio_l.clear();
-                        self.rec_audio_r.clear();
-                        self.rec_resample_l.clear();
-                        self.rec_resample_r.clear();
+                        self.rec.begin();
                         self.rec_resample_track = None;
                     }
                 }
@@ -1453,11 +1575,9 @@ impl RtCallbackState {
                 self.retro_audio_r[self.retro_audio_pos] = ir * self.core.input_gain_lin;
                 self.retro_audio_pos = (self.retro_audio_pos + 1) % retro_cap;
 
-                if self.is_actively_recording_now()
-                    && self.rec_audio_l.len() < self.rec_audio_l.capacity()
-                {
-                    self.rec_audio_l.push(il * self.core.input_gain_lin);
-                    self.rec_audio_r.push(ir * self.core.input_gain_lin);
+                if self.is_actively_recording_now() {
+                    self.rec
+                        .push_input(il * self.core.input_gain_lin, ir * self.core.input_gain_lin);
                 }
             }
 
@@ -1498,9 +1618,7 @@ impl RtCallbackState {
             );
 
             // Capture live ResampleTrackOutput post-fader audio if any armed track selects it!
-            if self.is_actively_recording_now()
-                && self.rec_resample_l.len() + chunk <= self.rec_resample_l.capacity()
-            {
+            if self.is_actively_recording_now() {
                 if let Some((t_idx, trk)) = self
                     .project
                     .tracks
@@ -1513,8 +1631,7 @@ impl RtCallbackState {
                 {
                     self.rec_resample_track = Some(trk.id);
                     let (rl, rr) = self.core.track_post_fader_slices(t_idx, chunk);
-                    self.rec_resample_l.extend_from_slice(rl);
-                    self.rec_resample_r.extend_from_slice(rr);
+                    self.rec.push_resample(rl, rr);
                 }
             }
 
@@ -1641,8 +1758,8 @@ impl RtCallbackState {
         self.retro_midi_pos = (self.retro_midi_pos + 1) % RETRO_MIDI_CAP;
         self.retro_midi_len = (self.retro_midi_len + 1).min(RETRO_MIDI_CAP);
 
-        if self.is_actively_recording_now() && self.rec_midi.len() < self.rec_midi.capacity() {
-            self.rec_midi.push(ev);
+        if self.is_actively_recording_now() {
+            self.rec.push_midi(ev);
         }
     }
 
@@ -1650,11 +1767,21 @@ impl RtCallbackState {
         self.flush_live_recording_at(self.core.playhead_beat);
     }
 
+    /// Hand a request to the UI without blocking; a full queue is counted
+    /// and reported instead of silently losing the take.
+    fn push_capture(&mut self, req: CaptureRequest) {
+        if self.capture_req_tx.push(req).is_err() {
+            self.capture_overflow.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     fn flush_live_recording_at(&mut self, end_beat: f64) {
         let safe_end = end_beat.max(self.record_start_beat + 1.0);
+        let seq = self.rec.seq();
+        let sample_rate = self.core.sample_rate as u32;
 
-        // 1. Flush MIDI take (alongside audio when both were recorded)
-        if !self.rec_midi.is_empty() {
+        // 1. MIDI take (alongside audio when both were recorded)
+        if self.rec.midi_events > 0 {
             let midi_target = self
                 .project
                 .tracks
@@ -1666,18 +1793,19 @@ impl RtCallbackState {
                     })
                 })
                 .map(|t| t.id);
-
-            let events = self.rec_midi.clone();
-            self.rec_midi.clear();
-            let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveMidi {
+            self.push_capture(CaptureRequest::FinishedLiveMidi {
+                seq,
+                event_count: self.rec.midi_events,
                 target_track: midi_target,
                 start_beat: self.record_start_beat,
                 end_beat: safe_end,
-                events,
             });
         }
 
-        // 2. Flush hardware Line-In / mic audio take
+        // 2. Hardware line-in / mic take. Kept whenever an input device is
+        // open, even if it never crossed a level threshold (audit H4); only
+        // pure digital silence on an Audio+MIDI track that recorded MIDI is
+        // treated as "this pass was a MIDI take".
         let audio_target = self
             .project
             .tracks
@@ -1690,43 +1818,45 @@ impl RtCallbackState {
                     )
             })
             .map(|t| t.id);
-
-        if self.has_hw_audio_signal && audio_target.is_some() && self.rec_audio_l.len() > 2048 {
-            // Trim leading round-trip hardware latency (`recording_offset_samples`) so overdubs lock sample-tight to the grid!
-            let trim = self
+        let silent_midi_pass = self.rec.input_peak == 0.0 && self.rec.midi_events > 0;
+        if self.has_input_device
+            && audio_target.is_some()
+            && self.rec.input_frames > 2048
+            && !silent_midi_pass
+        {
+            // Trim leading round-trip hardware latency so overdubs lock to the grid.
+            let trim_frames = self
                 .recording_offset_samples
-                .min(self.rec_audio_l.len().saturating_sub(1024));
-            let left = self.rec_audio_l[trim..].to_vec();
-            let right = self.rec_audio_r[trim..].to_vec();
-            let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveAudio {
+                .min(self.rec.input_frames.saturating_sub(1024));
+            self.push_capture(CaptureRequest::FinishedLiveAudio {
+                seq,
+                src: live_record::RecSource::Input,
+                frames: self.rec.input_frames,
+                trim_frames,
                 target_track: audio_target,
                 start_beat: self.record_start_beat,
                 end_beat: safe_end,
-                sample_rate: self.core.sample_rate as u32,
-                left,
-                right,
+                sample_rate,
             });
         }
-        self.rec_audio_l.clear();
-        self.rec_audio_r.clear();
 
-        // 3. Flush ResampleTrackOutput Take (internal synth/arp/KAOSS resample!)
+        // 3. ResampleTrackOutput take (internal synth/arp/KAOSS resample)
         if let Some(res_tid) = self.rec_resample_track.take() {
-            if self.rec_resample_l.len() > 2048 {
-                let left = self.rec_resample_l.clone();
-                let right = self.rec_resample_r.clone();
-                let _ = self.capture_req_tx.push(CaptureRequest::FinishedLiveAudio {
+            if self.rec.resample_frames > 2048 {
+                self.push_capture(CaptureRequest::FinishedLiveAudio {
+                    seq,
+                    src: live_record::RecSource::Resample,
+                    frames: self.rec.resample_frames,
+                    trim_frames: 0,
                     target_track: Some(res_tid),
                     start_beat: self.record_start_beat,
                     end_beat: safe_end,
-                    sample_rate: self.core.sample_rate as u32,
-                    left,
-                    right,
+                    sample_rate,
                 });
             }
         }
-        self.rec_resample_l.clear();
-        self.rec_resample_r.clear();
+        // Anything recorded after this point belongs to a new take.
+        self.rec.begin();
     }
 
     fn emit_retroactive_capture(&mut self, seconds_back: f32) {
@@ -1746,7 +1876,7 @@ impl RtCallbackState {
 
         if !recent_midi.is_empty() {
             self.retro_midi_len = 0;
-            let _ = self.capture_req_tx.push(CaptureRequest::RetroMidi {
+            self.push_capture(CaptureRequest::RetroMidi {
                 bpm: self.project.bpm,
                 sample_rate: sr,
                 current_frame: self.frame_counter,
@@ -1766,7 +1896,7 @@ impl RtCallbackState {
                 left.push(self.retro_audio_l[(start + i) % cap]);
                 right.push(self.retro_audio_r[(start + i) % cap]);
             }
-            let _ = self.capture_req_tx.push(CaptureRequest::RetroAudio {
+            self.push_capture(CaptureRequest::RetroAudio {
                 bpm: self.project.bpm,
                 sample_rate: sr,
                 current_beat: self.core.playhead_beat,
@@ -1842,61 +1972,47 @@ fn convert_capture_request(req: CaptureRequest) -> Option<CapturedTakeEvent> {
                 is_retroactive: true,
             })
         }
-        CaptureRequest::FinishedLiveMidi {
-            target_track,
-            start_beat,
-            end_beat,
-            events,
-        } => {
-            let mut notes = Vec::new();
-            let mut active: [Option<(f64, u8)>; 128] = [None; 128];
-            for ev in &events {
-                let rel_beat = (ev.beat_estimate - start_beat).max(0.0);
-                let idx = (ev.note as usize) & 127;
-                if ev.is_note_on && ev.velocity > 0 {
-                    active[idx] = Some((rel_beat, ev.velocity));
-                } else if let Some((on_b, vel)) = active[idx].take() {
-                    notes.push(MidiNote::new(ev.note, vel, on_b, (rel_beat - on_b).max(0.125)));
-                }
-            }
-            for (pitch, slot) in active.iter().enumerate() {
-                if let Some(&(on_b, vel)) = slot.as_ref() {
-                    notes.push(MidiNote::new(
-                        pitch as u8,
-                        vel,
-                        on_b,
-                        (end_beat - start_beat - on_b).max(0.25),
-                    ));
-                }
-            }
-            if notes.is_empty() {
-                return None;
-            }
-            Some(CapturedTakeEvent::MidiTake {
-                target_track,
-                start_beat,
-                length_beats: (end_beat - start_beat).max(1.0),
-                notes,
-                is_retroactive: false,
-            })
-        }
-        CaptureRequest::FinishedLiveAudio {
-            target_track,
-            start_beat,
-            end_beat,
-            sample_rate,
-            left,
-            right,
-        } => Some(CapturedTakeEvent::AudioTake {
-            target_track,
-            start_beat,
-            length_beats: (end_beat - start_beat).max(1.0),
-            sample_rate,
-            left,
-            right,
-            is_retroactive: false,
-        }),
+        CaptureRequest::FinishedLiveMidi { .. } | CaptureRequest::FinishedLiveAudio { .. } => None,
     }
+}
+
+fn live_midi_take(
+    target_track: Option<TrackId>,
+    start_beat: f64,
+    end_beat: f64,
+    events: &[StampedMidi],
+) -> Option<CapturedTakeEvent> {
+    let mut notes = Vec::new();
+    let mut active: [Option<(f64, u8)>; 128] = [None; 128];
+    for ev in events {
+        let rel_beat = (ev.beat_estimate - start_beat).max(0.0);
+        let idx = (ev.note as usize) & 127;
+        if ev.is_note_on && ev.velocity > 0 {
+            active[idx] = Some((rel_beat, ev.velocity));
+        } else if let Some((on_b, vel)) = active[idx].take() {
+            notes.push(MidiNote::new(ev.note, vel, on_b, (rel_beat - on_b).max(0.125)));
+        }
+    }
+    for (pitch, slot) in active.iter().enumerate() {
+        if let Some(&(on_b, vel)) = slot.as_ref() {
+            notes.push(MidiNote::new(
+                pitch as u8,
+                vel,
+                on_b,
+                (end_beat - start_beat - on_b).max(0.25),
+            ));
+        }
+    }
+    if notes.is_empty() {
+        return None;
+    }
+    Some(CapturedTakeEvent::MidiTake {
+        target_track,
+        start_beat,
+        length_beats: (end_beat - start_beat).max(1.0),
+        notes,
+        is_retroactive: false,
+    })
 }
 
 fn collect_builtin_ids(
