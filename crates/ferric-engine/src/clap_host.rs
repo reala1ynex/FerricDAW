@@ -790,8 +790,8 @@ impl HostedClapInstance {
         });
         let h_name = CString::new("FerricDAW").unwrap();
         let h_vendor = CString::new("FerricDAW Open Source").unwrap();
-        let h_url = CString::new("https://github.com/ferricdaw").unwrap();
-        let h_ver = CString::new("0.5.0").unwrap();
+        let h_url = CString::new("https://github.com/reala1ynex/FerricDAW").unwrap();
+        let h_ver = CString::new(env!("CARGO_PKG_VERSION")).unwrap();
 
         let host_box = Box::new(ClapHost {
             clap_version: ClapVersion {

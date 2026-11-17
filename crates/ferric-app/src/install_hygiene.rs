@@ -359,7 +359,10 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
 
 /// True when `dir` or an ancestor holds a `.git` entry (developer checkout).
 pub fn inside_source_checkout(dir: &Path) -> bool {
-    dir.ancestors().any(|a| a.join(".git").exists())
+    // A FerricDAW checkout, not just any git repository (a user may keep the
+    // Desktop or their whole profile under git).
+    dir.ancestors()
+        .any(|a| a.join(".git").exists() && a.join("crates").join("ferric-app").is_dir())
 }
 
 /// Well-known user folders and the dedicated install folder.
@@ -537,9 +540,6 @@ pub fn candidate_dirs(
     out
 }
 
-/// Leftovers in the temp folder from older updaters: downloaded ZIPs whose
-/// SHA-256 matches a published package, the v1.1.12 helper script, and
-/// manifest-matched files in `ferricdaw-update-stage-*` folders.
 /// CRC-32 (IEEE) of a file, as stored in ZIP central directories.
 fn crc32_file(path: &Path) -> std::io::Result<u32> {
     let mut table = [0u32; 256];
@@ -628,6 +628,9 @@ fn zip_matches_installed(zip: &Path, dir: &Path, index: &ManifestIndex) -> bool 
     any && saw_exe
 }
 
+/// Leftovers in the temp folder from older updaters: downloaded ZIPs whose
+/// SHA-256 matches a published package, the v1.1.12 helper script, and
+/// manifest-matched files in `ferricdaw-update-stage-*` folders.
 pub fn temp_leftovers(temp: &Path, index: &ManifestIndex, current_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut files = Vec::new();
     let mut stage_dirs = Vec::new();
@@ -765,6 +768,12 @@ pub fn is_auto_cleanup_dir(locs: &Locations, dir: &Path, relocated_from: Option<
     locs.desktops.iter().chain(locs.downloads.iter()).any(|root| {
         same_path(root, dir) || dir.parent().map(|p| same_path(root, p)).unwrap_or(false)
     })
+}
+
+/// Written when the user declines moving this version out of the Desktop or
+/// Downloads; the offer comes back with the next version.
+pub fn relocation_declined_marker(locs: &Locations, version: &str) -> PathBuf {
+    locs.appdata.join(format!("relocation-declined-{version}"))
 }
 
 /// Folders the user chose to keep when asked; never offered again.
@@ -1365,6 +1374,7 @@ mod tests {
             lay_down(d);
         }
         fs::create_dir_all(checkout.join(".git")).unwrap();
+        fs::create_dir_all(checkout.join("crates").join("ferric-app")).unwrap();
         put(&no_exe, "README.md", b"readme 1.1.12");
         user_data(&shortcut_dir);
         record_history(&locs, &history_dir);
@@ -1379,6 +1389,12 @@ mod tests {
         let has = |p: &Path| dirs.iter().any(|d| same_path(d, p));
         assert!(has(&desktop) && has(&download_copy) && has(&shortcut_dir) && has(&history_dir));
         assert!(!has(&checkout_build), "source checkouts are skipped");
+        assert!(inside_source_checkout(&checkout_build));
+        // Any other git repository (e.g. a Desktop kept under git) is not a checkout.
+        let other_repo = root.path().join("dotfiles");
+        fs::create_dir_all(other_repo.join(".git")).unwrap();
+        fs::create_dir_all(other_repo.join("FerricDAW")).unwrap();
+        assert!(!inside_source_checkout(&other_repo.join("FerricDAW")));
         assert!(!has(&current), "running folder is skipped");
         assert!(!has(&locs.appdata), "settings folder is skipped");
 

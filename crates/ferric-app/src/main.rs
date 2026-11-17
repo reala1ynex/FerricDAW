@@ -238,6 +238,8 @@ struct FerricDawApp {
     housekeeping_enabled: bool,
     housekeeping_rx: Option<std::sync::mpsc::Receiver<HousekeepingMsg>>,
     relocation_offer: Option<RelocationOffer>,
+    /// The relocation copy running off the UI thread (audit L15).
+    relocation_job: Option<RelocationJob>,
     shortcut_offer: Option<ShortcutOffer>,
     cleanup_confirm: Option<CleanupConfirm>,
     cleanup_rx: Option<std::sync::mpsc::Receiver<install_hygiene::HousekeepingReport>>,
@@ -387,6 +389,7 @@ impl FerricDawApp {
             housekeeping_enabled: false,
             housekeeping_rx: None,
             relocation_offer: None,
+            relocation_job: None,
             shortcut_offer: None,
             cleanup_confirm: None,
             cleanup_rx: None,
@@ -4028,6 +4031,13 @@ struct RelocationOffer {
     label: String,
     install_dir: PathBuf,
     add_shortcut: bool,
+    /// Written when the user says "Not now", so this version stops asking.
+    declined_marker: PathBuf,
+}
+
+struct RelocationJob {
+    offer: RelocationOffer,
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
 }
 
 struct ShortcutOffer {
@@ -4078,18 +4088,20 @@ fn run_housekeeping(tx: std::sync::mpsc::Sender<HousekeepingMsg>) {
     }
     let locs = ih::probe_locations();
     let manifest = ih::read_manifest(&dir);
+    let version = env!("CARGO_PKG_VERSION");
     if locs.is_shared_folder(&dir) {
-        if manifest.is_some() {
+        let declined_marker = ih::relocation_declined_marker(&locs, version);
+        if manifest.is_some() && !declined_marker.exists() {
             let _ = tx.send(HousekeepingMsg::Relocate(RelocationOffer {
                 label: locs.folder_label(&dir),
                 from: dir,
                 install_dir: locs.install_dir.clone(),
                 add_shortcut: true,
+                declined_marker,
             }));
         }
         return;
     }
-    let version = env!("CARGO_PKG_VERSION");
     let relocated_from = arg_value(RELOCATED_FROM_ARG);
     let marker = locs.appdata.join(format!("housekeeping-{version}.done"));
     let mut shortcuts = ih::shell::list_shortcuts(&locs.desktops, &locs.start_menu);
@@ -4197,6 +4209,10 @@ impl FerricDawApp {
         if self.show_first_run || self.pending_destructive.is_some() {
             return;
         }
+        if self.relocation_job.is_some() {
+            self.render_relocation_progress(ctx);
+            return;
+        }
         let Some(offer) = self.relocation_offer.as_mut() else { return };
         let mut choice: Option<bool> = None;
         egui::Window::new("Move FerricDAW to its own folder")
@@ -4252,33 +4268,95 @@ impl FerricDawApp {
         match choice {
             Some(true) => {
                 let offer = self.relocation_offer.take().expect("offer");
-                let result = install_hygiene::read_manifest(&offer.from)
-                    .ok_or_else(|| "The release manifest beside ferricdaw.exe is missing.".to_string())
-                    .and_then(|m| install_hygiene::install_copy(&offer.from, &m, &offer.install_dir));
-                match result {
-                    Ok(()) => {
-                        let mut args = vec![
-                            RELOCATED_FROM_ARG.to_string(),
-                            offer.from.display().to_string(),
-                        ];
-                        if offer.add_shortcut {
-                            args.push(CREATE_SHORTCUT_ARG.to_string());
-                        }
-                        self.relaunch_after_quit =
-                            Some((offer.install_dir.join(install_hygiene::EXE_NAME), args));
-                        self.request_destructive(PendingDestructive::MoveInstall);
-                    }
-                    Err(error) => {
+                // Copying and verifying ~100 MB must not freeze the window.
+                let (tx, rx) = std::sync::mpsc::channel();
+                let from = offer.from.clone();
+                let install_dir = offer.install_dir.clone();
+                let ctx2 = ctx.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("ferric-relocate".into())
+                    .spawn(move || {
+                        let result = install_hygiene::read_manifest(&from)
+                            .ok_or_else(|| "The release manifest beside ferricdaw.exe is missing.".to_string())
+                            .and_then(|m| install_hygiene::install_copy(&from, &m, &install_dir));
+                        let _ = tx.send(result);
+                        ctx2.request_repaint();
+                    });
+                match spawned {
+                    Ok(_) => self.relocation_job = Some(RelocationJob { offer, rx }),
+                    Err(e) => {
                         self.status_banner =
-                            format!("Could not move FerricDAW: {error} Nothing was removed.");
+                            format!("Could not move FerricDAW: could not start the copy ({e}). Nothing was removed.");
                     }
                 }
             }
             Some(false) => {
-                self.relocation_offer = None;
-                self.status_banner = "FerricDAW stays where it is for this session.".into();
+                if let Some(offer) = self.relocation_offer.take() {
+                    if let Some(parent) = offer.declined_marker.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(&offer.declined_marker, b"1");
+                }
+                self.status_banner =
+                    "FerricDAW stays where it is. It will offer to move again after the next update.".into();
             }
             None => {}
+        }
+    }
+
+    /// Progress window while the relocation copy runs; finishes the move
+    /// when the background copy reports back.
+    fn render_relocation_progress(&mut self, ctx: &Context) {
+        let Some(job) = self.relocation_job.as_ref() else { return };
+        let result = match job.rx.try_recv() {
+            Ok(r) => Some(r),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Some(Err("the copy stopped unexpectedly.".to_string()))
+            }
+        };
+        let Some(result) = result else {
+            egui::Window::new("Moving FerricDAW")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(420.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(BG_ELEVATED)
+                        .stroke(Stroke::new(1.5_f32, ACCENT_FERRIC))
+                        .corner_radius(8)
+                        .inner_margin(16.0),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Copying and verifying FerricDAW into {}",
+                                job.offer.install_dir.display()
+                            ))
+                            .color(TEXT_MAIN),
+                        );
+                    });
+                });
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        let job = self.relocation_job.take().expect("job");
+        let offer = job.offer;
+        match result {
+            Ok(()) => {
+                let mut args = vec![RELOCATED_FROM_ARG.to_string(), offer.from.display().to_string()];
+                if offer.add_shortcut {
+                    args.push(CREATE_SHORTCUT_ARG.to_string());
+                }
+                self.relaunch_after_quit = Some((offer.install_dir.join(install_hygiene::EXE_NAME), args));
+                self.request_destructive(PendingDestructive::MoveInstall);
+            }
+            Err(error) => {
+                self.status_banner = format!("Could not move FerricDAW: {error} Nothing was removed.");
+            }
         }
     }
 
@@ -4286,6 +4364,7 @@ impl FerricDawApp {
         if self.show_first_run
             || self.pending_destructive.is_some()
             || self.relocation_offer.is_some()
+            || self.relocation_job.is_some()
             || self.notice.is_some()
         {
             return;
@@ -4446,7 +4525,11 @@ impl FerricDawApp {
     }
 
     fn render_shortcut_modal(&mut self, ctx: &Context) {
-        if self.show_first_run || self.pending_destructive.is_some() || self.relocation_offer.is_some() {
+        if self.show_first_run
+            || self.pending_destructive.is_some()
+            || self.relocation_offer.is_some()
+            || self.relocation_job.is_some()
+        {
             return;
         }
         if self.shortcut_offer.is_none() {
@@ -4639,6 +4722,7 @@ impl eframe::App for FerricDawApp {
             || self.show_first_run
             || self.show_update_modal
             || self.relocation_offer.is_some()
+            || self.relocation_job.is_some()
             || self.shortcut_offer.is_some();
         self.render_first_run_modal(ctx);
         self.render_bounce_modal(ctx);
