@@ -1,5 +1,26 @@
 # FerricDAW 1.1.13 · Local candidate verification
 
+## v1.1.15 local candidate - 2026-11-16 21:12 ET (branch `fix/v1.1.15-audit`, commit `b6cd0a8`, clean tree)
+
+| Item | Value |
+|---|---|
+| Staged EXE | `dist\candidate\FerricDAW-stage-20261116-211232\ferricdaw.exe`, 13,915,648 bytes, SHA-256 `c144e0414571c77eba4889f69b660bc2028d321eddb2b0046225dc62f6d6ec75`, FileVersion 1.1.15.0 |
+| Plugin bridge | 1,500,160 bytes, SHA-256 `00e99d2ecdc66e4b1cbdb2e0fe4a7180d6c683101e8d672db305abca95701e72` |
+| ZIP | `dist\candidate\FerricDAW-v1.1.15-win-x64.zip`, 12,511,020 bytes, SHA-256 `cd2c9200b96b7c779a1e321db7aa2c9ca7024d85b3c6515f4ada8d6a95153d39` |
+| Feed / build info | `latest.json` version 1.1.15, SHA matches; `build-info.json` commit `b6cd0a8`, dirty false |
+
+| Gate | Result |
+|---|---|
+| `RUSTFLAGS=-D warnings cargo check --workspace --all-targets` | Passed |
+| `cargo test --workspace` | 70 passed, 0 failed, 1 ignored (live redirect test; passes with `--include-ignored`) |
+| `cargo clippy --workspace --all-targets` | 0 errors, 34 style warnings |
+| `tools\FunctionTest-Windows.ps1` | 63/63 |
+| Sandbox from-1.1.12 / from-1.1.13 | Move offer → copy → restart from `%LOCALAPPDATA%\Programs\FerricDAW`; Desktop and Downloads program files removed, user files and plugins kept, shortcuts retargeted, Temp emptied. "Not now" writes `relocation-declined-1.1.15` and the next launch does not ask |
+| Sandbox from-1.1.14 | v1.1.14's helper installs 1.1.15 into the install folder; stray Desktop/Downloads copies cleaned; a copy in `Music Apps\FerricDAW` prompts; Keep remembered, Remove deletes only package files and retargets its shortcut |
+| Unicode / long path | Launch from a 218-character Unicode path (`Ünïcødé 音楽 Prøjekt\…\FerricDAW Ä`), with history recorded correctly. Paths above 260 characters were not tested (LongPathsEnabled=0) |
+
+Not tested: Authenticode (no certificate), OneDrive-redirected Desktop, the M7/H3 end-to-end path with real devices and plugins, and publish guards (publishing was not run).
+
 ## v1.1.14 local candidate - 2026-11-16 17:23 ET (branch `fix/v1.1.14-updater-install-dir`)
 
 | Item | Value |

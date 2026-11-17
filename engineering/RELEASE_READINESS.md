@@ -1,5 +1,7 @@
 # Release Readiness
 
+**v1.1.15 (2026-11-16):** a local candidate on `fix/v1.1.15-audit` passes check, tests, clippy (0 errors), the function test (63/63) and sandbox updates from 1.1.12, 1.1.13 and 1.1.14; see `CANDIDATE_VERIFICATION.md`. It is unpublished and awaits Patrick's approval, then a merge to master and a rebuild from a clean master, which `Publish-GitHubRelease.ps1` now requires.
+
 **Classification:** v1.1.12 published and verified, with the visual coverage limits below.
 
 | Gate | Status | Evidence |

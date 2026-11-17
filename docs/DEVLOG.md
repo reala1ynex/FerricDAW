@@ -8,6 +8,21 @@ Notes on what shipped and when. Newest first.
 
 ---
 
+## 2026-11-16 — v1.1.15 (local candidate, unpublished)
+
+Fixes from the v1.1.14 code audit.
+
+- Saving writes to a temporary file, flushes it to disk, keeps the previous file as `.bak` and then replaces the project, so a failed or interrupted save never truncates it. Save and Save As copy all audio the project uses (takes, sampler slots, clip and track FX samples) into the project folder. Opening a project now names any audio files that are missing or unreadable instead of loading silence.
+- Live recordings stream through lock-free buffers to a writer thread. The audio thread no longer allocates, takes have no length cap, and quiet takes are kept. If the capture buffer ever overflows, FerricDAW reports it.
+- Every wait on a sandboxed plugin has a time limit, so a hung plugin can no longer freeze audio or the window. Plugin and modulator instances, projects and preview audio are released off the audio thread.
+- If the plugin sandbox can't start, the plugin is not loaded in-process anymore. FerricDAW explains why instead.
+- Older-copy cleanup removes copies automatically only on the Desktop, in Downloads, and in the folder FerricDAW just moved from. It asks first about any other copy and remembers "Keep them". Interrupted deletes are finished on the next start.
+- Known folders and shortcuts use the Windows Shell APIs directly instead of PowerShell, so Unicode paths work.
+- If an update fails, the previous version is restored and restarted, and it shows the updater log.
+- Updates are accepted only from this repository's release assets, and every redirect is checked. If an installed release is Authenticode-signed, the update must carry the same signer.
+- Release builds record their commit, branch and ZIP hash. Publishing refuses a dirty tree, a different branch or a mismatched build.
+- Smaller fixes: NaN-safe sorting, the "Move FerricDAW" copy no longer blocks the window, "Not now" is remembered per version, and the CLAP host reports its real version. Also cleared all clippy errors.
+
 ## 2026-11-16 — v1.1.14
 
 - Fixed updates that spread FerricDAW's program files across the Desktop. Earlier updaters copied the release into whatever folder held `ferricdaw.exe`, so a copy kept on the Desktop received all 17 package files and the `demo` and `docs` folders.

@@ -1,6 +1,6 @@
 # Issue Registry
 
-**Last updated:** 2026-11-15
+**Last updated:** 2026-11-16
 
 | ID | Sev | Subsystem | Description | Root cause | Status | Tests | Evidence |
 |----|-----|-----------|-------------|------------|--------|-------|----------|
@@ -35,6 +35,26 @@
 | P1 | 6 | 4 | 2 fixed in candidate, final visual verification pending (I-17, I-18) |
 | P2 | 10 | 8 | 2 (I-05 accepted, I-13 blocked) |
 | P3 | 4 | 2 | 2 (I-12 env, I-14 blocked) |
+
+## v1.1.14 audit findings — fixed on `fix/v1.1.15-audit` (local, unpublished)
+
+| ID | Sev | Finding | Fix (commit) | Evidence / limits |
+|---|---|---|---|---|
+| A-01 | High | Project save truncated the file in place | Temp file + fsync + `.bak` + rename (`fd587d6`) | `fsutil::tests` incl. locked target |
+| A-02 | High | Save/Save As left takes and samples outside the project; missing audio loaded silently | Collect every buffer into the project; missing/unreadable audio reported (`d83fc54`) | 4 bundle tests in ferric-engine |
+| A-03/A-04 | High | Live recording allocated on the audio thread, capped length, dropped quiet takes | Lock-free rings + collector thread (`fdd290c`) | 200 s take, overflow, separate-take tests; callback→UI only component-tested |
+| A-05 | High | Unbounded plugin-bridge pipe waits; per-block allocation | Overlapped pipe with timeouts, reusable encode (`88812a7`) | Hung worker <3 s, bounded shutdown tests |
+| A-06 | High | FX/modulator/project/preview drops on the audio thread | Boxed pools, `RtGarbage` ring (`17df55e`) | 1 test |
+| A-07 | Med | Silent in-process fallback when sandbox failed | Not loaded + notice (`fd8fdcd`) | No automated test (needs audio devices) |
+| A-08/A-16 | Med/Low | Cleanup removed copies anywhere; interrupted deletes left holds | Auto scope = Desktop, Downloads, relocation source; others confirmed; hold sweep (`1a8d631`) | 3 tests; sandbox confirm Keep/Remove verified 2026-11-16 |
+| A-09/A-10 | Med | PowerShell for known folders and shortcuts (Unicode, policy) | Native Shell COM (`2eabf59`) | Unicode shortcut round trip test |
+| A-11 | Med | Failed update left no running app | Restore + restart with `--update-failed` (`182500b`) | Helper test with fake exe |
+| A-12 | Med | Loose update URL allowlist; redirects unchecked | Repo-pinned URLs, per-hop redirect check, optional Authenticode (`931f9af`) | Allow/deny tables; live redirect test; Authenticode untested (no certificate) |
+| A-13 | Med | Publish could ship a dirty or mismatched build | `build-info.json` + publish guards (`e88c59e`) | Parse-checked; guards not executed (publishing not run) |
+| A-14 | Low | NaN panics in float sorts | `total_cmp` (`6076017`) | NaN sort test |
+| A-15 | Low | Relocation copy blocked the UI | Background copy + progress (`e780a4c`) | Sandbox move from 1.1.12/1.1.13 |
+| A-17 | Low | Misc: decline not remembered, any `.git` disabled cleanup, CLAP host version, Desktop ZIP copy | `e780a4c`, `e88c59e` | Discovery test; sandbox decline verified |
+| Clippy | — | 18 dsp + 4 graph `approx_constant`, public raw-pointer fn | `664e5d6` | `cargo clippy` 0 errors |
 
 ## 1.1.13 candidate findings — 2026-11-16
 
