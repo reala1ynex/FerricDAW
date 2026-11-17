@@ -4388,6 +4388,10 @@ impl eframe::App for FerricDawApp {
         if let Some(warning) = self.engine.take_recording_warning() {
             self.show_notice("Recording problem", warning);
         }
+        let plugin_errors = self.engine.take_plugin_load_errors();
+        if !plugin_errors.is_empty() {
+            self.show_notice("Plugin not loaded", plugin_errors.join("\n\n"));
+        }
         if self
             .engine
             .apply_discovered_plugin_params(&mut self.project)

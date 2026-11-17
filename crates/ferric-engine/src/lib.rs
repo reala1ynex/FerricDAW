@@ -571,6 +571,8 @@ pub struct EngineHandle {
     known_mod_ids: Vec<ferric_model::ModulatorId>,
     plugin_windows: Vec<FloatingPluginWindow>,
     newly_discovered_params: Vec<(FxId, Vec<PluginParamDescriptor>)>,
+    /// Plugin load failures waiting to be shown to the user.
+    plugin_load_errors: Vec<String>,
     pub quarantine: PluginQuarantine,
     pub latest_telemetry: EngineTelemetry,
     /// True when either Shared (cpal) or Exclusive output is running.
@@ -765,6 +767,7 @@ impl EngineHandle {
             known_mod_ids,
             plugin_windows: Vec::new(),
             newly_discovered_params: Vec::new(),
+            plugin_load_errors: Vec::new(),
             quarantine: PluginQuarantine::load_default(),
             latest_telemetry,
             has_live_output,
@@ -1080,8 +1083,15 @@ impl EngineHandle {
         let Some(ref pid) = fx.clap_plugin_id else {
             return FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
         };
+        let display_name = fx
+            .clap_plugin_name
+            .clone()
+            .unwrap_or_else(|| path.display().to_string());
         if self.quarantine.is_quarantined(path) {
             log::warn!("Skipping quarantined plugin: {}", path.display());
+            self.plugin_load_errors.push(format!(
+                "{display_name} was not loaded because it is quarantined after an earlier crash. The slot passes audio through unchanged."
+            ));
             return FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
         }
 
@@ -1113,11 +1123,18 @@ impl EngineHandle {
                     );
                 }
                 Err(e) => {
+                    // Never fall back to loading inside the DAW process
+                    // silently (audit M7): the user chose the sandbox to be
+                    // protected from this plugin crashing FerricDAW.
                     log::warn!(
-                        "Out-of-process sandbox failed for {}: {} — trying in-process host",
+                        "Out-of-process sandbox failed for {}: {}",
                         path.display(),
                         e
                     );
+                    self.plugin_load_errors.push(format!(
+                        "{display_name} could not be started in the plugin sandbox: {e}\n\nIt was NOT loaded, and the slot passes audio through unchanged. To run it inside FerricDAW instead (no crash protection), switch the slot from \"Sandbox\" to \"In-Process\" and reload the FX."
+                    ));
+                    return FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096);
                 }
             }
         }
@@ -1152,6 +1169,9 @@ impl EngineHandle {
                     }
                     Err(e) => {
                         log::warn!("Failed to load CLAP {}: {}", pid, e);
+                        self.plugin_load_errors.push(format!(
+                            "{display_name} (CLAP) failed to load: {e}. The slot passes audio through unchanged."
+                        ));
                         FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096)
                     }
                 }
@@ -1184,6 +1204,9 @@ impl EngineHandle {
                     }
                     Err(e) => {
                         log::warn!("Failed to load VST3 {}: {}", pid, e);
+                        self.plugin_load_errors.push(format!(
+                            "{display_name} (VST3) failed to load: {e}. The slot passes audio through unchanged."
+                        ));
                         FxRuntimeInstance::new(fx.id, fx.kind, sr, 4096)
                     }
                 }
@@ -1366,6 +1389,11 @@ impl EngineHandle {
                 }
             }
         }
+    }
+
+    /// Plugin load failures since the last call, for the UI to show.
+    pub fn take_plugin_load_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.plugin_load_errors)
     }
 
     /// Recording problems since the last call (dropped frames or takes),
