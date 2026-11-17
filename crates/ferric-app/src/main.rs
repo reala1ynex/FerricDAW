@@ -239,6 +239,8 @@ struct FerricDawApp {
     housekeeping_rx: Option<std::sync::mpsc::Receiver<HousekeepingMsg>>,
     relocation_offer: Option<RelocationOffer>,
     shortcut_offer: Option<ShortcutOffer>,
+    cleanup_confirm: Option<CleanupConfirm>,
+    cleanup_rx: Option<std::sync::mpsc::Receiver<install_hygiene::HousekeepingReport>>,
     /// Blocking notice (title, body) for problems the user must see.
     notice: Option<(String, String)>,
     relaunch_after_quit: Option<(PathBuf, Vec<String>)>,
@@ -383,6 +385,8 @@ impl FerricDawApp {
             housekeeping_rx: None,
             relocation_offer: None,
             shortcut_offer: None,
+            cleanup_confirm: None,
+            cleanup_rx: None,
             notice: None,
             relaunch_after_quit: None,
             ui_rate_sample: (0.0, 0),
@@ -4003,7 +4007,14 @@ const SHORTCUT_ANSWERED: &str = "desktop_shortcut_offer_answered";
 enum HousekeepingMsg {
     Relocate(RelocationOffer),
     OfferShortcut(ShortcutOffer),
+    ConfirmCleanup(CleanupConfirm),
     Done(install_hygiene::HousekeepingReport),
+}
+
+/// Older copies outside the automatic cleanup scope, waiting for the user.
+struct CleanupConfirm {
+    plans: Vec<install_hygiene::DirPlan>,
+    shortcuts: Vec<install_hygiene::shell::Shortcut>,
 }
 
 struct RelocationOffer {
@@ -4070,9 +4081,16 @@ fn run_housekeeping(tx: std::sync::mpsc::Sender<HousekeepingMsg>) {
             &std::env::temp_dir(),
             &shortcuts,
         );
-        if report.errors.is_empty() {
+        // Ask again next launch until the user has answered the prompt.
+        if report.errors.is_empty() && report.needs_confirmation.is_empty() {
             let _ = std::fs::create_dir_all(&locs.appdata);
             let _ = std::fs::write(&marker, b"1");
+        }
+        if !report.needs_confirmation.is_empty() {
+            let _ = tx.send(HousekeepingMsg::ConfirmCleanup(CleanupConfirm {
+                plans: std::mem::take(&mut report.needs_confirmation),
+                shortcuts: shortcuts.clone(),
+            }));
         }
         if !report.retargeted_shortcuts.is_empty() {
             shortcuts = ih::shell::list_shortcuts(&locs.desktops, &locs.start_menu);
@@ -4122,6 +4140,7 @@ impl FerricDawApp {
             match m {
                 HousekeepingMsg::Relocate(offer) => self.relocation_offer = Some(offer),
                 HousekeepingMsg::OfferShortcut(offer) => self.shortcut_offer = Some(offer),
+                HousekeepingMsg::ConfirmCleanup(c) => self.cleanup_confirm = Some(c),
                 HousekeepingMsg::Done(r) => {
                     let mut parts = Vec::new();
                     if r.removed_files > 0 {
@@ -4235,6 +4254,114 @@ impl FerricDawApp {
             }
             None => {}
         }
+    }
+
+    fn render_cleanup_confirm_modal(&mut self, ctx: &Context) {
+        if self.show_first_run
+            || self.pending_destructive.is_some()
+            || self.relocation_offer.is_some()
+            || self.notice.is_some()
+        {
+            return;
+        }
+        let Some(confirm) = self.cleanup_confirm.as_ref() else { return };
+        let mut choice: Option<bool> = None;
+        egui::Window::new("Remove older FerricDAW copies?")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(560.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.5_f32, ACCENT_FERRIC))
+                    .corner_radius(8)
+                    .inner_margin(16.0),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "These folders hold an older FerricDAW. Only its own program files (checked one by one against the release) would be removed; projects, plugins, presets, samples and settings stay.",
+                    )
+                    .color(TEXT_MAIN),
+                );
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                    for plan in &confirm.plans {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}  —  v{}, {} file(s)",
+                                plan.dir.display(),
+                                plan.exe_version,
+                                plan.files.len()
+                            ))
+                            .monospace()
+                            .color(ACCENT_TEAL),
+                        );
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .chrome_button(egui::RichText::new("Remove").strong().color(ACCENT_TEAL))
+                        .clicked()
+                    {
+                        choice = Some(true);
+                    }
+                    if ui.chrome_button("Keep them").clicked() {
+                        choice = Some(false);
+                    }
+                });
+            });
+        let Some(remove) = choice else { return };
+        let confirm = self.cleanup_confirm.take().expect("confirm");
+        let dirs: Vec<PathBuf> = confirm.plans.iter().map(|p| p.dir.clone()).collect();
+        if !remove {
+            let locs = install_hygiene::probe_locations();
+            install_hygiene::remember_declined(&locs, &dirs);
+            self.status_banner = "Kept the older FerricDAW copies; you won't be asked about them again.".into();
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.cleanup_rx = Some(rx);
+        self.status_banner = "Removing older FerricDAW copies…".into();
+        std::thread::spawn(move || {
+            use install_hygiene as ih;
+            let Ok(exe) = std::env::current_exe() else { return };
+            let locs = ih::probe_locations();
+            let mut manifests = ih::embedded_manifests();
+            if let Some(dir) = exe.parent() {
+                manifests.extend(ih::read_manifest(dir));
+            }
+            let index = ih::ManifestIndex::new(&manifests);
+            let report = ih::clean_confirmed_dirs(
+                &locs,
+                &index,
+                env!("CARGO_PKG_VERSION"),
+                &exe,
+                &dirs,
+                &confirm.shortcuts,
+            );
+            let _ = tx.send(report);
+        });
+    }
+
+    fn poll_cleanup_result(&mut self) {
+        let Some(rx) = &self.cleanup_rx else { return };
+        let Ok(r) = rx.try_recv() else { return };
+        self.cleanup_rx = None;
+        let mut parts = vec![format!(
+            "Removed {} old FerricDAW program file(s) from {} folder(s)",
+            r.removed_files,
+            r.cleaned_dirs.len()
+        )];
+        if !r.retargeted_shortcuts.is_empty() {
+            parts.push(format!("updated {} shortcut(s)", r.retargeted_shortcuts.len()));
+        }
+        if !r.errors.is_empty() {
+            parts.push(format!("skipped: {}", r.errors.join("; ")));
+        }
+        self.status_banner = parts.join(" · ");
     }
 
     fn report_audio_issues(&mut self, issues: &ferric_engine::AudioLoadIssues) {
@@ -4494,6 +4621,8 @@ impl eframe::App for FerricDawApp {
         self.render_relocation_modal(ctx);
         self.render_shortcut_modal(ctx);
         self.render_notice_modal(ctx);
+        self.render_cleanup_confirm_modal(ctx);
+        self.poll_cleanup_result();
         if render_quickstart_help_modal(ctx, &mut self.show_help_modal) {
             self.start_night_current_tutorial();
         }

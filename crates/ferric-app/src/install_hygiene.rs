@@ -218,6 +218,65 @@ pub fn plan_dir(dir: &Path, index: &ManifestIndex, current_version: &str) -> Opt
 pub struct CleanupOutcome {
     pub removed: Vec<PathBuf>,
     pub dirs_removed: Vec<PathBuf>,
+    /// Non-fatal problems, e.g. a held file that will be deleted next launch.
+    pub warnings: Vec<String>,
+}
+
+/// Delete a file, retrying briefly (antivirus scanners and the shell often
+/// hold freshly moved files for a moment).
+fn remove_file_retrying(p: &Path) -> std::io::Result<()> {
+    let mut last = None;
+    for attempt in 0..5 {
+        match std::fs::remove_file(p) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100 * (attempt + 1)));
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("remove failed")))
+}
+
+/// True for holding folders created by `execute_plan` / `install_copy`:
+/// `.ferricdaw-cleanup-` followed by 32 hex digits.
+fn is_hold_dir_name(name: &str) -> bool {
+    name.strip_prefix(HOLD_PREFIX)
+        .map(|rest| rest.len() == 32 && rest.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or(false)
+}
+
+/// Remove holding folders left behind when a held file could not be deleted
+/// (audit L16). Only folders whose entries are all plain files with integer
+/// names (the way they are created) are touched.
+pub fn sweep_stale_holds(dir: &Path, report: &mut HousekeepingReport) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        if !is_hold_dir_name(&name) || !is_plain_dir(&path) {
+            continue;
+        }
+        let Ok(inner) = std::fs::read_dir(&path) else { continue };
+        let items: Vec<_> = inner.flatten().collect();
+        let only_numbered_files = items.iter().all(|e| {
+            e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && e.file_name().to_string_lossy().chars().all(|c| c.is_ascii_digit())
+        });
+        if !only_numbered_files {
+            continue;
+        }
+        let mut ok = true;
+        for item in &items {
+            if remove_file_retrying(&item.path()).is_ok() {
+                report.removed_files += 1;
+            } else {
+                ok = false;
+            }
+        }
+        if ok {
+            let _ = std::fs::remove_dir(&path);
+        }
+    }
 }
 
 /// Remove the planned files. Every file is first moved into a hidden holding
@@ -246,15 +305,25 @@ pub fn execute_plan(plan: &DirPlan, protected_dirs: &[PathBuf]) -> Result<Cleanu
         }
         moved.push((file.clone(), held));
     }
+    let mut stuck = 0usize;
     for (_, held) in &moved {
-        let _ = std::fs::remove_file(held);
+        if remove_file_retrying(held).is_err() {
+            stuck += 1;
+        }
     }
     let _ = std::fs::remove_dir(&hold);
 
     let mut outcome = CleanupOutcome {
         removed: plan.files.clone(),
         dirs_removed: Vec::new(),
+        warnings: Vec::new(),
     };
+    if stuck > 0 {
+        outcome.warnings.push(format!(
+            "{stuck} old file(s) in {} are still in use; they were moved aside and will be deleted next time FerricDAW starts.",
+            plan.dir.display()
+        ));
+    }
     for sub in PACKAGE_SUBDIRS {
         let p = plan.dir.join(sub);
         if is_plain_dir(&p) && std::fs::remove_dir(&p).is_ok() {
@@ -678,12 +747,104 @@ pub struct HousekeepingReport {
     pub removed_dirs: Vec<PathBuf>,
     pub retargeted_shortcuts: Vec<PathBuf>,
     pub created_shortcut: Option<PathBuf>,
+    /// Recognised older copies outside the automatic scope (history,
+    /// shortcut targets, an equal-version install folder, ...). They are only
+    /// removed after the user confirms the listed folders (audit M8).
+    pub needs_confirmation: Vec<DirPlan>,
     pub errors: Vec<String>,
 }
 
-/// Remove older copies and temp leftovers, retarget shortcuts that pointed at
-/// removed executables, and record this folder. `wait_for` retries the
-/// relocation source while the previous instance still holds its files.
+/// Folders cleaned without asking: the relocation source, the Desktop and
+/// Downloads folders and their direct subfolders. Everything else needs the
+/// user's confirmation, except an install folder holding a strictly older
+/// version (that folder belongs to FerricDAW).
+pub fn is_auto_cleanup_dir(locs: &Locations, dir: &Path, relocated_from: Option<&Path>) -> bool {
+    if relocated_from.map(|r| same_path(r, dir)).unwrap_or(false) {
+        return true;
+    }
+    locs.desktops.iter().chain(locs.downloads.iter()).any(|root| {
+        same_path(root, dir) || dir.parent().map(|p| same_path(root, p)).unwrap_or(false)
+    })
+}
+
+/// Folders the user chose to keep when asked; never offered again.
+fn declined_file(locs: &Locations) -> PathBuf {
+    locs.appdata.join("cleanup_declined.txt")
+}
+
+pub fn read_declined(locs: &Locations) -> Vec<PathBuf> {
+    std::fs::read_to_string(declined_file(locs))
+        .map(|t| t.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect())
+        .unwrap_or_default()
+}
+
+pub fn remember_declined(locs: &Locations, dirs: &[PathBuf]) {
+    let mut all = read_declined(locs);
+    for d in dirs {
+        if !all.iter().any(|p| same_path(p, d)) {
+            all.push(d.clone());
+        }
+    }
+    let _ = std::fs::create_dir_all(&locs.appdata);
+    let body: String = all.iter().map(|p| format!("{}\n", p.display())).collect();
+    let _ = std::fs::write(declined_file(locs), body);
+}
+
+/// Execute one folder's plan (re-planned now so nothing stale is removed),
+/// retrying while a just-closed previous instance still holds its files.
+fn clean_dir(
+    dir: &Path,
+    index: &ManifestIndex,
+    current_version: &str,
+    protected: &[PathBuf],
+    attempts: usize,
+    report: &mut HousekeepingReport,
+    removed_exes: &mut Vec<PathBuf>,
+) {
+    for attempt in 0..attempts.max(1) {
+        let Some(plan) = plan_dir(dir, index, current_version) else { break };
+        match execute_plan(&plan, protected) {
+            Ok(outcome) => {
+                if !outcome.removed.is_empty() {
+                    report.removed_files += outcome.removed.len();
+                    report.cleaned_dirs.push(dir.to_path_buf());
+                    removed_exes.push(dir.join(EXE_NAME));
+                }
+                report.removed_dirs.extend(outcome.dirs_removed);
+                report.errors.extend(outcome.warnings);
+                break;
+            }
+            Err(error) => {
+                if attempt + 1 >= attempts.max(1) {
+                    report.errors.push(error);
+                } else {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+        }
+    }
+}
+
+fn retarget_removed(
+    shortcuts: &[shell::Shortcut],
+    removed_exes: &[PathBuf],
+    current_exe: &Path,
+    report: &mut HousekeepingReport,
+) {
+    for s in shortcuts {
+        if removed_exes.iter().any(|e| same_path(e, &s.target) || path_key(e) == path_key(&s.target)) {
+            match shell::retarget_shortcut(&s.path, current_exe) {
+                Ok(()) => report.retargeted_shortcuts.push(s.path.clone()),
+                Err(e) => report.errors.push(e),
+            }
+        }
+    }
+}
+
+/// Remove older copies in the automatic scope and temp leftovers, retarget
+/// shortcuts that pointed at removed executables, record this folder, and
+/// list other recognised copies in `needs_confirmation`. `relocated_from` is
+/// retried while the previous instance still holds its files.
 pub fn clean_old_copies(
     locs: &Locations,
     index: &ManifestIndex,
@@ -699,30 +860,25 @@ pub fn clean_old_copies(
     let extra: Vec<PathBuf> = relocated_from.map(Path::to_path_buf).into_iter().collect();
     let dirs = candidate_dirs(locs, &targets, &read_history(locs), &extra, current_dir);
     let protected = locs.shared_folders();
+    let declined = read_declined(locs);
     let mut removed_exes: Vec<PathBuf> = Vec::new();
     for dir in dirs {
+        sweep_stale_holds(&dir, &mut report);
         let is_source = relocated_from.map(|r| same_path(r, &dir)).unwrap_or(false);
-        let attempts = if is_source { 30 } else { 1 };
-        for attempt in 0..attempts {
-            let Some(plan) = plan_dir(&dir, index, current_version) else { break };
-            match execute_plan(&plan, &protected) {
-                Ok(outcome) => {
-                    if !outcome.removed.is_empty() {
-                        report.removed_files += outcome.removed.len();
-                        report.cleaned_dirs.push(dir.clone());
-                        removed_exes.push(dir.join(EXE_NAME));
-                    }
-                    report.removed_dirs.extend(outcome.dirs_removed);
-                    break;
-                }
-                Err(error) => {
-                    if attempt + 1 == attempts {
-                        report.errors.push(error);
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    }
-                }
-            }
+        if is_auto_cleanup_dir(locs, &dir, relocated_from) {
+            let attempts = if is_source { 30 } else { 1 };
+            clean_dir(&dir, index, current_version, &protected, attempts, &mut report, &mut removed_exes);
+            continue;
+        }
+        let Some(plan) = plan_dir(&dir, index, current_version) else { continue };
+        if plan.files.is_empty() {
+            continue;
+        }
+        let strictly_older = crate::update::version_is_newer(current_version, &plan.exe_version);
+        if same_path(&dir, &locs.install_dir) && strictly_older {
+            clean_dir(&dir, index, current_version, &protected, 1, &mut report, &mut removed_exes);
+        } else if !declined.iter().any(|d| same_path(d, &dir)) {
+            report.needs_confirmation.push(plan);
         }
     }
     let (temp_files, stage_dirs) = temp_leftovers(temp, index, current_dir);
@@ -743,15 +899,32 @@ pub fn clean_old_copies(
         }
         let _ = std::fs::remove_dir(&d);
     }
-    for s in shortcuts {
-        if removed_exes.iter().any(|e| same_path(e, &s.target) || path_key(e) == path_key(&s.target)) {
-            match shell::retarget_shortcut(&s.path, current_exe) {
-                Ok(()) => report.retargeted_shortcuts.push(s.path.clone()),
-                Err(e) => report.errors.push(e),
-            }
-        }
-    }
+    retarget_removed(shortcuts, &removed_exes, current_exe, &mut report);
     record_history(locs, current_dir);
+    report
+}
+
+/// Remove copies the user confirmed in the prompt. Each folder is planned
+/// again so only files that still match a known package are removed.
+pub fn clean_confirmed_dirs(
+    locs: &Locations,
+    index: &ManifestIndex,
+    current_version: &str,
+    current_exe: &Path,
+    dirs: &[PathBuf],
+    shortcuts: &[shell::Shortcut],
+) -> HousekeepingReport {
+    let mut report = HousekeepingReport::default();
+    let protected = locs.shared_folders();
+    let mut removed_exes = Vec::new();
+    let current_dir = current_exe.parent().unwrap_or(current_exe);
+    for dir in dirs {
+        if same_path(dir, current_dir) || inside_source_checkout(dir) {
+            continue;
+        }
+        clean_dir(dir, index, current_version, &protected, 1, &mut report, &mut removed_exes);
+    }
+    retarget_removed(shortcuts, &removed_exes, current_exe, &mut report);
     report
 }
 
@@ -1134,6 +1307,84 @@ mod tests {
         assert!(checkout_build.join("ferricdaw.exe").is_file());
         assert!(no_exe.join("README.md").is_file());
         assert!(desktop.is_dir() && locs.downloads[0].is_dir());
+    }
+
+    #[test]
+    fn cleanup_is_automatic_only_for_source_desktop_downloads_and_older_install() {
+        let root = tempfile::tempdir().unwrap();
+        let locs = locs_in(root.path());
+        let running = root.path().join("Apps/FerricDAW-current");
+        fs::create_dir_all(&running).unwrap();
+        let exe = running.join(EXE_NAME);
+        fs::write(&exe, b"current exe").unwrap();
+
+        let desktop_copy = locs.desktops[0].join("FerricDAW-v1.1.12");
+        let downloads_root = locs.downloads[0].clone();
+        let source = root.path().join("Moved/From/Here");
+        let history_copy = root.path().join("D/Music/FerricDAW");
+        let deep_desktop = locs.desktops[0].join("Stuff/Nested/FerricDAW");
+        for d in [&desktop_copy, &downloads_root, &source, &history_copy, &deep_desktop, &locs.install_dir] {
+            lay_down(d);
+        }
+        user_data(&history_copy);
+        record_history(&locs, &history_copy);
+        let index = ManifestIndex::new(&[old_manifest("1.1.12")]);
+
+        let report = clean_old_copies(&locs, &index, CURRENT, &exe, Some(&source), &root.path().join("Temp"), &[]);
+        // Automatic scope: relocation source, Desktop subfolder, Downloads root, older install folder.
+        assert!(!desktop_copy.join(EXE_NAME).exists());
+        assert!(!downloads_root.join(EXE_NAME).exists());
+        assert!(!source.join(EXE_NAME).exists());
+        assert!(!locs.install_dir.join(EXE_NAME).exists());
+        // Outside it: listed for confirmation, untouched.
+        assert!(history_copy.join(EXE_NAME).is_file(), "history copy must wait for confirmation");
+        assert!(report.needs_confirmation.iter().any(|p| same_path(&p.dir, &history_copy)));
+        // Deeper than a direct subfolder is not even a candidate.
+        assert!(deep_desktop.join(EXE_NAME).is_file());
+
+        // Declining remembers the choice.
+        remember_declined(&locs, &[history_copy.clone()]);
+        let again = clean_old_copies(&locs, &index, CURRENT, &exe, None, &root.path().join("Temp"), &[]);
+        assert!(again.needs_confirmation.is_empty());
+
+        // Confirming removes only package files.
+        let confirmed = clean_confirmed_dirs(&locs, &index, CURRENT, &exe, &[history_copy.clone()], &[]);
+        assert_eq!(confirmed.cleaned_dirs.len(), 1);
+        assert!(!history_copy.join(EXE_NAME).exists());
+        assert_user_data(&history_copy);
+    }
+
+    #[test]
+    fn equal_version_in_install_folder_needs_confirmation() {
+        let root = tempfile::tempdir().unwrap();
+        let locs = locs_in(root.path());
+        let running = root.path().join("Portable/FerricDAW");
+        fs::create_dir_all(&running).unwrap();
+        let exe = running.join(EXE_NAME);
+        fs::write(&exe, b"current exe").unwrap();
+        lay_down(&locs.install_dir);
+        let index = ManifestIndex::new(&[old_manifest(CURRENT)]);
+        let report = clean_old_copies(&locs, &index, CURRENT, &exe, None, &root.path().join("Temp"), &[]);
+        assert!(locs.install_dir.join(EXE_NAME).is_file(), "same-version install is not removed silently");
+        assert_eq!(report.needs_confirmation.len(), 1);
+    }
+
+    #[test]
+    fn stale_holding_folders_are_swept_but_lookalikes_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let stale = root.path().join(format!("{HOLD_PREFIX}{}", "a".repeat(32)));
+        put(&stale, "0", b"old exe");
+        put(&stale, "1", b"old readme");
+        let lookalike = root.path().join(format!("{HOLD_PREFIX}notmine"));
+        put(&lookalike, "0", b"keep");
+        let with_user_file = root.path().join(format!("{HOLD_PREFIX}{}", "b".repeat(32)));
+        put(&with_user_file, "notes.txt", b"keep");
+        let mut report = HousekeepingReport::default();
+        sweep_stale_holds(root.path(), &mut report);
+        assert!(!stale.exists());
+        assert_eq!(report.removed_files, 2);
+        assert!(lookalike.join("0").is_file());
+        assert!(with_user_file.join("notes.txt").is_file());
     }
 
     #[test]
