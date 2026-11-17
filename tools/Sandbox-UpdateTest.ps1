@@ -1,9 +1,9 @@
-# Sandbox reproduction of the Desktop install bug and the v1.1.14 repair.
+# Sandbox reproduction of the Desktop install bug and the v1.1.14+ repair.
 # Never touches the real Desktop, Downloads, Start Menu, TEMP or LOCALAPPDATA:
 # FerricDAW's FERRIC_*_DIR overrides and LOCALAPPDATA/TEMP point into $Root.
 param(
     [Parameter(Mandatory = $true)][string]$Root,
-    [Parameter(Mandatory = $true)][ValidateSet('from-1.1.12', 'from-1.1.13', 'new-updater')][string]$Scenario,
+    [Parameter(Mandatory = $true)][ValidateSet('from-1.1.12', 'from-1.1.13', 'from-1.1.14', 'new-updater')][string]$Scenario,
     [Parameter(Mandatory = $true)][string]$Repo,
     [Parameter(Mandatory = $true)][string]$NewZip,
     [switch]$Prepare,
@@ -17,6 +17,7 @@ $Start = Join-Path $S 'StartMenu\Programs'; $Local = Join-Path $S 'AppData\Local
 $Install = Join-Path $Local 'Programs\FerricDAW'
 $OldZip12 = Join-Path $Repo 'dist\remote-v1.1.12.zip'
 $Zip13 = Join-Path $Repo 'target\release-verification\public-v1.1.13\FerricDAW-v1.1.13-win-x64.zip'
+$Zip14 = Join-Path $Repo 'target\release-verification\public-v1.1.14\FerricDAW-v1.1.14-win-x64.zip'
 
 function Set-SandboxEnv {
     $env:LOCALAPPDATA = $Local; $env:TEMP = $Temp; $env:TMP = $Temp
@@ -93,6 +94,18 @@ if ($Prepare) {
             Invoke-Updater $ps13 $NewZip $Desktop @() # v1.1.13's updater -> v1.1.14 onto the Desktop
             Get-Process ferricdaw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$S*" } | Stop-Process
         }
+        'from-1.1.14' {
+            # A v1.1.14 user: installed in its own folder (with a Start Menu
+            # shortcut), updated by v1.1.14's own helper. The stray v1.1.12
+            # Desktop exe above is what an older copy left behind.
+            Expand-Archive -LiteralPath $Zip14 -DestinationPath $Install
+            New-Lnk (Join-Path $Start 'FerricDAW 1.1.14.lnk') (Join-Path $Install 'ferricdaw.exe')
+            $ps14 = Join-Path $Temp 'apply_update_114.ps1'
+            git -C $Repo show v1.1.14:crates/ferric-app/src/apply_update.ps1 | Set-Content -Encoding UTF8 $ps14
+            Invoke-Updater $ps14 $NewZip $Install @()
+            Get-Process ferricdaw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$S*" } | Stop-Process
+            "== Install folder after v1.1.14's updater"; Get-ChildItem -LiteralPath $Install -Force | ForEach-Object Name
+        }
         'new-updater' {
             # v1.1.14's own helper when the running copy is on the Desktop.
             Invoke-Updater112 $NewZip $Desktop
@@ -106,7 +119,8 @@ if ($Prepare) {
 }
 if ($Launch) {
     Set-SandboxEnv
-    $exe = Join-Path $Desktop 'ferricdaw.exe'
-    $p = Start-Process -FilePath $exe -WorkingDirectory $Desktop -PassThru -WindowStyle Maximized
+    $from = if ($Scenario -eq 'from-1.1.14') { $Install } else { $Desktop }
+    $exe = Join-Path $from 'ferricdaw.exe'
+    $p = Start-Process -FilePath $exe -WorkingDirectory $from -PassThru -WindowStyle Maximized
     "launched $($p.Id)"
 }

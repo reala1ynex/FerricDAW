@@ -844,6 +844,102 @@
                                            "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
                                        }
                                    ]
+                     },
+                     {
+                         "version":  "1.1.14",
+                         "zip_sha256":  "31ed7f70a6c5e679dc291a833911cbba3e5be3b14dd7cd64eaad4161cf4ae4b2",
+                         "files":  [
+                                       {
+                                           "path":  "AUTHORS.md",
+                                           "size":  449,
+                                           "sha256":  "64ad8ccc060899492b95b0abe2657545848352b6354df60f3851e60b9d8848b3"
+                                       },
+                                       {
+                                           "path":  "demo/NightCurrent-Demo.wav",
+                                           "size":  5904044,
+                                           "sha256":  "c862b3a9b59ee0f06fbc24e02502531023be83c3bf4659c070ee6e0f9974f8d1"
+                                       },
+                                       {
+                                           "path":  "demo/README.txt",
+                                           "size":  277,
+                                           "sha256":  "e42aad9585590d7ec6ca41149ff3d0e8691b16f46fe3c6de687fd5e745e436b6"
+                                       },
+                                       {
+                                           "path":  "docs/BEGINNER_GUIDE.md",
+                                           "size":  4549,
+                                           "sha256":  "220da859fabb317033693835ee43a024f0ea26b67ef3cff1821cb766eeed6d76"
+                                       },
+                                       {
+                                           "path":  "docs/DEVLOG.md",
+                                           "size":  7851,
+                                           "sha256":  "077878c6e833ac2c6f570041d49f468e58050c355e05556389e75d29d8d999ec"
+                                       },
+                                       {
+                                           "path":  "docs/FEATURE_GUIDE.md",
+                                           "size":  7073,
+                                           "sha256":  "bf7abc4303a7100411d6c2b9159b699643082b01ccba30a85f13e5b0c53fec96"
+                                       },
+                                       {
+                                           "path":  "docs/NIGHT_CURRENT_DEMO.md",
+                                           "size":  523,
+                                           "sha256":  "1224f71f56eedcfbe912d8bda38db8f3131740150166cec13547e24151264602"
+                                       },
+                                       {
+                                           "path":  "ferricdaw.exe",
+                                           "size":  13824000,
+                                           "sha256":  "31ed0fba228499be43d203d7ebf71af418396be7969a7ba0e0e41afe0f64ccfb"
+                                       },
+                                       {
+                                           "path":  "ferricdaw-manifest.json",
+                                           "size":  4069,
+                                           "sha256":  "25995428de7a98b71c15c78f9ac9ff041be35ca44f8296edc464e776e0293dd6"
+                                       },
+                                       {
+                                           "path":  "ferric-plugin-bridge.exe",
+                                           "size":  1494016,
+                                           "sha256":  "98805c638e5e5fc685ebb89b30fb375c67e819f40184311f0a96411097966e83"
+                                       },
+                                       {
+                                           "path":  "LICENSE-APACHE",
+                                           "size":  709,
+                                           "sha256":  "7ecd8ce1d30b8aa26232f5c7c878cca53bc273547ce52f1678f955154746e64f"
+                                       },
+                                       {
+                                           "path":  "LICENSE-MIT",
+                                           "size":  1079,
+                                           "sha256":  "0903b0cf37de7609d8ee343e0db7eea6ee16d54ffb0ac61480cf580f3a8db61f"
+                                       },
+                                       {
+                                           "path":  "README.md",
+                                           "size":  4102,
+                                           "sha256":  "4bd7e4bb5b048df782b380b3947817fa7548c2f284c15422cc164a71d232812c"
+                                       },
+                                       {
+                                           "path":  "SetDs10Capture.ps1",
+                                           "size":  8490,
+                                           "sha256":  "9f87e9749899a342ee170698de02706a570dad036b581f4755dcd5d6b110cb07"
+                                       },
+                                       {
+                                           "path":  "SetLineInCapture.ps1",
+                                           "size":  276,
+                                           "sha256":  "577e760493aa3d875fecfb975319b18787cb9e17cc6b920226422a4770ad0bb6"
+                                       },
+                                       {
+                                           "path":  "START_HERE.txt",
+                                           "size":  1060,
+                                           "sha256":  "b8ebcaa978adddae78aadde1cdf738bf4586791b601ceb814773f0c3b62c88aa"
+                                       },
+                                       {
+                                           "path":  "THIRD-PARTY-NOTICES.txt",
+                                           "size":  15984,
+                                           "sha256":  "9a7343cdb5eb8cc32f26a266a3c6626bd298b9d74fa37d1d9c6c84cf0c6dd8a8"
+                                       },
+                                       {
+                                           "path":  "update_feed.url",
+                                           "size":  76,
+                                           "sha256":  "010a22f9f3d0f9ab80be589ca8a32cdc468387a68e8b3dce2c152c923914df88"
+                                       }
+                                   ]
                      }
                  ]
 }
