@@ -493,7 +493,7 @@ impl Project {
 
     pub fn sort_conductor_maps(&mut self) {
         self.tempo_map
-            .sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+            .sort_by(|a, b| a.beat.total_cmp(&b.beat));
         self.meter_map.sort_by_key(|m| m.beat);
         if let Some(first) = self.tempo_map.first() {
             if first.beat <= 0.01 {
@@ -964,7 +964,7 @@ impl Project {
         let id = m.id;
         self.markers.push(m);
         self.markers
-            .sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+            .sort_by(|a, b| a.beat.total_cmp(&b.beat));
         id
     }
 
@@ -1040,8 +1040,8 @@ impl Project {
                     }
                 }
             }
-            merged_notes.sort_by(|a, b| a.start_beat.partial_cmp(&b.start_beat).unwrap());
-            merged_ccs.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            merged_notes.sort_by(|a, b| a.start_beat.total_cmp(&b.start_beat));
+            merged_ccs.sort_by(|a, b| a.beat.total_cmp(&b.beat));
             let mut c = TimelineClip::new_midi(
                 format!("{} (Glued)", selected[0].name),
                 min_start,
@@ -1319,7 +1319,7 @@ impl Project {
 
     pub fn sort_chord_track(&mut self) {
         self.chord_track
-            .sort_by(|a, b| a.start_beat.partial_cmp(&b.start_beat).unwrap_or(std::cmp::Ordering::Equal));
+            .sort_by(|a, b| a.start_beat.total_cmp(&b.start_beat));
     }
 
     pub fn upsert_chord_event(

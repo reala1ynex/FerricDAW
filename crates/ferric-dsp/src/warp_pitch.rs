@@ -403,7 +403,7 @@ pub fn analyze_audio_pitch_blobs(
         }
         // Median MIDI pitch for vibrato-immune pitch center
         let mut pitches: Vec<f32> = seg.iter().map(|f| f.midi).collect();
-        pitches.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        pitches.sort_by(|a, b| a.total_cmp(b));
         let median_midi = pitches[pitches.len() / 2];
         let avg_rms = seg.iter().map(|f| f.rms).sum::<f32>() / seg.len() as f32;
 

@@ -242,7 +242,7 @@ impl AutomationLane {
 
     pub fn sort_points(&mut self) {
         self.points
-            .sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+            .sort_by(|a, b| a.beat.total_cmp(&b.beat));
     }
 }
 

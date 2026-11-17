@@ -38,6 +38,27 @@ pub use track::{
 mod tests {
     use super::*;
 
+    /// Sorting with NaN positions must not panic (audit L14). Rust's sort may
+    /// panic on comparators that are not a total order, so all float sorts
+    /// use `total_cmp`.
+    #[test]
+    fn nan_positions_never_panic_when_sorting() {
+        let mut lane = AutomationLane::new(AutomationTarget::Volume);
+        for i in 0..64 {
+            let beat = if i % 3 == 0 { f64::NAN } else { (64 - i) as f64 * 0.5 };
+            lane.points.push(track::AutomationPoint::new(beat, 0.5, 0.0));
+        }
+        lane.sort_points();
+        let finite: Vec<f64> = lane.points.iter().map(|p| p.beat).filter(|b| b.is_finite()).collect();
+        assert!(finite.windows(2).all(|w| w[0] <= w[1]));
+
+        let mut clip = TimelineClip::new_midi("c", 0.0, 8.0, Vec::new());
+        for i in 0..40 {
+            let s = if i % 4 == 0 { f64::NAN } else { i as f64 * 0.1 };
+            clip.set_comp_region(s, s + 0.05, 0);
+        }
+    }
+
     #[test]
     fn swipe_comping_splits_and_merges_cleanly() {
         let mut clip = TimelineClip::new_midi("Vocal", 0.0, 16.0, vec![]);

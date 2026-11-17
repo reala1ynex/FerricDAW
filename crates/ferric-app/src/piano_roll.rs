@@ -715,7 +715,7 @@ impl PianoRollState {
                                     target: cc_tgt,
                                     value: val,
                                 });
-                                cc_points.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+                                cc_points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
                             }
                             actions.push(DockAction::ProjectMutated("Draw MIDI CC"));
                         }

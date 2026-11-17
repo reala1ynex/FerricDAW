@@ -658,7 +658,7 @@ impl TimelineClip {
             clip_beat: self.length_beats,
             source_sec: end_sec,
         });
-        markers.sort_by(|a, b| a.clip_beat.partial_cmp(&b.clip_beat).unwrap());
+        markers.sort_by(|a, b| a.clip_beat.total_cmp(&b.clip_beat));
         self.warp_markers = markers;
     }
 
@@ -707,7 +707,7 @@ impl TimelineClip {
             end_beat: e,
             take_index,
         });
-        next.sort_by(|a, b| a.start_beat.partial_cmp(&b.start_beat).unwrap());
+        next.sort_by(|a, b| a.start_beat.total_cmp(&b.start_beat));
 
         let mut merged: Vec<CompSegment> = Vec::with_capacity(next.len());
         for seg in next {
