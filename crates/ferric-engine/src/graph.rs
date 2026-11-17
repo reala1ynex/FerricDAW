@@ -57,6 +57,11 @@ impl PdcDelayLine {
     }
 }
 
+/// Pre-reserved pool sizes so registering instances on the audio thread does
+/// not reallocate in practice.
+pub const FX_POOL_CAPACITY: usize = 1024;
+pub const MOD_POOL_CAPACITY: usize = 256;
+
 pub struct AudioGraphCore {
     pub sample_rate: f32,
     pub max_block: usize,
@@ -71,8 +76,10 @@ pub struct AudioGraphCore {
     pub live_brightness: f32,
     clip_midi_expr: MidiExpression,
     held_sustain_notes: [bool; 128],
-    fx_pool: Vec<FxRuntimeInstance>,
-    mod_pool: Vec<ModulatorRuntime>,
+    /// Boxed so replaced instances can be handed back to a non-RT thread
+    /// for dropping instead of being freed inside the audio callback (audit H6).
+    fx_pool: Vec<Box<FxRuntimeInstance>>,
+    mod_pool: Vec<Box<ModulatorRuntime>>,
     arp_lanes: Vec<ArpRuntime>,
     pub input_tuner: ChromaticTuner,
     pub input_bpm_detector: OnsetBpmDetector,
@@ -116,8 +123,8 @@ impl AudioGraphCore {
             live_brightness: 0.0,
             clip_midi_expr: MidiExpression::default(),
             held_sustain_notes: [false; 128],
-            fx_pool: Vec::with_capacity(160),
-            mod_pool: Vec::with_capacity(64),
+            fx_pool: Vec::with_capacity(FX_POOL_CAPACITY),
+            mod_pool: Vec::with_capacity(MOD_POOL_CAPACITY),
             arp_lanes: (0..MAX_ENGINE_TRACKS).map(|_| ArpRuntime::new()).collect(),
             input_tuner: ChromaticTuner::new(sample_rate),
             input_bpm_detector: OnsetBpmDetector::new(sample_rate),
@@ -163,19 +170,41 @@ impl AudioGraphCore {
         }
     }
 
+    /// Non-real-time convenience (offline render, tests): the replaced
+    /// instance, if any, is dropped here.
     pub fn register_fx_instance(&mut self, inst: FxRuntimeInstance) {
+        drop(self.register_fx_boxed(Box::new(inst)));
+    }
+
+    /// Real-time safe: installs `inst` and returns the instance it replaced so
+    /// the caller can drop it off the audio thread. Does not allocate unless
+    /// more than `FX_POOL_CAPACITY` distinct FX were ever registered.
+    pub fn register_fx_boxed(
+        &mut self,
+        inst: Box<FxRuntimeInstance>,
+    ) -> Option<Box<FxRuntimeInstance>> {
         if let Some(pos) = self.fx_pool.iter().position(|x| x.id == inst.id) {
-            self.fx_pool[pos] = inst;
+            Some(std::mem::replace(&mut self.fx_pool[pos], inst))
         } else {
             self.fx_pool.push(inst);
+            None
         }
     }
 
     pub fn register_mod_instance(&mut self, inst: ModulatorRuntime) {
+        drop(self.register_mod_boxed(Box::new(inst)));
+    }
+
+    /// Real-time safe counterpart of [`Self::register_mod_instance`].
+    pub fn register_mod_boxed(
+        &mut self,
+        inst: Box<ModulatorRuntime>,
+    ) -> Option<Box<ModulatorRuntime>> {
         if let Some(pos) = self.mod_pool.iter().position(|x| x.id == inst.id) {
-            self.mod_pool[pos] = inst;
+            Some(std::mem::replace(&mut self.mod_pool[pos], inst))
         } else {
             self.mod_pool.push(inst);
+            None
         }
     }
 
@@ -196,12 +225,12 @@ impl AudioGraphCore {
         if fx.sampler_buffer.is_some() {
             inst.set_sampler_data(fx.sampler_buffer.clone(), fx.sampler_slices.clone());
         }
-        self.fx_pool.push(inst);
+        self.fx_pool.push(Box::new(inst));
     }
 
     fn ensure_mod(&mut self, id: ModulatorId) {
         if !self.mod_pool.iter().any(|m| m.id == id) {
-            self.mod_pool.push(ModulatorRuntime::new(id));
+            self.mod_pool.push(Box::new(ModulatorRuntime::new(id)));
         }
     }
 

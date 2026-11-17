@@ -90,6 +90,20 @@ pub(crate) struct StampedMidi {
     is_note_on: bool,
 }
 
+/// Objects retired by the audio thread. They are sent back to the UI thread
+/// and dropped there, so the callback never frees memory or destroys plugin
+/// instances (audit H6).
+enum RtGarbage {
+    Project(#[allow(dead_code)] Box<Project>),
+    Fx(#[allow(dead_code)] Box<FxRuntimeInstance>),
+    Mod(#[allow(dead_code)] Box<ModulatorRuntime>),
+    Audio(#[allow(dead_code)] AudioBuffer),
+}
+
+/// Capacity of the retirement queue; generous because a project sync can
+/// replace many instances at once.
+const RT_GARBAGE_CAPACITY: usize = 4096;
+
 pub enum EngineCommand {
     Play,
     Stop,
@@ -197,7 +211,7 @@ struct RtCallbackState {
     hw_midi_rx: Consumer<HwMidiPacket>,
     hw_audio_rx: Consumer<HwMultiFrame>,
     telem_tx: Producer<EngineTelemetry>,
-    garbage_tx: Producer<Box<Project>>,
+    garbage_tx: Producer<RtGarbage>,
     capture_req_tx: Producer<CaptureRequest>,
     out_l: Vec<f32>,
     out_r: Vec<f32>,
@@ -546,7 +560,7 @@ pub struct EngineHandle {
     pub output_channel_count: u16,
     cmd_tx: Producer<EngineCommand>,
     telem_rx: Consumer<EngineTelemetry>,
-    garbage_rx: Consumer<Box<Project>>,
+    garbage_rx: Consumer<RtGarbage>,
     capture_req_rx: Consumer<CaptureRequest>,
     rec_collector: live_record::RecCollector,
     pending_live_takes: Vec<PendingLiveTake>,
@@ -629,7 +643,7 @@ impl EngineHandle {
 
         let (cmd_tx, cmd_rx) = RingBuffer::<EngineCommand>::new(512);
         let (telem_tx, telem_rx) = RingBuffer::<EngineTelemetry>::new(64);
-        let (garbage_tx, garbage_rx) = RingBuffer::<Box<Project>>::new(64);
+        let (garbage_tx, garbage_rx) = RingBuffer::<RtGarbage>::new(RT_GARBAGE_CAPACITY);
         let (hw_midi_tx, hw_midi_rx) = RingBuffer::<HwMidiPacket>::new(2048);
         let (hw_audio_tx, hw_audio_rx) = RingBuffer::<HwMultiFrame>::new(sample_rate as usize);
         let (capture_req_tx, capture_req_rx) = RingBuffer::<CaptureRequest>::new(64);
@@ -1256,8 +1270,10 @@ impl EngineHandle {
         for win in &mut self.plugin_windows {
             win.poll();
         }
-        while let Ok(old_proj) = self.garbage_rx.pop() {
-            drop(old_proj);
+        // Retired projects, FX/plugin instances, modulators and preview
+        // buffers are freed here, on the UI thread.
+        while let Ok(garbage) = self.garbage_rx.pop() {
+            drop(garbage);
         }
         while let Ok(telem) = self.telem_rx.pop() {
             self.latest_telemetry = telem;
@@ -1450,20 +1466,28 @@ impl RtCallbackState {
                 }
                 EngineCommand::SyncProject(new_proj) => {
                     let old = std::mem::replace(&mut self.project, new_proj);
-                    let _ = self.garbage_tx.push(old);
+                    self.retire(RtGarbage::Project(old));
                 }
                 EngineCommand::RegisterFx(inst) => {
-                    self.core.register_fx_instance(*inst);
+                    if let Some(old) = self.core.register_fx_boxed(inst) {
+                        self.retire(RtGarbage::Fx(old));
+                    }
                 }
                 EngineCommand::RegisterMod(inst) => {
-                    self.core.register_mod_instance(*inst);
+                    if let Some(old) = self.core.register_mod_boxed(inst) {
+                        self.retire(RtGarbage::Mod(old));
+                    }
                 }
                 EngineCommand::PreviewBuffer(buf) => {
-                    self.preview_buf = Some(buf);
+                    if let Some(old) = self.preview_buf.replace(buf) {
+                        self.retire(RtGarbage::Audio(old));
+                    }
                     self.preview_pos_frames = 0.0;
                 }
                 EngineCommand::StopPreview => {
-                    self.preview_buf = None;
+                    if let Some(old) = self.preview_buf.take() {
+                        self.retire(RtGarbage::Audio(old));
+                    }
                 }
                 EngineCommand::LiveMidi {
                     target_track,
@@ -1650,7 +1674,9 @@ impl RtCallbackState {
                     self.preview_pos_frames += step;
                 }
                 if finished {
-                    self.preview_buf = None;
+                    if let Some(old) = self.preview_buf.take() {
+                        self.retire(RtGarbage::Audio(old));
+                    }
                 }
             }
 
@@ -1765,6 +1791,15 @@ impl RtCallbackState {
 
     fn flush_live_recording(&mut self) {
         self.flush_live_recording_at(self.core.playhead_beat);
+    }
+
+    /// Send an object to the UI thread to be dropped there. If the queue is
+    /// full (UI stalled for a long time) it is dropped here as a last resort.
+    fn retire(&mut self, garbage: RtGarbage) {
+        if let Err(rtrb::PushError::Full(garbage)) = self.garbage_tx.push(garbage) {
+            log_rt_garbage_overflow();
+            drop(garbage);
+        }
     }
 
     /// Hand a request to the UI without blocking; a full queue is counted
@@ -1904,6 +1939,14 @@ impl RtCallbackState {
                 right,
             });
         }
+    }
+}
+
+#[cold]
+fn log_rt_garbage_overflow() {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!("RT garbage queue full; dropping a retired object on the audio thread");
     }
 }
 
@@ -2124,6 +2167,23 @@ mod tests {
         let frozen_buf =
             render_track_freeze_buffer(&proj, synth_tid, 48_000).expect("freeze buffer");
         assert!(frozen_buf.len_frames() > 48_000);
+    }
+
+    #[test]
+    fn replaced_fx_and_mod_instances_are_returned_not_dropped_on_the_audio_thread() {
+        let mut core = AudioGraphCore::new(48_000.0, 512);
+        let id = uuid::Uuid::new_v4();
+        let first = Box::new(FxRuntimeInstance::new(id, ferric_model::FxKind::PolySynth, 48_000.0, 512));
+        let first_ptr = &*first as *const FxRuntimeInstance;
+        assert!(core.register_fx_boxed(first).is_none());
+        let second = Box::new(FxRuntimeInstance::new(id, ferric_model::FxKind::PolySynth, 48_000.0, 512));
+        let retired = core.register_fx_boxed(second).expect("old instance handed back");
+        // The very same allocation comes back, so the caller decides where it is freed.
+        assert_eq!(&*retired as *const FxRuntimeInstance, first_ptr);
+
+        let mid = uuid::Uuid::new_v4();
+        assert!(core.register_mod_boxed(Box::new(ModulatorRuntime::new(mid))).is_none());
+        assert!(core.register_mod_boxed(Box::new(ModulatorRuntime::new(mid))).is_some());
     }
 
     fn bundle_test_dir(name: &str) -> std::path::PathBuf {
