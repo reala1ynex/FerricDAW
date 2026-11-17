@@ -1,4 +1,5 @@
 pub mod clip;
+pub mod fsutil;
 pub mod fx;
 pub mod project;
 pub mod theory;

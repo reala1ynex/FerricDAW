@@ -1281,7 +1281,10 @@ impl Project {
                 .enumerate_arrays(false);
             ron::ser::to_string_pretty(self, pretty).map_err(|e| ModelError::Ron(e.to_string()))?
         };
-        std::fs::write(path, text)?;
+        // Never truncate the user's project in place (audit H1): write a
+        // temporary file, flush it, then atomically replace the old file and
+        // keep the previous version as `<name>.bak`.
+        crate::fsutil::write_atomic(path, text.as_bytes(), true)?;
         Ok(())
     }
 
