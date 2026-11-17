@@ -645,132 +645,300 @@ pub fn render_all_stems_with_options(
     })
 }
 
-/// Saves a complete FerricDAW Session Bundle: writes any recorded or generated long audio takes
-/// losslessly (32-bit float WAV) into `<ProjectStem>_Audio/` beside the `.ferric`/`.json` project file!
-pub fn save_project_bundle(project: &mut Project, project_file: &Path) -> Result<(), String> {
+/// How [`save_project_bundle_with`] treats audio that already lives in a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleMode {
+    /// Real Save / Save As: every audio buffer that is not already stored in
+    /// this project's `<stem>_Audio/` folder is written there from memory, so
+    /// the saved project never depends on autosave, temp, or another project's
+    /// folder (audit H2).
+    Collect,
+    /// Autosave: only audio that has no file on disk yet is written.
+    PersistUnsaved,
+}
+
+/// Audio references that could not be restored when a project was opened.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioLoadIssues {
+    /// Referenced files that do not exist anywhere we looked.
+    pub missing: Vec<PathBuf>,
+    /// Files that exist but could not be decoded, with the error.
+    pub unreadable: Vec<(PathBuf, String)>,
+}
+
+impl AudioLoadIssues {
+    pub fn is_empty(&self) -> bool {
+        self.missing.is_empty() && self.unreadable.is_empty()
+    }
+
+    /// Human-readable summary for the UI.
+    pub fn describe(&self) -> String {
+        let mut out = String::new();
+        if !self.missing.is_empty() {
+            out.push_str(&format!(
+                "{} audio file(s) could not be found. Those clips are silent:\n",
+                self.missing.len()
+            ));
+            for p in &self.missing {
+                out.push_str(&format!("  • {}\n", p.display()));
+            }
+        }
+        if !self.unreadable.is_empty() {
+            out.push_str(&format!(
+                "{} audio file(s) could not be read:\n",
+                self.unreadable.len()
+            ));
+            for (p, e) in &self.unreadable {
+                out.push_str(&format!("  • {} ({e})\n", p.display()));
+            }
+        }
+        out.push_str(
+            "The references are kept, so restoring the files and reopening the project brings the audio back.",
+        );
+        out
+    }
+}
+
+fn bundle_dirs(project_file: &Path) -> (PathBuf, PathBuf) {
     let parent = project_file
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     let stem = project_file
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("session");
     let audio_dir = parent.join(format!("{}_Audio", stem));
+    (parent, audio_dir)
+}
 
-    let persist_buf = |buf: &mut AudioBuffer, label_id: &str| -> Result<(), String> {
-        if buf.len_frames() == 0 {
-            return Ok(());
-        }
-        let needs_write = match &buf.source_path {
-            None => true,
-            Some(existing) => !existing.exists(),
-        };
-        if needs_write {
-            std::fs::create_dir_all(&audio_dir).map_err(|e| e.to_string())?;
-            let wav_path = audio_dir.join(format!("{}.wav", label_id));
-            write_wav_file(
-                &wav_path,
-                buf.sample_rate,
-                BitDepth::Float32,
-                &buf.left,
-                &buf.right,
-            )
-            .map_err(|e| e.to_string())?;
-            buf.source_path = Some(wav_path);
-        }
-        Ok(())
-    };
-
-    for track in &mut project.tracks {
-        for clip in &mut track.clips {
-            for take in &mut clip.takes {
-                let tid = take.id.to_string();
-                if let ferric_model::TakeContent::Audio { buffer } = &mut take.content {
-                    persist_buf(buffer, &format!("take_{}", tid))?;
+/// Lexical normalisation (no filesystem access): drops `.` and resolves `..`.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
                 }
             }
+            other => out.push(other.as_os_str()),
         }
-        for slot in track.session_slots.iter_mut().flatten() {
-            let sid = slot.id.to_string();
-            if let ferric_model::TakeContent::Audio { buffer } = &mut slot.content {
-                persist_buf(buffer, &format!("slot_{}", sid))?;
-            }
-        }
-        for fx in &mut track.fx_chain {
-            let fid = fx.id.to_string();
-            if let Some(ref mut sbuf) = fx.sampler_buffer {
-                persist_buf(sbuf, &format!("sampler_{}", fid))?;
+    }
+    out
+}
+
+fn same_location(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => {
+            let x = normalize_lexically(a);
+            let y = normalize_lexically(b);
+            if cfg!(windows) {
+                x.to_string_lossy().to_lowercase() == y.to_string_lossy().to_lowercase()
+            } else {
+                x == y
             }
         }
     }
-
-    project
-        .save_to_file(project_file)
-        .map_err(|e| e.to_string())
 }
 
-/// Loads a `.ferric` or `.json` project and automatically re-hydrates all external `AudioBuffer` WAV/FLAC/MP3/OGG files!
+/// Visit every serialised audio buffer in the project.
+fn for_each_audio_buffer(
+    project: &mut Project,
+    mut visit: impl FnMut(&mut AudioBuffer, String) -> Result<(), String>,
+) -> Result<(), String> {
+    fn visit_fx(
+        chain: &mut [ferric_model::FxSlot],
+        visit: &mut dyn FnMut(&mut AudioBuffer, String) -> Result<(), String>,
+    ) -> Result<(), String> {
+        for fx in chain {
+            let label = format!("sampler_{}", fx.id);
+            if let Some(ref mut sbuf) = fx.sampler_buffer {
+                visit(sbuf, label)?;
+            }
+        }
+        Ok(())
+    }
+    let visit: &mut dyn FnMut(&mut AudioBuffer, String) -> Result<(), String> = &mut visit;
+    for track in &mut project.tracks {
+        for clip in &mut track.clips {
+            for take in &mut clip.takes {
+                let label = format!("take_{}", take.id);
+                if let ferric_model::TakeContent::Audio { buffer } = &mut take.content {
+                    visit(buffer, label)?;
+                }
+            }
+            visit_fx(&mut clip.clip_fx, visit)?;
+        }
+        for slot in track.session_slots.iter_mut().flatten() {
+            let label = format!("slot_{}", slot.id);
+            if let ferric_model::TakeContent::Audio { buffer } = &mut slot.content {
+                visit(buffer, label)?;
+            }
+        }
+        visit_fx(&mut track.fx_chain, visit)?;
+    }
+    visit_fx(&mut project.master.fx_chain, visit)?;
+    Ok(())
+}
+
+/// Write a 32-bit float WAV without leaving a partial file at `path`.
+fn write_wav_atomic(path: &Path, buf: &AudioBuffer) -> Result<(), String> {
+    let tmp = path.with_extension(format!("wav.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let result = write_wav_file(&tmp, buf.sample_rate, BitDepth::Float32, &buf.left, &buf.right)
+        .map_err(|e| e.to_string())
+        .and_then(|_| {
+            // FlushFileBuffers needs a handle with write access.
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&tmp)
+                .and_then(|f| f.sync_all())
+                .map_err(|e| e.to_string())
+        })
+        .and_then(|_| std::fs::rename(&tmp, path).map_err(|e| e.to_string()));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| format!("Could not write audio {}: {e}", path.display()))
+}
+
+/// Saves a complete FerricDAW Session Bundle for a real Save / Save As:
+/// all audio is collected losslessly (32-bit float WAV) into
+/// `<ProjectStem>_Audio/` beside the `.ferric`/`.json` file and referenced
+/// relative to the project, so the folder can be moved or copied as a unit.
+pub fn save_project_bundle(project: &mut Project, project_file: &Path) -> Result<(), String> {
+    save_project_bundle_with(project, project_file, BundleMode::Collect)
+}
+
+/// Saves a session bundle with an explicit [`BundleMode`].
+///
+/// In memory, buffers point at their absolute WAV paths afterwards; the file
+/// on disk stores paths inside the project folder relative to it.
+pub fn save_project_bundle_with(
+    project: &mut Project,
+    project_file: &Path,
+    mode: BundleMode,
+) -> Result<(), String> {
+    let (parent, audio_dir) = bundle_dirs(project_file);
+
+    for_each_audio_buffer(project, |buf, label| {
+        if buf.len_frames() == 0 {
+            // Nothing in memory (e.g. a missing file at load time): keep the
+            // reference as-is so restoring the file later still works.
+            return Ok(());
+        }
+        let needs_write = match (&buf.source_path, mode) {
+            (None, _) => true,
+            (Some(existing), _) if !existing.is_file() => true,
+            (Some(existing), BundleMode::Collect) => match existing.parent() {
+                Some(dir) => !same_location(dir, &audio_dir),
+                None => true,
+            },
+            (Some(_), BundleMode::PersistUnsaved) => false,
+        };
+        if needs_write {
+            std::fs::create_dir_all(&audio_dir)
+                .map_err(|e| format!("Could not create {}: {e}", audio_dir.display()))?;
+            let wav_path = audio_dir.join(format!("{label}.wav"));
+            write_wav_atomic(&wav_path, buf)?;
+            buf.source_path = Some(wav_path);
+        }
+        Ok(())
+    })?;
+
+    // Store references inside the project folder relative to it.
+    let mut on_disk = project.clone();
+    for_each_audio_buffer(&mut on_disk, |buf, _| {
+        if let Some(src) = buf.source_path.as_ref() {
+            if src.is_absolute() {
+                if let Ok(rel) = src.strip_prefix(&parent) {
+                    buf.source_path = Some(rel.to_path_buf());
+                } else if let (Ok(c_src), Ok(c_parent)) = (src.canonicalize(), parent.canonicalize()) {
+                    if let Ok(rel) = c_src.strip_prefix(&c_parent) {
+                        buf.source_path = Some(rel.to_path_buf());
+                    }
+                }
+            }
+        }
+        Ok(())
+    })?;
+
+    on_disk.save_to_file(project_file).map_err(|e| e.to_string())
+}
+
+/// Loads a `.ferric` or `.json` project and re-hydrates all external
+/// `AudioBuffer` WAV/FLAC/MP3/OGG files. Missing or unreadable audio is
+/// reported through [`load_project_bundle_checked`]; this wrapper ignores it.
 pub fn load_project_bundle(
     project_file: &Path,
     target_sample_rate: u32,
 ) -> Result<Project, String> {
-    let mut project = Project::load_from_file(project_file).map_err(|e| e.to_string())?;
-    let base_dir = project_file
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let stem = project_file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("session");
-    let companion_audio_dir = base_dir.join(format!("{}_Audio", stem));
+    load_project_bundle_checked(project_file, target_sample_rate).map(|(p, _)| p)
+}
 
-    let resolve_and_load = |buf: &mut AudioBuffer| {
+/// Like [`load_project_bundle`], but also returns which audio files could
+/// not be found or decoded so the UI can warn instead of silently opening a
+/// project with empty clips.
+pub fn load_project_bundle_checked(
+    project_file: &Path,
+    target_sample_rate: u32,
+) -> Result<(Project, AudioLoadIssues), String> {
+    let mut project = Project::load_from_file(project_file).map_err(|e| e.to_string())?;
+    let (base_dir, companion_audio_dir) = bundle_dirs(project_file);
+    let mut issues = AudioLoadIssues::default();
+
+    let _ = for_each_audio_buffer(&mut project, |buf, _| {
         if buf.len_frames() > 0 {
-            return;
+            return Ok(());
         }
-        let Some(ref src) = buf.source_path.clone() else {
-            return;
+        let Some(src) = buf.source_path.clone() else {
+            return Ok(());
         };
-        let candidate = if src.exists() {
-            Some(src.clone())
-        } else if base_dir.join(src).exists() {
-            Some(base_dir.join(src))
+        let anchored = if src.is_relative() {
+            base_dir.join(&src)
+        } else {
+            src.clone()
+        };
+        let candidate = if anchored.is_file() {
+            Some(anchored.clone())
         } else {
             src.file_name()
                 .map(|fname| companion_audio_dir.join(fname))
-                .filter(|p| p.exists())
+                .filter(|p| p.is_file())
         };
-        if let Some(valid_path) = candidate {
-            if let Ok(loaded) = import_audio_file(&valid_path, target_sample_rate) {
-                *buf = loaded;
+        match candidate {
+            Some(valid_path) => match import_audio_file(&valid_path, target_sample_rate) {
+                Ok(loaded) => *buf = loaded,
+                Err(e) => {
+                    issues.unreadable.push((valid_path.clone(), e.to_string()));
+                    buf.source_path = Some(valid_path);
+                }
+            },
+            None => {
+                issues.missing.push(anchored.clone());
+                // Keep an absolute reference so a later Save As elsewhere
+                // still points at the original location.
+                buf.source_path = Some(anchored);
             }
         }
-    };
+        Ok(())
+    });
 
-    for track in &mut project.tracks {
-        for clip in &mut track.clips {
-            for take in &mut clip.takes {
-                if let ferric_model::TakeContent::Audio { buffer } = &mut take.content {
-                    resolve_and_load(buffer);
-                }
-            }
-        }
-        for slot in track.session_slots.iter_mut().flatten() {
-            if let ferric_model::TakeContent::Audio { buffer } = &mut slot.content {
-                resolve_and_load(buffer);
-            }
-        }
-        for fx in &mut track.fx_chain {
-            if let Some(ref mut sbuf) = fx.sampler_buffer {
-                resolve_and_load(sbuf);
-                if fx.sampler_slices.is_empty() && sbuf.len_frames() > 0 {
-                    fx.sampler_slices = sbuf.detect_transients(16);
-                }
+    for fx in project
+        .tracks
+        .iter_mut()
+        .flat_map(|t| t.fx_chain.iter_mut())
+    {
+        if let Some(ref sbuf) = fx.sampler_buffer {
+            if fx.sampler_slices.is_empty() && sbuf.len_frames() > 0 {
+                fx.sampler_slices = sbuf.detect_transients(16);
             }
         }
     }
 
-    Ok(project)
+    Ok((project, issues))
 }

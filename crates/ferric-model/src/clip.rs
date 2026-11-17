@@ -275,7 +275,9 @@ impl AudioBuffer {
         };
         let left: Vec<f32> = self.left.iter().map(|&s| s * scale).collect();
         let right: Vec<f32> = self.right.iter().map(|&s| s * scale).collect();
-        Self::from_stereo(self.sample_rate, left, right, self.source_path.clone())
+        // New content: no longer backed by the original file, so the next
+        // save must write it out instead of keeping the stale reference.
+        Self::from_stereo(self.sample_rate, left, right, None)
     }
 
     pub fn reversed(&self) -> Self {
@@ -283,7 +285,7 @@ impl AudioBuffer {
         let mut right = (*self.right).clone();
         left.reverse();
         right.reverse();
-        Self::from_stereo(self.sample_rate, left, right, self.source_path.clone())
+        Self::from_stereo(self.sample_rate, left, right, None)
     }
 }
 

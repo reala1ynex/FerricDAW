@@ -28,7 +28,8 @@ pub use audio_backend::{
 pub use wav_io::{
     import_audio_file, import_wav_file, load_project_bundle, render_all_stems_offline,
     render_all_stems_with_options, render_master_offline, render_master_with_options,
-    render_track_freeze_buffer, save_project_bundle, write_exported_audio_file, write_wav_file,
+    render_track_freeze_buffer, save_project_bundle, save_project_bundle_with, load_project_bundle_checked,
+    AudioLoadIssues, BundleMode, write_exported_audio_file, write_wav_file,
     write_wav_file_dithered, BitDepth, BounceReport, ExportFormat, MasteringOptions, WavIoError,
 };
 
@@ -2007,6 +2008,134 @@ mod tests {
         let frozen_buf =
             render_track_freeze_buffer(&proj, synth_tid, 48_000).expect("freeze buffer");
         assert!(frozen_buf.len_frames() > 48_000);
+    }
+
+    fn bundle_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ferric-bundle-{name}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn first_take_buffer(p: &Project) -> &AudioBuffer {
+        match &p.tracks[0].clips[0].takes[0].content {
+            ferric_model::TakeContent::Audio { buffer } => buffer,
+            _ => panic!("expected audio take"),
+        }
+    }
+
+    fn one_take_project(seconds: usize) -> Project {
+        let mut proj = Project::new_empty("Bundle Test");
+        let tid = proj.add_track("Audio");
+        let frames = 8_000 * seconds;
+        let left: Vec<f32> = (0..frames).map(|i| (i % 97) as f32 / 97.0 - 0.5).collect();
+        let buf = AudioBuffer::from_stereo(8_000, left.clone(), left, None);
+        proj.find_track_mut(tid)
+            .unwrap()
+            .clips
+            .push(ferric_model::TimelineClip::new_audio("Take", 0.0, 4.0, buf));
+        proj
+    }
+
+    #[test]
+    fn save_as_collects_audio_so_deleting_the_old_folder_loses_nothing() {
+        let root = bundle_test_dir("saveas");
+        let first = root.join("A").join("song.ferric");
+        let second = root.join("B").join("copy.ferric");
+        let mut proj = one_take_project(2);
+        save_project_bundle(&mut proj, &first).expect("save");
+        assert!(root.join("A/song_Audio").is_dir());
+        // Save As into a different folder, then delete the original folder.
+        save_project_bundle(&mut proj, &second).expect("save as");
+        std::fs::remove_dir_all(root.join("A")).unwrap();
+        let text = std::fs::read_to_string(&second).unwrap();
+        assert!(
+            text.contains("copy_Audio") && !text.contains(&root.join("B").display().to_string()),
+            "audio must be referenced relative to the project folder"
+        );
+        // Move the whole folder: relative references still resolve.
+        std::fs::rename(root.join("B"), root.join("Moved")).unwrap();
+        let (reloaded, issues) =
+            load_project_bundle_checked(&root.join("Moved/copy.ferric"), 8_000).expect("load");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(first_take_buffer(&reloaded).len_frames(), 16_000);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_after_autosave_moves_audio_into_the_project_folder() {
+        let root = bundle_test_dir("autosave");
+        let recovery = root.join("autosave").join("recovery.ferric");
+        let project_file = root.join("proj").join("mix.ferric");
+        let mut proj = one_take_project(1);
+        save_project_bundle_with(&mut proj, &recovery, BundleMode::PersistUnsaved).unwrap();
+        let auto_wav = first_take_buffer(&proj).source_path.clone().unwrap();
+        assert!(auto_wav.starts_with(root.join("autosave")));
+        // A second autosave does not rewrite existing audio.
+        let mtime = std::fs::metadata(&auto_wav).unwrap().modified().unwrap();
+        save_project_bundle_with(&mut proj, &recovery, BundleMode::PersistUnsaved).unwrap();
+        assert_eq!(std::fs::metadata(&auto_wav).unwrap().modified().unwrap(), mtime);
+        save_project_bundle(&mut proj, &project_file).unwrap();
+        let saved_wav = first_take_buffer(&proj).source_path.clone().unwrap();
+        assert!(saved_wav.starts_with(root.join("proj").join("mix_Audio")));
+        assert!(saved_wav.is_file());
+        std::fs::remove_dir_all(root.join("autosave")).unwrap();
+        let (reloaded, issues) = load_project_bundle_checked(&project_file, 8_000).unwrap();
+        assert!(issues.is_empty());
+        assert_eq!(first_take_buffer(&reloaded).len_frames(), 8_000);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_audio_is_reported_and_reference_is_kept() {
+        let root = bundle_test_dir("missing");
+        let project_file = root.join("gone.ferric");
+        let mut proj = one_take_project(1);
+        save_project_bundle(&mut proj, &project_file).unwrap();
+        std::fs::remove_dir_all(root.join("gone_Audio")).unwrap();
+        let (mut reloaded, issues) = load_project_bundle_checked(&project_file, 8_000).unwrap();
+        assert_eq!(issues.missing.len(), 1, "{issues:?}");
+        assert!(issues.describe().contains("could not be found"));
+        assert_eq!(first_take_buffer(&reloaded).len_frames(), 0);
+        // Re-saving keeps the reference instead of dropping the clip's audio.
+        save_project_bundle(&mut reloaded, &project_file).unwrap();
+        let text = std::fs::read_to_string(&project_file).unwrap();
+        assert!(text.contains("take_"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edited_audio_is_rewritten_and_fx_samplers_everywhere_are_bundled() {
+        let root = bundle_test_dir("samplers");
+        let project_file = root.join("kit.ferric");
+        let mut proj = one_take_project(1);
+        let sample = AudioBuffer::from_stereo(8_000, vec![0.5; 4_000], vec![0.5; 4_000], None);
+        proj.master
+            .fx_chain
+            .push(ferric_model::FxSlot::new_sampler_with_buffer("Master Sampler", sample.clone()));
+        proj.tracks[0].clips[0]
+            .clip_fx
+            .push(ferric_model::FxSlot::new_sampler_with_buffer("Clip Sampler", sample));
+        save_project_bundle(&mut proj, &project_file).unwrap();
+        let wavs = std::fs::read_dir(root.join("kit_Audio")).unwrap().count();
+        assert_eq!(wavs, 3, "take + master sampler + clip sampler");
+        // Reverse the take: the edit must survive save + reload.
+        if let ferric_model::TakeContent::Audio { buffer } =
+            &mut proj.tracks[0].clips[0].takes[0].content
+        {
+            *buffer = buffer.reversed();
+        }
+        let expected_first = first_take_buffer(&proj).left[0];
+        save_project_bundle(&mut proj, &project_file).unwrap();
+        let reloaded = load_project_bundle(&project_file, 8_000).unwrap();
+        assert_eq!(first_take_buffer(&reloaded).left[0], expected_first);
+        assert_eq!(
+            reloaded.master.fx_chain.last().unwrap().sampler_buffer.as_ref().unwrap().len_frames(),
+            4_000
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

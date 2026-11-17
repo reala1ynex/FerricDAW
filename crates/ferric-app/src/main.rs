@@ -22,10 +22,10 @@ use tutorial_coach::{TutorialAction, TutorialCoach};
 use eframe::egui;
 use egui::{Color32, Context, Key, Stroke};
 use ferric_engine::{
-    audio_buffer_from_capture, import_audio_file, load_project_bundle,
+    audio_buffer_from_capture, import_audio_file,
     preferred_line_input_name, preferred_speakers_output_name, realtek_combo_jack_risk,
     render_all_stems_with_options, render_master_with_options, render_track_freeze_buffer,
-    save_project_bundle, BitDepth, BounceReport, CapturedTakeEvent, DiscoveredExternalPlugin,
+    save_project_bundle, save_project_bundle_with, load_project_bundle_checked, BundleMode, BitDepth, BounceReport, CapturedTakeEvent, DiscoveredExternalPlugin,
     EngineCommand, EngineHandle, ExportFormat, MasteringOptions,
 };
 use ferric_model::{
@@ -239,6 +239,8 @@ struct FerricDawApp {
     housekeeping_rx: Option<std::sync::mpsc::Receiver<HousekeepingMsg>>,
     relocation_offer: Option<RelocationOffer>,
     shortcut_offer: Option<ShortcutOffer>,
+    /// Blocking notice (title, body) for problems the user must see.
+    notice: Option<(String, String)>,
     relaunch_after_quit: Option<(PathBuf, Vec<String>)>,
     ui_rate_sample: (f64, u32),
     ui_fps: f64,
@@ -381,6 +383,7 @@ impl FerricDawApp {
             housekeeping_rx: None,
             relocation_offer: None,
             shortcut_offer: None,
+            notice: None,
             relaunch_after_quit: None,
             ui_rate_sample: (0.0, 0),
             ui_fps: 0.0,
@@ -513,7 +516,9 @@ impl FerricDawApp {
             }
             self.engine
                 .harvest_plugin_states_into_project(&mut self.project);
-            match save_project_bundle(&mut self.project, &path) {
+            // Autosave only writes audio that has no file yet; the real
+            // Save collects everything into the project folder.
+            match save_project_bundle_with(&mut self.project, &path, BundleMode::PersistUnsaved) {
                 Ok(()) => {
                     self.dirty_since_autosave = false;
                     self.last_autosave_inst = std::time::Instant::now();
@@ -532,8 +537,9 @@ impl FerricDawApp {
             self.status_banner = "No autosave recovery snapshot found yet.".into();
             return;
         }
-        match load_project_bundle(&path, self.engine.sample_rate) {
-            Ok(loaded) => {
+        match load_project_bundle_checked(&path, self.engine.sample_rate) {
+            Ok((loaded, issues)) => {
+                self.report_audio_issues(&issues);
                 self.snapshot_before("Recover Autosave");
                 self.project = loaded;
                 self.selected_track = self.project.tracks.first().map(|t| t.id);
@@ -1774,8 +1780,9 @@ impl FerricDawApp {
 
     fn open_project_from_path(&mut self, p: &PathBuf) {
         // Called from confirm dialog or when session is clean — always loads.
-        match load_project_bundle(p, self.engine.sample_rate) {
-            Ok(loaded) => {
+        match load_project_bundle_checked(p, self.engine.sample_rate) {
+            Ok((loaded, issues)) => {
+                self.report_audio_issues(&issues);
                 self.snapshot_before("Open Project");
                 self.project = loaded;
                 self.project_path = Some(p.clone());
@@ -4230,6 +4237,61 @@ impl FerricDawApp {
         }
     }
 
+    fn report_audio_issues(&mut self, issues: &ferric_engine::AudioLoadIssues) {
+        if issues.is_empty() {
+            return;
+        }
+        self.show_notice("Some audio could not be loaded", issues.describe());
+    }
+
+    /// Queue a notice; a second notice is appended rather than lost.
+    fn show_notice(&mut self, title: &str, body: String) {
+        match self.notice.as_mut() {
+            Some((_, existing)) => {
+                existing.push_str("\n\n");
+                existing.push_str(title);
+                existing.push_str(":\n");
+                existing.push_str(&body);
+            }
+            None => self.notice = Some((title.to_string(), body)),
+        }
+    }
+
+    fn render_notice_modal(&mut self, ctx: &Context) {
+        let Some((title, body)) = self.notice.clone() else {
+            return;
+        };
+        let mut close = false;
+        egui::Window::new(format!("⚠ {title}"))
+            .id(egui::Id::new("ferric_notice_modal"))
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(520.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(BG_ELEVATED)
+                    .stroke(Stroke::new(1.5_f32, ACCENT_FERRIC))
+                    .corner_radius(8)
+                    .inner_margin(16.0),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new(&body).color(TEXT_MAIN));
+                });
+                ui.add_space(10.0);
+                if ui
+                    .chrome_button(egui::RichText::new("OK").strong().color(ACCENT_TEAL))
+                    .clicked()
+                {
+                    close = true;
+                }
+            });
+        if close {
+            self.notice = None;
+        }
+    }
+
     fn render_shortcut_modal(&mut self, ctx: &Context) {
         if self.show_first_run || self.pending_destructive.is_some() || self.relocation_offer.is_some() {
             return;
@@ -4424,6 +4486,7 @@ impl eframe::App for FerricDawApp {
         self.render_update_modal(ctx);
         self.render_relocation_modal(ctx);
         self.render_shortcut_modal(ctx);
+        self.render_notice_modal(ctx);
         if render_quickstart_help_modal(ctx, &mut self.show_help_modal) {
             self.start_night_current_tutorial();
         }
