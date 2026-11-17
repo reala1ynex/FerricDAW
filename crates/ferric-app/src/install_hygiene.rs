@@ -1449,12 +1449,12 @@ mod tests {
         assert!(deep_desktop.join(EXE_NAME).is_file());
 
         // Declining remembers the choice.
-        remember_declined(&locs, &[history_copy.clone()]);
+        remember_declined(&locs, std::slice::from_ref(&history_copy));
         let again = clean_old_copies(&locs, &index, CURRENT, &exe, None, &root.path().join("Temp"), &[]);
         assert!(again.needs_confirmation.is_empty());
 
         // Confirming removes only package files.
-        let confirmed = clean_confirmed_dirs(&locs, &index, CURRENT, &exe, &[history_copy.clone()], &[]);
+        let confirmed = clean_confirmed_dirs(&locs, &index, CURRENT, &exe, std::slice::from_ref(&history_copy), &[]);
         assert_eq!(confirmed.cleaned_dirs.len(), 1);
         assert!(!history_copy.join(EXE_NAME).exists());
         assert_user_data(&history_copy);
@@ -1663,9 +1663,9 @@ mod tests {
         assert_eq!(lnk, desktop.join("FerricDAW.lnk"));
         let target = shell::read_shortcut_target(&lnk).unwrap();
         assert!(same_path(&target, &exe), "{} != {}", target.display(), exe.display());
-        let listed = shell::list_shortcuts(&[desktop.clone()], &[]);
+        let listed = shell::list_shortcuts(std::slice::from_ref(&desktop), &[]);
         assert_eq!(listed.len(), 1);
-        assert!(shell::has_desktop_shortcut(&[desktop.clone()], &exe, &listed));
+        assert!(shell::has_desktop_shortcut(std::slice::from_ref(&desktop), &exe, &listed));
         // Reuses the existing shortcut instead of creating "FerricDAW (2).lnk".
         assert_eq!(shell::create_desktop_shortcut(&desktop, &exe, &listed).unwrap(), lnk);
         // Retarget to a new location.

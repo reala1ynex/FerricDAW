@@ -57,7 +57,7 @@ pub fn scan_all_external_plugins(
 ) -> Vec<DiscoveredExternalPlugin> {
     let mut all = scan_clap_plugins(extra_dirs, quarantine);
     all.extend(scan_vst3_plugins(extra_dirs, quarantine));
-    all.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    all.sort_by_key(|a| a.name.to_lowercase());
     all
 }
 
@@ -368,7 +368,7 @@ pub fn preferred_line_input_name() -> Option<String> {
             (score, n)
         })
         .collect();
-    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    ranked.sort_by_key(|a| std::cmp::Reverse(a.0));
     ranked.into_iter().map(|(_, n)| n).next()
 }
 
@@ -739,8 +739,10 @@ impl EngineHandle {
                 driver_status_note,
             );
 
-        let mut latest_telemetry = EngineTelemetry::default();
-        latest_telemetry.sample_rate = sample_rate;
+        let latest_telemetry = EngineTelemetry {
+            sample_rate,
+            ..Default::default()
+        };
 
         Self {
             sample_rate,
@@ -808,7 +810,6 @@ impl EngineHandle {
             return (conns, names);
         };
         let port_count = probe.ports().len();
-        drop(probe);
 
         for idx in 0..port_count {
             let Ok(mut midi_in) = MidiInput::new(&format!("FerricDAW MIDI In {}", idx)) else {
@@ -902,7 +903,7 @@ impl EngineHandle {
         let channels = cfg.channels().max(1) as usize;
         let ch_count = channels.min(16) as u16;
         let fmt = cfg.sample_format();
-        let buf_range = cfg.buffer_size().clone();
+        let buf_range = *cfg.buffer_size();
         let mut stream_cfg: cpal::StreamConfig = cfg.into();
         if let Some(req_buf) = preferred_buffer_size {
             let clamped = match buf_range {
@@ -1261,7 +1262,7 @@ impl EngineHandle {
         if self.newly_discovered_params.is_empty() {
             return false;
         }
-        let batch: Vec<_> = self.newly_discovered_params.drain(..).collect();
+        let batch = std::mem::take(&mut self.newly_discovered_params);
         let mut changed = false;
         for (fx_id, specs) in batch {
             for trk in &mut project.tracks {
@@ -1659,7 +1660,7 @@ impl RtCallbackState {
                 &self.in_planes[14][..chunk],
                 &self.in_planes[15][..chunk],
             ];
-            let n_planes = self.hw_in_channel_count.max(2).min(16) as usize;
+            let n_planes = self.hw_in_channel_count.clamp(2, 16) as usize;
 
             self.core.render_block(
                 &self.project,

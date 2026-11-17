@@ -24,7 +24,7 @@ fn verify_real_downloaded_clap_and_vst3_plugins_end_to_end() {
     }
 
     let mut quarantine = PluginQuarantine::default();
-    let discovered = scan_all_external_plugins(&[plugins_dir.clone()], &mut quarantine);
+    let discovered = scan_all_external_plugins(std::slice::from_ref(&plugins_dir), &mut quarantine);
     println!(
         "\n=== FerricDAW Real Plugin Scanner Found {} Plugins ===",
         discovered.len()

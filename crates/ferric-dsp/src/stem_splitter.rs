@@ -192,19 +192,19 @@ pub fn split_audio_to_4_stems(source: &AudioBuffer) -> FourStemSplit {
     let mut lp_bass_2 = StereoBiquad::default();
     let mut hp_bass_1 = StereoBiquad::default();
     let mut hp_bass_2 = StereoBiquad::default();
-    lp_bass_1.set_lowpass(sr_f, 185.0, 0.7071);
-    lp_bass_2.set_lowpass(sr_f, 185.0, 0.7071);
-    hp_bass_1.set_highpass(sr_f, 185.0, 0.7071);
-    hp_bass_2.set_highpass(sr_f, 185.0, 0.7071);
+    lp_bass_1.set_lowpass(sr_f, 185.0, std::f32::consts::FRAC_1_SQRT_2);
+    lp_bass_2.set_lowpass(sr_f, 185.0, std::f32::consts::FRAC_1_SQRT_2);
+    hp_bass_1.set_highpass(sr_f, 185.0, std::f32::consts::FRAC_1_SQRT_2);
+    hp_bass_2.set_highpass(sr_f, 185.0, std::f32::consts::FRAC_1_SQRT_2);
 
     let mut lp_hi_1 = StereoBiquad::default();
     let mut lp_hi_2 = StereoBiquad::default();
     let mut hp_hi_1 = StereoBiquad::default();
     let mut hp_hi_2 = StereoBiquad::default();
-    lp_hi_1.set_lowpass(sr_f, 2800.0, 0.7071);
-    lp_hi_2.set_lowpass(sr_f, 2800.0, 0.7071);
-    hp_hi_1.set_highpass(sr_f, 2800.0, 0.7071);
-    hp_hi_2.set_highpass(sr_f, 2800.0, 0.7071);
+    lp_hi_1.set_lowpass(sr_f, 2800.0, std::f32::consts::FRAC_1_SQRT_2);
+    lp_hi_2.set_lowpass(sr_f, 2800.0, std::f32::consts::FRAC_1_SQRT_2);
+    hp_hi_1.set_highpass(sr_f, 2800.0, std::f32::consts::FRAC_1_SQRT_2);
+    hp_hi_2.set_highpass(sr_f, 2800.0, std::f32::consts::FRAC_1_SQRT_2);
 
     let mut bass_l = Vec::with_capacity(total_frames);
     let mut bass_r = Vec::with_capacity(total_frames);

@@ -425,15 +425,15 @@ impl MultibandOttProcessor {
 
         // Linkwitz-Riley 4th-order = two cascaded Butterworth (Q = 0.7071) filters!
         let sr = self.sample_rate;
-        self.lp_low_1.set_lowpass(sr, x_low, 0.7071);
-        self.lp_low_2.set_lowpass(sr, x_low, 0.7071);
-        self.hp_low_1.set_highpass(sr, x_low, 0.7071);
-        self.hp_low_2.set_highpass(sr, x_low, 0.7071);
+        self.lp_low_1.set_lowpass(sr, x_low, std::f32::consts::FRAC_1_SQRT_2);
+        self.lp_low_2.set_lowpass(sr, x_low, std::f32::consts::FRAC_1_SQRT_2);
+        self.hp_low_1.set_highpass(sr, x_low, std::f32::consts::FRAC_1_SQRT_2);
+        self.hp_low_2.set_highpass(sr, x_low, std::f32::consts::FRAC_1_SQRT_2);
 
-        self.lp_hi_1.set_lowpass(sr, x_hi, 0.7071);
-        self.lp_hi_2.set_lowpass(sr, x_hi, 0.7071);
-        self.hp_hi_1.set_highpass(sr, x_hi, 0.7071);
-        self.hp_hi_2.set_highpass(sr, x_hi, 0.7071);
+        self.lp_hi_1.set_lowpass(sr, x_hi, std::f32::consts::FRAC_1_SQRT_2);
+        self.lp_hi_2.set_lowpass(sr, x_hi, std::f32::consts::FRAC_1_SQRT_2);
+        self.hp_hi_1.set_highpass(sr, x_hi, std::f32::consts::FRAC_1_SQRT_2);
+        self.hp_hi_2.set_highpass(sr, x_hi, std::f32::consts::FRAC_1_SQRT_2);
 
         let atk_c = (-1.0 / (0.012 * time_scale * sr).max(1.0)).exp();
         let rel_c = (-1.0 / (0.115 * time_scale * sr).max(1.0)).exp();

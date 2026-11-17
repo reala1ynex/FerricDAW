@@ -116,6 +116,15 @@ pub fn decode_request(bytes: &[u8]) -> Result<BridgeRequest, String> {
     serde_json::from_slice(&bytes[4..4 + len]).map_err(|e| e.to_string())
 }
 
+pub fn encode_response(resp: &BridgeResponse) -> Result<Vec<u8>, String> {
+    let json = serde_json::to_vec(resp).map_err(|e| e.to_string())?;
+    let len = (json.len() as u32).to_le_bytes();
+    let mut out = Vec::with_capacity(4 + json.len());
+    out.extend_from_slice(&len);
+    out.extend_from_slice(&json);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,13 +209,4 @@ mod tests {
             BridgeRequest::LoadPlugin { .. }
         ));
     }
-}
-
-pub fn encode_response(resp: &BridgeResponse) -> Result<Vec<u8>, String> {
-    let json = serde_json::to_vec(resp).map_err(|e| e.to_string())?;
-    let len = (json.len() as u32).to_le_bytes();
-    let mut out = Vec::with_capacity(4 + json.len());
-    out.extend_from_slice(&len);
-    out.extend_from_slice(&json);
-    Ok(out)
 }

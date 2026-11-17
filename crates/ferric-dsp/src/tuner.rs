@@ -1,5 +1,5 @@
-/// Real-time zero-allocation YIN-inspired Chromatic Strobe Tuner.
-/// Essential for home guitar, bass, vocal, and synth calibration.
+//! Real-time zero-allocation YIN-inspired Chromatic Strobe Tuner.
+//! Essential for home guitar, bass, vocal, and synth calibration.
 
 const TUNER_BUF_LEN: usize = 4096;
 const NOTE_NAMES: [&str; 12] = [

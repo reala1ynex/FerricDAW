@@ -9,7 +9,12 @@ use std::path::{Path, PathBuf};
 /// UI-thread lifecycle handle implemented by a `.clap` (`clap_plugin_gui`) or `.vst3` (`IPlugView`) editor view.
 pub trait NativePluginGuiView {
     /// Attaches the plugin's native child view into `hwnd` and returns initial `(width, height)`.
-    fn attach_to_hwnd(&mut self, hwnd: *mut c_void) -> Result<(u32, u32), String>;
+    ///
+    /// # Safety
+    /// `hwnd` must be a valid window handle owned by the caller that stays
+    /// alive until [`NativePluginGuiView::detach`] is called; the plugin
+    /// creates child windows inside it.
+    unsafe fn attach_to_hwnd(&mut self, hwnd: *mut c_void) -> Result<(u32, u32), String>;
     /// Detaches and destroys the plugin's GUI view cleanly before the `HWND` closes.
     fn detach(&mut self);
     /// Polls main-thread callbacks if requested by the plugin (`on_main_thread`).
@@ -50,7 +55,9 @@ impl FloatingPluginWindow {
             return Ok(());
         }
         let hwnd = create_native_host_window(&self.title, 820, 540)?;
-        match self.view.attach_to_hwnd(hwnd) {
+        // SAFETY: `hwnd` was just created above and is destroyed only after
+        // `detach` (close_window) or on the error path below.
+        match unsafe { self.view.attach_to_hwnd(hwnd) } {
             Ok((w, h)) => {
                 resize_and_show_hwnd(hwnd, w.clamp(280, 2560), h.clamp(180, 1600));
                 pump_win32_messages();

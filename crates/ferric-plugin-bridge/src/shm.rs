@@ -29,7 +29,7 @@ pub struct AudioShmLayout {
 
 impl AudioShmLayout {
     pub fn new(max_frames: u32) -> Self {
-        let frames = max_frames.max(1).min(DEFAULT_MAX_FRAMES * 2);
+        let frames = max_frames.clamp(1, DEFAULT_MAX_FRAMES * 2);
         let samples = frames as usize * 2; // stereo interleaved in + out
         let byte_len = std::mem::size_of::<ShmHeader>() + samples * 2 * std::mem::size_of::<f32>();
         Self {
@@ -55,10 +55,19 @@ pub struct AudioShmRegion {
 
 impl AudioShmRegion {
     /// Host side: mapping is fresh — header is written immediately after open.
+    ///
+    /// # Safety
+    /// `base` must point to a writable mapping of at least `layout.byte_len`
+    /// bytes that outlives the returned region.
     pub unsafe fn new_host(layout: AudioShmLayout, base: *mut u8) -> Self {
         Self { layout, base }
     }
 
+    /// Worker side: wraps a mapping the host already initialised.
+    ///
+    /// # Safety
+    /// `base` must point to a mapping of at least `layout.byte_len` bytes,
+    /// aligned for `ShmHeader`, that outlives the returned region.
     pub unsafe fn from_mapped_ptr(layout: AudioShmLayout, base: *mut u8) -> Self {
         let hdr = &*(base as *const ShmHeader);
         if hdr.magic != SHM_MAGIC {

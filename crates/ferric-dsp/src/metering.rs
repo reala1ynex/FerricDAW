@@ -167,8 +167,8 @@ impl LoudnessAndSpectrumAnalyzer {
             let l = left[idx];
             let r = right[idx];
             // Standard 45° Studio Goniometer rotation: Y = Mid (L+R)*0.707, X = Side (L-R)*0.707
-            let mid = ((l + r) * 0.7071).clamp(-1.0, 1.0);
-            let side = ((l - r) * 0.7071).clamp(-1.0, 1.0);
+            let mid = ((l + r) * std::f32::consts::FRAC_1_SQRT_2).clamp(-1.0, 1.0);
+            let side = ((l - r) * std::f32::consts::FRAC_1_SQRT_2).clamp(-1.0, 1.0);
             vectorscope_xy[p] = (side, mid);
         }
 

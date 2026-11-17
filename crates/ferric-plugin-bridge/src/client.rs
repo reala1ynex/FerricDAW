@@ -90,7 +90,7 @@ impl BridgeHostClient {
             let session = Uuid::new_v4();
             let pipe_name = format!(r"\\.\pipe\ferric-plugin-bridge-{}", session);
             let shm_name = format!("Local\\ferric-plugin-bridge-{}", session);
-            let max_frames = max_frames.max(256).min(DEFAULT_MAX_FRAMES);
+            let max_frames = max_frames.clamp(256, DEFAULT_MAX_FRAMES);
             let layout = AudioShmLayout::new(max_frames);
 
             let pipe_wide: Vec<u16> = pipe_name

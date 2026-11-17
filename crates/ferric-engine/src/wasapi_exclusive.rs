@@ -105,7 +105,7 @@ where
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = stop.clone();
-    let period_hint = buffer_frames.max(32).min(2048);
+    let period_hint = buffer_frames.clamp(32, 2048);
     let preferred_owned = preferred_name.map(|s| s.to_string());
     let process_slot: Arc<Mutex<Option<F>>> = Arc::new(Mutex::new(Some(process)));
     let process_for_thread = process_slot.clone();

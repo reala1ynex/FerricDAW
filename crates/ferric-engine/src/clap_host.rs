@@ -605,12 +605,12 @@ pub struct ClapGuiAndStateHandle {
 }
 
 impl NativePluginGuiView for ClapGuiAndStateHandle {
-    fn attach_to_hwnd(&mut self, hwnd: *mut c_void) -> Result<(u32, u32), String> {
+    unsafe fn attach_to_hwnd(&mut self, hwnd: *mut c_void) -> Result<(u32, u32), String> {
         if self.plugin_ptr.is_null() || self.gui_ext.is_null() {
             return Err("This CLAP plugin does not expose a native GUI (use FerricDAW's auto-mapped parameter knobs!)".into());
         }
         unsafe {
-            let win32_api = b"win32\0".as_ptr() as *const c_char;
+            let win32_api = c"win32".as_ptr();
             if let Some(supported) = (*self.gui_ext).is_api_supported {
                 if !supported(self.plugin_ptr, win32_api, false) {
                     return Err("Plugin does not support embedded win32 HWND GUI".into());
@@ -760,7 +760,7 @@ impl HostedClapInstance {
         unsafe {
             let (lib, entry_ptr) = get_or_init_clap_lib(path)?;
             let get_fac = (*entry_ptr).get_factory.ok_or("Missing get_factory")?;
-            let fac_ptr = get_fac(b"clap.plugin-factory\0".as_ptr() as *const c_char)
+            let fac_ptr = get_fac(c"clap.plugin-factory".as_ptr())
                 as *const ClapPluginFactory;
             if fac_ptr.is_null() {
                 return Err("Null clap.plugin-factory".into());
@@ -825,19 +825,19 @@ impl HostedClapInstance {
         // Query CLAP Extensions (`clap.params`, `clap.state`, `clap.latency`, `clap.gui`)
         let get_ext = (*plugin_ptr).get_extension;
         let params_ext = get_ext
-            .map(|f| f(plugin_ptr, b"clap.params\0".as_ptr() as *const c_char) as *const ClapPluginParams)
+            .map(|f| f(plugin_ptr, c"clap.params".as_ptr()) as *const ClapPluginParams)
             .unwrap_or(std::ptr::null());
         let state_ext = get_ext
-            .map(|f| f(plugin_ptr, b"clap.state\0".as_ptr() as *const c_char) as *const ClapPluginState)
+            .map(|f| f(plugin_ptr, c"clap.state".as_ptr()) as *const ClapPluginState)
             .unwrap_or(std::ptr::null());
         let latency_ext = get_ext
-            .map(|f| f(plugin_ptr, b"clap.latency\0".as_ptr() as *const c_char) as *const ClapPluginLatency)
+            .map(|f| f(plugin_ptr, c"clap.latency".as_ptr()) as *const ClapPluginLatency)
             .unwrap_or(std::ptr::null());
         let audio_ports_ext = get_ext
-            .map(|f| f(plugin_ptr, b"clap.audio-ports\0".as_ptr() as *const c_char) as *const ClapPluginAudioPorts)
+            .map(|f| f(plugin_ptr, c"clap.audio-ports".as_ptr()) as *const ClapPluginAudioPorts)
             .unwrap_or(std::ptr::null());
         let gui_ext = get_ext
-            .map(|f| f(plugin_ptr, b"clap.gui\0".as_ptr() as *const c_char) as *const ClapPluginGui)
+            .map(|f| f(plugin_ptr, c"clap.gui".as_ptr()) as *const ClapPluginGui)
             .unwrap_or(std::ptr::null());
 
         let mut gui_and_state = ClapGuiAndStateHandle {
@@ -1108,10 +1108,8 @@ impl ExternalPluginAdapter for HostedClapInstance {
             self.steady_time += frames as i64;
 
             let _ = db_to_lin;
-            for i in 0..frames {
-                left[i] = self.out_l[i];
-                right[i] = self.out_r[i];
-            }
+            left[..frames].copy_from_slice(&self.out_l[..frames]);
+            right[..frames].copy_from_slice(&self.out_r[..frames]);
         }
     }
 }

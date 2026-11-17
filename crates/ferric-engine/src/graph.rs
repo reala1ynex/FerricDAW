@@ -79,6 +79,7 @@ pub struct AudioGraphCore {
     /// Boxed so replaced instances can be handed back to a non-RT thread
     /// for dropping instead of being freed inside the audio callback (audit H6).
     fx_pool: Vec<Box<FxRuntimeInstance>>,
+    #[allow(clippy::vec_box)] // see fx_pool: boxes travel through the RT garbage ring
     mod_pool: Vec<Box<ModulatorRuntime>>,
     arp_lanes: Vec<ArpRuntime>,
     pub input_tuner: ChromaticTuner,
@@ -707,8 +708,8 @@ impl AudioGraphCore {
                 let raw_r = self.bus_r[t_idx][i] * phase_sign;
                 let mid = 0.5 * (raw_l + raw_r);
                 let side = 0.5 * (raw_l - raw_r) * width;
-                let l = (mid + side) * gain_lin * pan_l * 1.4142;
-                let r = (mid - side) * gain_lin * pan_r * 1.4142;
+                let l = (mid + side) * gain_lin * pan_l * std::f32::consts::SQRT_2;
+                let r = (mid - side) * gain_lin * pan_r * std::f32::consts::SQRT_2;
                 self.bus_l[t_idx][i] = l;
                 self.bus_r[t_idx][i] = r;
                 peak_l = peak_l.max(l.abs());
@@ -826,12 +827,13 @@ impl AudioGraphCore {
                 }
             } else {
                 let mut next_beat = block_end_beat;
-                if project.loop_enabled && project.loop_end_beat > project.loop_start_beat + 0.25 {
-                    if block_start_beat < project.loop_end_beat && next_beat >= project.loop_end_beat
-                    {
-                        let overshoot = next_beat - project.loop_end_beat;
-                        next_beat = project.loop_start_beat + overshoot;
-                    }
+                if project.loop_enabled
+                    && project.loop_end_beat > project.loop_start_beat + 0.25
+                    && block_start_beat < project.loop_end_beat
+                    && next_beat >= project.loop_end_beat
+                {
+                    let overshoot = next_beat - project.loop_end_beat;
+                    next_beat = project.loop_start_beat + overshoot;
                 }
                 self.playhead_beat = next_beat;
             }
@@ -1109,8 +1111,8 @@ impl AudioGraphCore {
                 }
                 let g = db_to_lin(send.gain_db);
                 let pan_angle = (send.pan.clamp(-1.0, 1.0) + 1.0) * 0.25 * std::f32::consts::PI;
-                let pl = pan_angle.cos() * 1.4142 * g;
-                let pr = pan_angle.sin() * 1.4142 * g;
+                let pl = pan_angle.cos() * std::f32::consts::SQRT_2 * g;
+                let pr = pan_angle.sin() * std::f32::consts::SQRT_2 * g;
                 for i in 0..frames {
                     let sl = self.bus_l[src_idx][i] * pl;
                     let sr = self.bus_r[src_idx][i] * pr;

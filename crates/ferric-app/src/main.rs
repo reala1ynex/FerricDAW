@@ -669,7 +669,7 @@ impl FerricDawApp {
         for (name, buf, color) in labels {
             let mut trk = Track::new(format!("Stem · {name}"), color, n_scenes);
             trk.clips
-                .push(TimelineClip::new_audio(format!("{name}"), start, len, buf));
+                .push(TimelineClip::new_audio(name.to_string(), start, len, buf));
             self.project.tracks.push(trk);
         }
         self.status_banner =
@@ -883,7 +883,7 @@ impl FerricDawApp {
         if self.capture_inbox.is_empty() {
             return;
         }
-        let events: Vec<CapturedTakeEvent> = self.capture_inbox.drain(..).collect();
+        let events: Vec<CapturedTakeEvent> = std::mem::take(&mut self.capture_inbox);
         self.snapshot_before("Commit Captured Take(s)");
         for ev in events {
             let fallback_tid = self
@@ -2123,7 +2123,7 @@ impl FerricDawApp {
         {
             if self.arrangement.multi_selected_clips.len() > 1 {
                 self.snapshot_before("Delete Selected Clips");
-                let batch: Vec<_> = self.arrangement.multi_selected_clips.drain(..).collect();
+                let batch = std::mem::take(&mut self.arrangement.multi_selected_clips);
                 for (tid, cid) in batch {
                     self.project
                         .delete_clip(tid, cid, self.arrangement.ripple_edit);

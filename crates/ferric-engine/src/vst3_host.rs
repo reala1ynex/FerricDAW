@@ -1343,7 +1343,7 @@ pub struct Vst3GuiAndStateHandle {
 }
 
 impl NativePluginGuiView for Vst3GuiAndStateHandle {
-    fn attach_to_hwnd(&mut self, hwnd: *mut c_void) -> Result<(u32, u32), String> {
+    unsafe fn attach_to_hwnd(&mut self, hwnd: *mut c_void) -> Result<(u32, u32), String> {
         if self.controller_ptr.is_null() {
             return Err("This VST3 plugin does not expose an IEditController GUI".into());
         }
@@ -1351,13 +1351,13 @@ impl NativePluginGuiView for Vst3GuiAndStateHandle {
             let ctrl_vtbl = *(self.controller_ptr as *const *const IEditControllerVtbl);
             let view = ((*ctrl_vtbl).create_view)(
                 self.controller_ptr,
-                b"editor\0".as_ptr() as *const c_char,
+                c"editor".as_ptr(),
             );
             if view.is_null() {
                 return Err("IEditController::createView('editor') returned null (use FerricDAW's auto-mapped parameter knobs!)".into());
             }
             let view_vtbl = *(view as *const *const IPlugViewVtbl);
-            let hwnd_type = b"HWND\0".as_ptr() as *const c_char;
+            let hwnd_type = c"HWND".as_ptr();
             if ((*view_vtbl).is_platform_type_supported)(view, hwnd_type) != K_RESULT_OK {
                 let _ = ((*view_vtbl).unknown.release)(view);
                 return Err("VST3 IPlugView does not support Win32 HWND".into());
@@ -1964,10 +1964,8 @@ impl ExternalPluginAdapter for HostedVst3Instance {
 
             let _ = ((*proc_vtbl).process)(self.processor_ptr, &mut pdata);
 
-            for i in 0..frames {
-                left[i] = self.out_l[i];
-                right[i] = self.out_r[i];
-            }
+            left[..frames].copy_from_slice(&self.out_l[..frames]);
+            right[..frames].copy_from_slice(&self.out_r[..frames]);
         }
     }
 }
@@ -2030,7 +2028,6 @@ impl Drop for HostedVst3Instance {
                 let _ = ((*comp_vtbl).base.terminate)(self.component_ptr);
                 let _ = ((*comp_vtbl).base.unknown.release)(self.component_ptr);
             }
-            let _ = CStr::from_bytes_with_nul_unchecked(b"\0");
         }
     }
 }
