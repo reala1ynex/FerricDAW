@@ -210,27 +210,100 @@ fn exe_dir() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
 }
 
-/// Reject non-HTTPS / non-GitHub release hosts (portable updater threat model).
-pub fn feed_url_is_allowed(url: &str) -> bool {
-    let lower = url.trim().to_ascii_lowercase();
-    if lower.contains("owner/") || lower.contains("..") {
+/// The only repository whose releases the updater accepts (audit M12).
+const RELEASE_REPO_PATH: &str = "/reala1ynex/ferricdaw/releases/";
+/// Hosts GitHub redirects release-asset downloads to.
+const RELEASE_CDN_HOSTS: [&str; 2] = ["objects.githubusercontent.com", "release-assets.githubusercontent.com"];
+const MAX_REDIRECTS: usize = 5;
+
+/// Split an `https://host/path` URL into (lower-case host, path including
+/// query). `None` for anything that is not plain HTTPS without user info or
+/// an explicit port.
+fn https_parts(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    let rest = url.get(..8).filter(|p| p.eq_ignore_ascii_case("https://")).map(|_| &url[8..])?;
+    let (host, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    if host.is_empty() || host.contains(['@', ':', '\\']) || path.contains('\\') {
+        return None;
+    }
+    Some((host.to_ascii_lowercase(), path.to_string()))
+}
+
+/// A path on github.com inside this repository's releases. With `zip_only`
+/// it must be `/releases/download/<tag>/<asset>.zip`.
+fn is_repo_release_path(path: &str, zip_only: bool) -> bool {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains(['?', '#', '%', '@']) || lower.contains("..") || lower.contains("//") {
         return false;
     }
-    if !(lower.starts_with("https://github.com/")
-        || lower.starts_with("https://objects.githubusercontent.com/")
-        || lower.starts_with("https://release-assets.githubusercontent.com/")
-        || lower.starts_with("https://github-releases.githubusercontent.com/"))
-    {
-        // Allow any https://*.githubusercontent.com/ path used by Releases CDN.
-        if let Some(rest) = lower.strip_prefix("https://") {
-            let host = rest.split('/').next().unwrap_or("");
-            if host.ends_with(".githubusercontent.com") && !host.contains('@') {
-                return true;
-            }
+    let Some(rest) = lower.strip_prefix(RELEASE_REPO_PATH) else { return false };
+    let parts: Vec<&str> = rest.split('/').collect();
+    match parts.as_slice() {
+        ["download", tag, asset] if !tag.is_empty() && !asset.is_empty() => {
+            !zip_only || asset.ends_with(".zip")
         }
-        return false;
+        ["latest", "download", asset] if !asset.is_empty() => !zip_only,
+        _ => false,
     }
-    true
+}
+
+/// The update feed must be a release asset of reala1ynex/FerricDAW on github.com.
+pub fn feed_url_is_allowed(url: &str) -> bool {
+    matches!(https_parts(url), Some((host, path)) if host == "github.com" && is_repo_release_path(&path, false))
+}
+
+/// The ZIP named by latest.json must be
+/// `https://github.com/reala1ynex/FerricDAW/releases/download/<tag>/<name>.zip`.
+pub fn zip_url_is_allowed(url: &str) -> bool {
+    matches!(https_parts(url), Some((host, path)) if host == "github.com" && is_repo_release_path(&path, true))
+}
+
+/// Where a release download may be redirected: another release path of the
+/// same repository, or GitHub's release-asset CDN (signed URLs carry a query).
+pub fn redirect_target_is_allowed(url: &str) -> bool {
+    match https_parts(url) {
+        Some((host, path)) if host == "github.com" => is_repo_release_path(&path, false),
+        Some((host, _)) => RELEASE_CDN_HOSTS.contains(&host.as_str()),
+        None => false,
+    }
+}
+
+fn resolve_location(current: &str, location: &str) -> Option<String> {
+    let location = location.trim();
+    if location.starts_with('/') && !location.starts_with("//") {
+        let (host, _) = https_parts(current)?;
+        return Some(format!("https://{host}{location}"));
+    }
+    Some(location.to_string())
+}
+
+/// GET `url`, following at most `MAX_REDIRECTS` redirects and only to
+/// allowed locations; anything else is refused instead of followed.
+fn get_with_checked_redirects(agent: &ureq::Agent, url: &str, what: &str) -> Result<ureq::Response, String> {
+    let mut current = url.to_string();
+    for _ in 0..=MAX_REDIRECTS {
+        let resp = agent
+            .get(&current)
+            .set("User-Agent", "FerricDAW-Updater")
+            .call()
+            .map_err(|e| format!("{what} failed: {e}"))?;
+        if !(300..400).contains(&resp.status()) {
+            return Ok(resp);
+        }
+        let next = resp
+            .header("location")
+            .and_then(|loc| resolve_location(&current, loc))
+            .ok_or_else(|| format!("{what} failed: redirect without a location"))?;
+        if !redirect_target_is_allowed(&next) {
+            let host = https_parts(&next).map(|(h, _)| h).unwrap_or_else(|| "a non-HTTPS address".into());
+            return Err(format!("{what} refused: the server redirected to {host}, which is not a GitHub release location."));
+        }
+        current = next;
+    }
+    Err(format!("{what} failed: too many redirects"))
 }
 
 fn fetch_feed(url: &str) -> Result<UpdateFeed, String> {
@@ -242,18 +315,15 @@ fn fetch_feed(url: &str) -> Result<UpdateFeed, String> {
     }
     if !feed_url_is_allowed(url) {
         return Err(
-            "Update feed URL must be HTTPS on github.com / GitHub release CDN hosts.".into(),
+            "Update feed URL must be a reala1ynex/FerricDAW release asset on https://github.com.".into(),
         );
     }
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(8))
         .timeout_read(Duration::from_secs(20))
+        .redirects(0)
         .build();
-    let resp = agent
-        .get(url)
-        .set("User-Agent", "FerricDAW-Updater")
-        .call()
-        .map_err(|e| format!("Update check failed: {e}"))?;
+    let resp = get_with_checked_redirects(&agent, url, "Update check")?;
     let mut body = resp
         .into_string()
         .map_err(|e| format!("Could not read latest.json: {e}"))?;
@@ -287,9 +357,9 @@ pub fn validate_feed(feed: &UpdateFeed) -> Result<(), String> {
     if feed.sha256.len() != 64 || !feed.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err("latest.json sha256 must be a 64-char hex digest.".into());
     }
-    if !feed_url_is_allowed(&feed.url) {
+    if !zip_url_is_allowed(&feed.url) {
         return Err(
-            "latest.json zip URL must be HTTPS on github.com / GitHub release CDN hosts.".into(),
+            "latest.json zip URL must be https://github.com/reala1ynex/FerricDAW/releases/download/<tag>/<file>.zip.".into(),
         );
     }
     Ok(())
@@ -300,12 +370,9 @@ fn download_zip(feed: &UpdateFeed) -> Result<PathBuf, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(600))
+        .redirects(0)
         .build();
-    let resp = agent
-        .get(&feed.url)
-        .set("User-Agent", "FerricDAW-Updater")
-        .call()
-        .map_err(|e| format!("Download failed: {e}"))?;
+    let resp = get_with_checked_redirects(&agent, &feed.url, "Download")?;
     let mut reader = resp.into_reader();
     let out = std::env::temp_dir().join(format!(
         "FerricDAW-update-{}.zip",
@@ -380,6 +447,71 @@ mod tests {
         let feed: UpdateFeed = serde_json::from_str(trimmed).unwrap();
         assert_eq!(feed.version, "1.1.4");
         validate_feed(&feed).expect("github feed with sha should validate");
+    }
+
+    #[test]
+    fn only_this_repositorys_release_assets_are_accepted() {
+        // Feed
+        assert!(feed_url_is_allowed(DEFAULT_FEED_URL));
+        assert!(feed_url_is_allowed("https://github.com/reala1ynex/FerricDAW/releases/download/v1.1.15/latest.json"));
+        for bad in [
+            "https://github.com/someone-else/FerricDAW/releases/latest/download/latest.json",
+            "https://github.com/reala1ynex/FerricDAW/raw/main/latest.json",
+            "https://github.com/reala1ynex/FerricDAW/releases/latest/download/../../x",
+            "https://github.com@evil.example/reala1ynex/FerricDAW/releases/latest/download/latest.json",
+            "https://github.com:444/reala1ynex/FerricDAW/releases/latest/download/latest.json",
+            "https://objects.githubusercontent.com/latest.json",
+            "https://evil.githubusercontent.com/reala1ynex/FerricDAW/releases/latest/download/latest.json",
+            "http://github.com/reala1ynex/FerricDAW/releases/latest/download/latest.json",
+        ] {
+            assert!(!feed_url_is_allowed(bad), "{bad}");
+        }
+        // ZIP
+        assert!(zip_url_is_allowed(
+            "https://github.com/reala1ynex/FerricDAW/releases/download/v1.1.15/FerricDAW-v1.1.15-win-x64.zip"
+        ));
+        assert!(zip_url_is_allowed(
+            "https://GitHub.com/Reala1ynex/ferricdaw/releases/download/v1.1.15/FerricDAW-v1.1.15-win-x64.zip"
+        ));
+        for bad in [
+            "https://github.com/reala1ynex/FerricDAW/releases/latest/download/FerricDAW.zip",
+            "https://github.com/reala1ynex/FerricDAW/releases/download/v1.1.15/notes.txt",
+            "https://github.com/attacker/FerricDAW/releases/download/v1.1.15/FerricDAW.zip",
+            "https://github.com/reala1ynex/FerricDAW/releases/download/v1/x.zip?x=1",
+            "https://objects.githubusercontent.com/github-production-release-asset/x.zip",
+            "https://github.com/reala1ynex/FerricDAW/releases/download/v1/%2e%2e/x.zip",
+        ] {
+            assert!(!zip_url_is_allowed(bad), "{bad}");
+        }
+        // Redirects
+        assert!(redirect_target_is_allowed(
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/2?X-Amz-Signature=abc"
+        ));
+        assert!(redirect_target_is_allowed(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sp=r&sig=x"
+        ));
+        assert!(redirect_target_is_allowed(
+            "https://github.com/reala1ynex/FerricDAW/releases/download/v1.1.15/latest.json"
+        ));
+        assert!(!redirect_target_is_allowed("https://evil.example/x.zip"));
+        assert!(!redirect_target_is_allowed("http://objects.githubusercontent.com/x"));
+        assert!(!redirect_target_is_allowed("https://raw.githubusercontent.com/x/y/z.zip"));
+        assert_eq!(
+            resolve_location("https://github.com/a/b", "/reala1ynex/FerricDAW/releases/download/v1/x.zip").unwrap(),
+            "https://github.com/reala1ynex/FerricDAW/releases/download/v1/x.zip"
+        );
+    }
+
+    /// Network: the real feed and its ZIP resolve through GitHub's redirects
+    /// under the strict rules. Run with `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn live_feed_and_zip_follow_only_allowed_redirects() {
+        let feed = fetch_feed(DEFAULT_FEED_URL).expect("live feed");
+        assert!(zip_url_is_allowed(&feed.url), "{}", feed.url);
+        let agent = ureq::AgentBuilder::new().redirects(0).build();
+        let resp = get_with_checked_redirects(&agent, &feed.url, "Download").expect("zip reachable");
+        assert_eq!(resp.status(), 200);
     }
 
     #[test]

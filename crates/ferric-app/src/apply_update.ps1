@@ -37,6 +37,26 @@ try {
             throw "The update archive is missing $Name."
         }
     }
+    # Optional Authenticode check (audit M12). Releases are not code-signed
+    # yet, so this only activates once an installed build carries a valid
+    # signature: from then on an update must be validly signed by the same
+    # publisher. Unsigned installs rely on the SHA-256 from latest.json.
+    $InstalledDir = if ($RelocatedFrom) { $RelocatedFrom.TrimEnd('\') } else { $Destination }
+    $InstalledExe = Join-Path $InstalledDir $ExeName
+    if (Test-Path -LiteralPath $InstalledExe -PathType Leaf) {
+        $OldSig = Get-AuthenticodeSignature -LiteralPath $InstalledExe
+        if ($OldSig.Status -eq 'Valid') {
+            foreach ($Name in @($ExeName, 'ferric-plugin-bridge.exe')) {
+                $NewSig = Get-AuthenticodeSignature -LiteralPath (Join-Path $Source $Name)
+                if ($NewSig.Status -ne 'Valid') {
+                    throw "The installed FerricDAW is signed, but $Name in the update is not validly signed ($($NewSig.Status)). No installation files were changed."
+                }
+                if ($NewSig.SignerCertificate.Subject -ne $OldSig.SignerCertificate.Subject) {
+                    throw "$Name in the update is signed by '$($NewSig.SignerCertificate.Subject)', not by the publisher of the installed FerricDAW. No installation files were changed."
+                }
+            }
+        }
+    }
     foreach ($File in Get-ChildItem -LiteralPath $Source -Recurse -File) {
         $Relative = $File.FullName.Substring($Source.Length + 1)
         $Target = Join-Path $Destination $Relative
